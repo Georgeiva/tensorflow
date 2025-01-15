@@ -23,12 +23,12 @@ limitations under the License.
 namespace tensorflow {
 
 SimplePropagatorState::SimplePropagatorState(
-    const ImmutableExecutorState& immutable_state, int64 step_id, bool vlog)
+    const ImmutableExecutorState& immutable_state, int64_t step_id, bool vlog)
     : SimplePropagatorState(immutable_state, step_id,
                             immutable_state.get_root_frame_info(), vlog) {}
 
 SimplePropagatorState::SimplePropagatorState(
-    const ImmutableExecutorState& immutable_state, int64 step_id,
+    const ImmutableExecutorState& immutable_state, int64_t step_id,
     const ImmutableExecutorState::FrameInfo& finfo, bool vlog)
     : immutable_state_(immutable_state),
       step_id_(step_id),
@@ -56,7 +56,7 @@ void SimplePropagatorState::ActivateRoots(
 void SimplePropagatorState::PropagateOutputs(const TaggedNode& tagged_node,
                                              EntryVector* outputs,
                                              TaggedNodeSeq* ready) {
-  profiler::TraceMe activity(
+  tsl::profiler::TraceMe activity(
       [&]() {
         return strings::StrCat(
             "ExecutorPropagateOutputs#", "id=", step_id_,
@@ -65,7 +65,7 @@ void SimplePropagatorState::PropagateOutputs(const TaggedNode& tagged_node,
             ",num_output_control_edges=",
             tagged_node.node_item->num_output_control_edges, "#");
       },
-      profiler::GetTFTraceMeLevel(/*is_expensive=*/false));
+      tsl::profiler::GetTFTraceMeLevel(/*is_expensive=*/false));
 
   // Propagates outputs along out edges, and puts newly ready nodes
   // into the ready queue.
@@ -89,7 +89,7 @@ void SimplePropagatorState::PropagateOutputs(const TaggedNode& tagged_node,
       input_tensors_[dst_loc] = (*outputs)[src_slot];
     }
 
-    int32 previous_num_pending =
+    int32_t previous_num_pending =
         pending_[dst_id].fetch_sub(1, std::memory_order_release);
     if (previous_num_pending == 1) ready->emplace_back(&gview.node_ref(dst_id));
   }
@@ -97,7 +97,7 @@ void SimplePropagatorState::PropagateOutputs(const TaggedNode& tagged_node,
   for (const ControlEdgeInfo& e : item->output_control_edges()) {
     const int dst_id = e.dst_id;
 
-    int32 previous_num_pending =
+    int32_t previous_num_pending =
         pending_[dst_id].fetch_sub(1, std::memory_order_release);
     if (previous_num_pending == 1) ready->emplace_back(&gview.node_ref(dst_id));
   }

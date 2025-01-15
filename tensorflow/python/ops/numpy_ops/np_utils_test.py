@@ -14,12 +14,9 @@
 # ==============================================================================
 """Tests for utils.py."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 
+from tensorflow.python.framework import dtypes
 from tensorflow.python.ops.numpy_ops import np_utils
 from tensorflow.python.platform import test
 
@@ -117,6 +114,24 @@ f docstring.
 """
     self.assertEqual(expected, f.__doc__)
 
+  def testDtypeOfTensorLikeClass(self):
+
+    class TensorLike:
+
+      def __init__(self, dtype):
+        self._dtype = dtype
+
+      @property
+      def is_tensor_like(self):
+        return True
+
+      @property
+      def dtype(self):
+        return self._dtype
+
+    t = TensorLike(dtypes.float32)
+    self.assertEqual(np_utils._maybe_get_dtype(t), dtypes.float32)
+
   # pylint: disable=unused-variable
   def testSigMismatchIsError(self):
     """Tests that signature mismatch is an error (when configured so)."""
@@ -139,7 +154,7 @@ f docstring.
         return
 
     with self.assertRaisesRegex(
-        TypeError, 'Parameter "y" should have a default value'):
+        TypeError, 'Parameter y should have a default value'):
       @np_utils.np_doc(None, np_fun=np_fun)
       def f3(x, y):
         return

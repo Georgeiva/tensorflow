@@ -19,6 +19,7 @@ limitations under the License.
 #include <memory>
 #include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -43,6 +44,7 @@ class CollectiveParamResolverLocal : public ParamResolverInterface {
   CollectiveParamResolverLocal(const ConfigProto& config,
                                const DeviceMgr* dev_mgr,
                                DeviceResolverInterface* dev_resolver,
+                               NcclCommunicatorInterface* nccl_communicator,
                                const string& task_name);
 
   ~CollectiveParamResolverLocal() override {}
@@ -51,8 +53,8 @@ class CollectiveParamResolverLocal : public ParamResolverInterface {
                            CancellationManager* cancel_mgr,
                            const StatusCallback& done) override;
 
-  void CompleteGroupAsync(const CompleteGroupRequest* request,
-                          CompleteGroupResponse* response,
+  void CompleteGroupAsync(const DeviceAttributes& device,
+                          CollGroupParams* group_params,
                           CancellationManager* cancel_mgr,
                           const StatusCallback& done) override;
 
@@ -61,7 +63,9 @@ class CollectiveParamResolverLocal : public ParamResolverInterface {
                              CancellationManager* cancel_mgr,
                              const StatusCallback& done) override;
 
-  void StartAbort(const Status& s) override;
+  absl::Status LookupGroup(int32_t group_key, CollGroupParams* group) override;
+
+  void StartAbort(const absl::Status& s) override;
 
  protected:
   // For access to InstanceRec and CompleteDefaultRanking.
@@ -71,26 +75,32 @@ class CollectiveParamResolverLocal : public ParamResolverInterface {
   struct GroupRec {
     mutable mutex mu;
     CollGroupParams group TF_GUARDED_BY(mu);
-    Status status TF_GUARDED_BY(mu);
-    std::unordered_map<string, DeviceAttributes> devices TF_GUARDED_BY(mu);
-    std::vector<StatusCallback> waiting TF_GUARDED_BY(mu);
+    absl::Status status TF_GUARDED_BY(mu);
+    std::unordered_map<string, int64_t> incarnations_by_device_name
+        TF_GUARDED_BY(mu);
+    std::vector<CollGroupParams*> pending_params TF_GUARDED_BY(mu);
+    std::vector<StatusCallback> pending_done TF_GUARDED_BY(mu);
   };
 
-  // Finds the GroupRec that corresponds to cp->group_key.
-  // Also populates cp->group from that group_rec.
+  // Finds the GroupRec that corresponds to group_params->group_key.
+  // Also populates group_params from that group_rec.
   // Will wait until GroupRec is fully populated or an error arises before
   // calling done.  Callback GroupRec* arg is only valid if status is ok.
   // Ownership of GroupRec stays with this object and does not pass to the
   // callback.
-  typedef std::function<void(const Status& s, const GroupRec* gr)>
-      GroupRecCallback;
-  void CompleteGroupLocal(const DeviceAttributes& device, CollectiveParams* cp,
-                          const GroupRecCallback& done,
-                          CancellationManager* cancel_mgr)
+  void CompleteGroupLocal(const DeviceAttributes& device,
+                          CollGroupParams* group_params,
+                          CancellationManager* cancel_mgr, StatusCallback done)
       TF_LOCKS_EXCLUDED(group_mu_);
 
   // Finishes the group parameters once all members of the group are there.
   void FinishGroup(GroupRec* gr) TF_EXCLUSIVE_LOCKS_REQUIRED(gr->mu);
+
+  // Cancels the group if it's still pending.
+  void CancelGroup(int32 group_key) TF_LOCKS_EXCLUDED(group_mu_);
+
+  // Lookup and populate parameters from an already initialized group.
+  absl::Status LookupAndPopulateGroupParams(CollGroupParams* group_params);
 
   // Used to complete/verify CollInstance.
   struct InstanceRec;
@@ -103,7 +113,7 @@ class CollectiveParamResolverLocal : public ParamResolverInterface {
     // If an error occurs during initialization this structure stays in the
     // table with a non-OK status. Purging the table and restarting needs to be
     // done at a higher level.
-    Status status TF_GUARDED_BY(mu);
+    absl::Status status TF_GUARDED_BY(mu);
 
     // These fields are used to count the instances that have called
     // in and become known while resolving broadcast source identity and
@@ -127,52 +137,43 @@ class CollectiveParamResolverLocal : public ParamResolverInterface {
   // by CompleteGroupLocal. *cp must be populated with all the fields
   // required by InitInstanceSharedParams.  Ownership of InstanceRec stays
   // with this object and does not pass to the callback.
-  InstanceRec* GetOrCreateInstanceRec(const GroupRec* gr, CollectiveParams* cp,
-                                      bool* created)
-      TF_LOCKS_EXCLUDED(instance_mu_, gr->mu, group_mu_);
+  InstanceRec* GetOrCreateInstanceRec(CollectiveParams* cp, bool* created)
+      TF_LOCKS_EXCLUDED(instance_mu_, group_mu_);
 
   // Populate *ir with device membership from gr, then initialize to be specific
   // to cp->instance_key, i.e. order the devices and tasks.
   //
   // Preconditions:
   //  cp is populated with all DeviceLocalities
-  void InitInstanceSharedParams(const GroupRec* gr, const CollectiveParams* cp,
-                                InstanceRec* ir) TF_LOCKS_EXCLUDED(gr->mu);
+  void InitInstanceSharedParams(const CollectiveParams* cp, InstanceRec* ir);
 
   // Establishes the final order of gp->device_names and gp->task_names by
   // considering localities of all devices.
-  void CompleteDefaultRanking(const std::vector<DeviceAttributes>& attributes,
-                              CollGroupParams* gp);
+  void CompleteDefaultRanking(CollGroupParams* gp);
 
   // Finish populating *cp.
   // Precondition: *gr has been fully populated by CompleteGroupLocal.
-  void CompleteInstanceLocal(const string& device, const GroupRec* gr,
-                             CollectiveParams* cp, bool is_source,
+  void CompleteInstanceLocal(const string& device, CollectiveParams* cp,
                              const StatusCallback& done)
-      TF_LOCKS_EXCLUDED(instance_mu_, gr->mu, group_mu_);
+      TF_LOCKS_EXCLUDED(instance_mu_, group_mu_);
 
   // Finish populating *cp from fully initialized *ir.
   // Precondition: *gr and *ir are fully populated.
   void CompleteInstanceFromInitializedIRec(const string& device,
-                                           const GroupRec* gr,
                                            CollectiveParams* cp,
-                                           InstanceRec* ir, bool is_source,
+                                           InstanceRec* ir,
                                            const StatusCallback& done)
       TF_LOCKS_EXCLUDED(ir->mu);
 
   // Complete instance params after waiting for group.
   // Precondition: *cp has complete group data and default_rank.
-  void WaitForGroup(InstanceRec* ir, CollectiveParams* cp, bool is_source,
-                    const IRConsumer& f) TF_LOCKS_EXCLUDED(ir->mu);
+  void WaitForGroup(InstanceRec* ir, CollectiveParams* cp, const IRConsumer& f)
+      TF_LOCKS_EXCLUDED(ir->mu);
 
   // If cp.device_names contains only devices local to this process
   // populates *localities, else returns an error.
-  Status GetLocalDeviceLocalities(const CollectiveParams& cp,
-                                  std::vector<DeviceLocality>* localities);
-
-  // Sets CollTaskParams.is_local and CollectiveParams.default_rank.
-  // Precondition: cp->device_names is fully populated and in final order.
-  void CompleteTaskIsLocal(const string& task_name, CollectiveParams* cp);
+  absl::Status GetLocalDeviceLocalities(
+      const CollectiveParams& cp, std::vector<DeviceLocality>* localities);
 
   // Sets cp->instance_default_rank according to location of device in
   // current ordering of cp->instance.device_names.
@@ -182,22 +183,31 @@ class CollectiveParamResolverLocal : public ParamResolverInterface {
   // best implementation.
   void AssignCollectiveType(CollectiveParams* cp);
 
-  void StartAbortLocal(const Status& s)
+  void StartAbortLocal(const absl::Status& s)
       TF_LOCKS_EXCLUDED(status_mu_, group_mu_, instance_mu_);
 
   const bool nccl_;
   const DeviceMgr* dev_mgr_;
   DeviceResolverInterface* dev_resolver_;  // Not owned.
+  NcclCommunicatorInterface* nccl_communicator_;  // Not owned.
   string task_name_;
   string gpu_ring_order_;
   mutex group_mu_;
   gtl::FlatMap<int32, std::unique_ptr<GroupRec>> group_table_
       TF_GUARDED_BY(group_mu_);
+  struct TupleHash {
+    std::size_t operator()(const std::tuple<int64_t, int32_t> x) const {
+      // The hash does not need to be unique and a value of 20 is picked
+      // arbitrarily as an effort to reduce probability of conflicts.
+      return (std::get<0>(x) << 20) + std::get<1>(x);
+    }
+  };
   mutex instance_mu_;
-  gtl::FlatMap<int32, gtl::FlatMap<int32, std::unique_ptr<InstanceRec>>>
+  gtl::FlatMap<int32_t, gtl::FlatMap<std::tuple<int64_t, int32_t>,
+                                     std::unique_ptr<InstanceRec>, TupleHash>>
       instance_table_ TF_GUARDED_BY(instance_mu_);
   mutex status_mu_;
-  Status status_ TF_GUARDED_BY(status_mu_);
+  absl::Status status_ TF_GUARDED_BY(status_mu_);
 };
 
 }  // namespace tensorflow

@@ -22,7 +22,9 @@ limitations under the License.
 #include <cfloat>
 #include <vector>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/framework/kernel_shape_util.h"
 #include "tensorflow/core/framework/numeric_op.h"
@@ -33,6 +35,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_slice.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
+#include "tensorflow/core/util/determinism.h"
 #include "tensorflow/core/util/padding.h"
 
 namespace tensorflow {
@@ -64,8 +67,8 @@ void ParseAttributes(OpKernelConstruction* context, std::vector<int32>* strides,
 void ParseSizes(OpKernelContext* context, const std::vector<int32>& strides,
                 const std::vector<int32>& rates, const Padding& padding,
                 int* stride_rows, int* stride_cols, int* rate_rows,
-                int* rate_cols, int64* pad_top, int64* pad_left,
-                int64* out_rows, int64* out_cols) {
+                int* rate_cols, int64_t* pad_top, int64_t* pad_left,
+                int64_t* out_rows, int64_t* out_cols) {
   // Input tensor is of the following dimensions:
   // [ batch, input_rows, input_cols, depth ]
   const Tensor& input = context->input(0);
@@ -103,12 +106,12 @@ void ParseSizes(OpKernelContext* context, const std::vector<int32>& strides,
   const int filter_cols_eff =
       filter_cols + (filter_cols - 1) * (*rate_cols - 1);
 
-  OP_REQUIRES_OK(
-      context, GetWindowedOutputSize(input_rows, filter_rows_eff, *stride_rows,
-                                     padding, out_rows, pad_top));
-  OP_REQUIRES_OK(
-      context, GetWindowedOutputSize(input_cols, filter_cols_eff, *stride_cols,
-                                     padding, out_cols, pad_left));
+  OP_REQUIRES_OK(context, GetWindowedOutputSize(
+                              input_rows, filter_rows_eff, /*dilation_rate=*/1,
+                              *stride_rows, padding, out_rows, pad_top));
+  OP_REQUIRES_OK(context, GetWindowedOutputSize(
+                              input_cols, filter_cols_eff, /*dilation_rate=*/1,
+                              *stride_cols, padding, out_cols, pad_left));
 }
 
 template <typename Device, typename T>
@@ -125,8 +128,8 @@ class DilationOp : public OpKernel {
     // Determine relevant sizes from input and filters.
     int stride_rows = 0, stride_cols = 0;
     int rate_rows = 0, rate_cols = 0;
-    int64 pad_top = 0, pad_left = 0;
-    int64 out_rows = 0, out_cols = 0;
+    int64_t pad_top = 0, pad_left = 0;
+    int64_t out_rows = 0, out_cols = 0;
     ParseSizes(context, strides_, rates_, padding_, &stride_rows, &stride_cols,
                &rate_rows, &rate_cols, &pad_top, &pad_left, &out_rows,
                &out_cols);
@@ -136,7 +139,7 @@ class DilationOp : public OpKernel {
     // [ batch, out_rows, out_cols, depth ]
     const int batch = input.dim_size(0);
     const int depth = input.dim_size(3);
-    const std::vector<int64> out_sizes = {batch, out_rows, out_cols, depth};
+    const std::vector<int64_t> out_sizes = {batch, out_rows, out_cols, depth};
     TensorShape out_shape(out_sizes);
 
     Tensor* output = nullptr;
@@ -222,15 +225,25 @@ class DilationBackpropInputOp : public OpKernel {
     const Tensor& filter = context->input(1);
     const Tensor& out_backprop = context->input(2);
 
+    if (std::is_same<Device, GPUDevice>::value) {
+      OP_REQUIRES(context, !tensorflow::OpDeterminismRequired(),
+                  errors::Unimplemented("Determinism is not yet supported "
+                                        "for Dilation2DBackpropInput."));
+    }
     // Determine relevant sizes from input and filters.
     int stride_rows = 0, stride_cols = 0;
     int rate_rows = 0, rate_cols = 0;
-    int64 pad_top = 0, pad_left = 0;
-    int64 out_rows = 0, out_cols = 0;
+    int64_t pad_top = 0, pad_left = 0;
+    int64_t out_rows = 0, out_cols = 0;
     ParseSizes(context, strides_, rates_, padding_, &stride_rows, &stride_cols,
                &rate_rows, &rate_cols, &pad_top, &pad_left, &out_rows,
                &out_cols);
     if (!context->status().ok()) return;
+
+    OP_REQUIRES(context, out_backprop.dims() == 4,
+                absl::InvalidArgumentError(
+                    absl::StrCat("out_backprop must be 4-dimensional",
+                                 out_backprop.shape().DebugString())));
 
     // Verify that the incoming gradient tensor has the expected size
     // [ batch, out_rows, out_cols, depth ]
@@ -341,6 +354,11 @@ class DilationBackpropFilterOp : public OpKernel {
   }
 
   void Compute(OpKernelContext* context) override {
+    if (std::is_same<Device, GPUDevice>::value) {
+      OP_REQUIRES(context, !tensorflow::OpDeterminismRequired(),
+                  errors::Unimplemented("Determinism is not yet supported "
+                                        "for Dilation2DBackpropFilter."));
+    }
     const Tensor& input = context->input(0);
     const Tensor& filter = context->input(1);
     const Tensor& out_backprop = context->input(2);
@@ -348,12 +366,17 @@ class DilationBackpropFilterOp : public OpKernel {
     // Determine relevant sizes from input and filters.
     int stride_rows = 0, stride_cols = 0;
     int rate_rows = 0, rate_cols = 0;
-    int64 pad_top = 0, pad_left = 0;
-    int64 out_rows = 0, out_cols = 0;
+    int64_t pad_top = 0, pad_left = 0;
+    int64_t out_rows = 0, out_cols = 0;
     ParseSizes(context, strides_, rates_, padding_, &stride_rows, &stride_cols,
                &rate_rows, &rate_cols, &pad_top, &pad_left, &out_rows,
                &out_cols);
     if (!context->status().ok()) return;
+
+    OP_REQUIRES(context, out_backprop.dims() == 4,
+                absl::InvalidArgumentError(
+                    absl::StrCat("out_backprop must be 4-dimensional",
+                                 out_backprop.shape().DebugString())));
 
     // Verify that the incoming gradient tensor has the expected size
     // [ batch, out_rows, out_cols, depth ]

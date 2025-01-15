@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/profiler/convert/op_metrics_db_combiner.h"
 
+#include <algorithm>
+#include <utility>
+
 #include "absl/container/flat_hash_map.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/profiler/protobuf/op_metrics.pb.h"
@@ -39,6 +42,9 @@ void CopyOpMetricsMetadata(const OpMetrics& src, OpMetrics* dst) {
   if (dst->long_name().empty()) {
     dst->set_long_name(src.long_name());
   }
+  if (dst->fingerprint() == 0) {
+    dst->set_fingerprint(src.fingerprint());
+  }
   if (dst->category().empty()) {
     dst->set_category(src.category());
   }
@@ -56,7 +62,8 @@ void CopyOpMetricsMetadata(const OpMetrics& src, OpMetrics* dst) {
   }
 }
 
-void CombineOpMetrics(const OpMetrics& src, OpMetrics* dst) {
+void CombineOpMetrics(const OpMetrics& src, OpMetrics* dst,
+                      bool update_num_cores) {
   DCHECK(dst != nullptr);
   if (dst->occurrences() == 0) {
     dst->set_min_time_ps(src.min_time_ps());
@@ -68,7 +75,12 @@ void CombineOpMetrics(const OpMetrics& src, OpMetrics* dst) {
   dst->set_time_ps(src.time_ps() + dst->time_ps());
   dst->set_self_time_ps(src.self_time_ps() + dst->self_time_ps());
   dst->set_flops(src.flops() + dst->flops());
+  dst->set_model_flops(src.model_flops() + dst->model_flops());
   dst->set_bytes_accessed(src.bytes_accessed() + dst->bytes_accessed());
+  dst->set_autotuned(dst->autotuned() || src.autotuned());
+  if (update_num_cores) {
+    dst->set_num_cores(src.num_cores() + dst->num_cores());
+  }
   CombineMemoryAccessedBreakdown(src.memory_accessed_breakdown(),
                                  dst->mutable_memory_accessed_breakdown());
   dst->set_dma_stall_ps(src.dma_stall_ps() + dst->dma_stall_ps());
@@ -102,7 +114,8 @@ void CombineMemoryAccessedBreakdown(
   }
 }
 
-void OpMetricsDbCombiner::Combine(const OpMetricsDb& src) {
+void OpMetricsDbCombiner::Combine(const OpMetricsDb& src,
+                                  bool update_num_cores) {
   OpMetricsDb* dst = db();
   dst->set_total_host_infeed_enq_duration_ps(
       src.total_host_infeed_enq_duration_ps() +
@@ -112,13 +125,16 @@ void OpMetricsDbCombiner::Combine(const OpMetricsDb& src) {
       dst->total_host_infeed_enq_start_timestamp_ps_diff());
   dst->set_total_time_ps(src.total_time_ps() + dst->total_time_ps());
   dst->set_total_op_time_ps(src.total_op_time_ps() + dst->total_op_time_ps());
+  dst->set_idle_time_ps(src.idle_time_ps() + dst->idle_time_ps());
+  dst->set_busy_time_ps(src.busy_time_ps() + dst->busy_time_ps());
   CombinePrecisionStats(src.precision_stats(), dst->mutable_precision_stats());
 
   for (const auto& src_metrics : src.metrics_db()) {
     auto* dst_metrics = LookupOrInsertNewOpMetrics(src_metrics.hlo_module_id(),
-                                                   src_metrics.name());
+                                                   src_metrics.name(),
+                                                   src_metrics.fingerprint());
     CopyOpMetricsMetadata(src_metrics, dst_metrics);
-    CombineOpMetrics(src_metrics, dst_metrics);
+    CombineOpMetrics(src_metrics, dst_metrics, update_num_cores);
   }
 }
 

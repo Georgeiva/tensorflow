@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
+
 #include "tensorflow/core/common_runtime/kernel_benchmark_testlib.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -66,7 +68,7 @@ Node* MatrixTriangularSolve(Graph* g, Node* in0, Node* in1) {
 }
 
 template <typename T>
-static Graph* BandedTriangularSolve(int64 num_bands, int64 n, int64 m,
+static Graph* BandedTriangularSolve(int64_t num_bands, int64_t n, int64_t m,
                                     bool use_banded_solver, DataType type) {
   Graph* g = new Graph(OpRegistry::Global());
   Tensor in0(type, TensorShape({num_bands, n}));

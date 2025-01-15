@@ -15,6 +15,10 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_NNAPI_NNAPI_HANDLER_H_
 #define TENSORFLOW_LITE_NNAPI_NNAPI_HANDLER_H_
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/lite/nnapi/NeuralNetworksTypes.h"
 #include "tensorflow/lite/nnapi/nnapi_implementation.h"

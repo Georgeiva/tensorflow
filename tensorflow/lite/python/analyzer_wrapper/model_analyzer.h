@@ -12,17 +12,19 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef TENSORFLOW_LITE_PYTHON_MODEL_ANALYZER_WRAPPER_ANALYZER_H_
-#define TENSORFLOW_LITE_PYTHON_MODEL_ANALYZER_WRAPPER_ANALYZER_H_
+#ifndef TENSORFLOW_LITE_PYTHON_ANALYZER_WRAPPER_MODEL_ANALYZER_H_
+#define TENSORFLOW_LITE_PYTHON_ANALYZER_WRAPPER_MODEL_ANALYZER_H_
 
 #include <string>
 
 namespace tflite {
 
-// Returns a brief dump of the given TFLite file.
+// Returns a brief dump of the given TFLite file or model.
 // It examines the model file itself without instantiating TFLite interpreters.
-std::string model_analyzer(const std::string& model_file_path);
+std::string model_analyzer(const std::string& model_file_or_buffer,
+                           bool input_is_filepath,
+                           bool check_gpu_compatibility);
 
 }  // namespace tflite
 
-#endif  // TENSORFLOW_LITE_PYTHON_MODEL_ANALYZER_WRAPPER_ANALYZER_H_
+#endif  // TENSORFLOW_LITE_PYTHON_ANALYZER_WRAPPER_MODEL_ANALYZER_H_

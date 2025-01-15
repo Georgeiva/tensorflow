@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/str_util.h"
+#include "tensorflow/core/util/determinism.h"
 
 namespace tensorflow {
 
@@ -36,15 +37,15 @@ static mutex* file_mutex = new mutex();
 
 // Appends the given data to the specified file. It will create the file if it
 // doesn't already exist.
-Status AppendStringToFile(const std::string& fname, StringPiece data,
-                          Env* env) {
+absl::Status AppendStringToFile(const std::string& fname,
+                                absl::string_view data, Env* env) {
   // TODO(ckluk): If opening and closing on every log causes performance issues,
   // we can reimplement using reference counters.
   mutex_lock l(*file_mutex);
   std::unique_ptr<WritableFile> file;
   TF_RETURN_IF_ERROR(env->NewAppendableFile(fname, &file));
-  Status a = file->Append(data);
-  Status c = file->Close();
+  absl::Status a = file->Append(data);
+  absl::Status c = file->Close();
   return a.ok() ? c : a;
 }
 
@@ -109,8 +110,8 @@ class PrintOp : public OpKernel {
 
  private:
   mutex mu_;
-  int64 call_counter_ TF_GUARDED_BY(mu_) = 0;
-  int64 first_n_ = 0;
+  int64_t call_counter_ TF_GUARDED_BY(mu_) = 0;
+  int64_t first_n_ = 0;
   int32 summarize_ = 0;
   string message_;
 };
@@ -211,6 +212,9 @@ class TimestampOp : public OpKernel {
   explicit TimestampOp(OpKernelConstruction* context) : OpKernel(context) {}
 
   void Compute(OpKernelContext* context) override {
+    OP_REQUIRES(context, !OpDeterminismRequired(),
+                errors::FailedPrecondition(
+                    "Timestamp cannot be called when determinism is enabled"));
     TensorShape output_shape;  // Default shape is 0 dim, 1 element
     Tensor* output_tensor = nullptr;
     OP_REQUIRES_OK(context,

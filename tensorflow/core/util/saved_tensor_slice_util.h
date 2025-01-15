@@ -47,17 +47,21 @@ string EncodeTensorNameSlice(const string& name,
                              const tensorflow::TensorSlice& slice);
 
 // Parse out the name and the slice from string encoded as an ordered code.
-Status DecodeTensorNameSlice(const string& code, string* name,
-                             tensorflow::TensorSlice* slice);
+absl::Status DecodeTensorNameSlice(const string& code, string* name,
+                                   tensorflow::TensorSlice* slice);
 
 // Extracts the full shape, slice spec, and shape of the slice from
 // "shape_and_slice".  On non-OK return, caller must clear the out-arguments
 // before reusing.
-Status ParseShapeAndSlice(const string& shape_and_slice, TensorShape* shape,
-                          TensorSlice* slice, TensorShape* shape_slice);
+absl::Status ParseShapeAndSlice(const string& shape_and_slice,
+                                TensorShape* shape, TensorSlice* slice,
+                                TensorShape* shape_slice);
 
 template <typename T>
 struct SaveTypeTraits;
+
+template <typename T>
+int TensorProtoDataSize(const TensorProto& t);
 
 template <typename T>
 const typename SaveTypeTraits<T>::SavedType* TensorProtoData(
@@ -95,6 +99,10 @@ void Fill(T* data, size_t n, TensorProto* t);
 #define TENSOR_PROTO_EXTRACT_TYPE(TYPE, FIELD, FTYPE)             \
   TENSOR_PROTO_EXTRACT_TYPE_HELPER(TYPE, FIELD, FTYPE, FTYPE)     \
   template <>                                                     \
+  inline int TensorProtoDataSize<TYPE>(const TensorProto& t) {    \
+    return t.FIELD##_val_size();                                  \
+  }                                                               \
+  template <>                                                     \
   inline void Fill(const TYPE* data, size_t n, TensorProto* t) {  \
     typename protobuf::RepeatedField<FTYPE> copy(data, data + n); \
     t->mutable_##FIELD##_val()->Swap(&copy);                      \
@@ -103,6 +111,10 @@ void Fill(T* data, size_t n, TensorProto* t);
 // Complex needs special treatment since proto doesn't have native complex
 #define TENSOR_PROTO_EXTRACT_TYPE_COMPLEX(TYPE, FIELD, FTYPE)       \
   TENSOR_PROTO_EXTRACT_TYPE_HELPER(TYPE, FIELD, FTYPE, TYPE)        \
+  template <>                                                       \
+  inline int TensorProtoDataSize<TYPE>(const TensorProto& t) {      \
+    return t.FIELD##_val_size() / 2;                                \
+  }                                                                 \
   template <>                                                       \
   inline void Fill(const TYPE* data, size_t n, TensorProto* t) {    \
     const FTYPE* sub = reinterpret_cast<const FTYPE*>(data);        \
@@ -117,7 +129,7 @@ TENSOR_PROTO_EXTRACT_TYPE_COMPLEX(complex64, scomplex, float);
 TENSOR_PROTO_EXTRACT_TYPE_COMPLEX(complex128, dcomplex, double);
 TENSOR_PROTO_EXTRACT_TYPE(int32, int, int32);
 TENSOR_PROTO_EXTRACT_TYPE(uint32, uint32, uint32);
-TENSOR_PROTO_EXTRACT_TYPE(int64, int64, protobuf_int64);
+TENSOR_PROTO_EXTRACT_TYPE(int64_t, int64, protobuf_int64);
 TENSOR_PROTO_EXTRACT_TYPE(uint64, uint64, protobuf_uint64);
 TENSOR_PROTO_EXTRACT_TYPE(uint16, int, int32);
 TENSOR_PROTO_EXTRACT_TYPE(uint8, int, int32);
@@ -135,6 +147,11 @@ TENSOR_PROTO_EXTRACT_TYPE(quint16, int, int32);
 
 template <>
 struct SaveTypeTraits<qint32> : SaveTypeTraits<int32> {};
+
+template <>
+inline int TensorProtoDataSize<qint32>(const TensorProto& t) {
+  return t.int_val_size();
+}
 
 template <>
 inline const int32* TensorProtoData<qint32>(const TensorProto& t) {
@@ -157,6 +174,11 @@ struct SaveTypeTraits<Eigen::half> {
   typedef int SavedType;
   typedef protobuf::RepeatedField<int32> RepeatedField;
 };
+
+template <>
+inline int TensorProtoDataSize<Eigen::half>(const TensorProto& t) {
+  return t.half_val_size();
+}
 
 template <>
 inline const int* TensorProtoData<Eigen::half>(const TensorProto& t) {
@@ -186,6 +208,11 @@ struct SaveTypeTraits<tstring> {
   typedef const string* SavedType;
   typedef protobuf::RepeatedPtrField<string> RepeatedField;
 };
+
+template <>
+inline int TensorProtoDataSize<tstring>(const TensorProto& t) {
+  return t.string_val_size();
+}
 
 template <>
 inline const string* const* TensorProtoData<tstring>(const TensorProto& t) {

@@ -35,28 +35,28 @@ KernelDefBuilder& KernelDefBuilder::Device(const char* device_type) {
 }
 
 template <>
-KernelDefBuilder& KernelDefBuilder::AttrConstraint<int64>(
-    const char* attr_name, gtl::ArraySlice<int64> allowed) {
+KernelDefBuilder& KernelDefBuilder::AttrConstraint<int64_t>(
+    const char* attr_name, absl::Span<const int64_t> allowed) {
   auto* constraint = kernel_def_->add_constraint();
   constraint->set_name(attr_name);
   auto* allowed_values = constraint->mutable_allowed_values()->mutable_list();
-  for (const int64 integer : allowed) {
+  for (const int64_t integer : allowed) {
     allowed_values->add_i(integer);
   }
   return *this;
 }
 
 template <>
-KernelDefBuilder& KernelDefBuilder::AttrConstraint<int64>(const char* attr_name,
-                                                          int64 allowed) {
+KernelDefBuilder& KernelDefBuilder::AttrConstraint<int64_t>(
+    const char* attr_name, int64_t allowed) {
   return AttrConstraint(
       attr_name,
-      gtl::ArraySlice<int64>(std::initializer_list<int64>({allowed})));
+      absl::Span<const int64_t>(std::initializer_list<int64_t>({allowed})));
 }
 
 template <>
 KernelDefBuilder& KernelDefBuilder::AttrConstraint<string>(
-    const char* attr_name, gtl::ArraySlice<string> allowed) {
+    const char* attr_name, absl::Span<const string> allowed) {
   auto* constraint = kernel_def_->add_constraint();
   constraint->set_name(attr_name);
   auto* allowed_values = constraint->mutable_allowed_values()->mutable_list();
@@ -71,12 +71,12 @@ KernelDefBuilder& KernelDefBuilder::AttrConstraint<string>(
     const char* attr_name, string allowed) {
   return AttrConstraint(
       attr_name,
-      gtl::ArraySlice<string>(std::initializer_list<string>({allowed})));
+      absl::Span<const string>(std::initializer_list<string>({allowed})));
 }
 
 template <>
 KernelDefBuilder& KernelDefBuilder::AttrConstraint<const char*>(
-    const char* attr_name, gtl::ArraySlice<const char*> allowed) {
+    const char* attr_name, absl::Span<const char* const> allowed) {
   auto* constraint = kernel_def_->add_constraint();
   constraint->set_name(attr_name);
   auto* allowed_values = constraint->mutable_allowed_values()->mutable_list();
@@ -90,7 +90,7 @@ template <>
 KernelDefBuilder& KernelDefBuilder::AttrConstraint<const char*>(
     const char* attr_name, const char* allowed) {
   return AttrConstraint(attr_name,
-                        gtl::ArraySlice<const char*>(
+                        absl::Span<const char* const>(
                             std::initializer_list<const char*>({allowed})));
 }
 
@@ -105,7 +105,7 @@ KernelDefBuilder& KernelDefBuilder::AttrConstraint<bool>(const char* attr_name,
 }
 
 KernelDefBuilder& KernelDefBuilder::TypeConstraint(
-    const char* attr_name, gtl::ArraySlice<DataType> allowed) {
+    const char* attr_name, absl::Span<const DataType> allowed) {
   auto* constraint = kernel_def_->add_constraint();
   constraint->set_name(attr_name);
   auto* allowed_values = constraint->mutable_allowed_values()->mutable_list();
@@ -136,7 +136,7 @@ KernelDefBuilder& KernelDefBuilder::Label(const char* label) {
   return *this;
 }
 
-KernelDefBuilder& KernelDefBuilder::Priority(int32 priority) {
+KernelDefBuilder& KernelDefBuilder::Priority(int32_t priority) {
   kernel_def_->set_priority(priority);
   return *this;
 }

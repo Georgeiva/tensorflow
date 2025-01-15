@@ -47,7 +47,7 @@ namespace tensorflow {
 class SimplePropagatorState {
  public:
   SimplePropagatorState(const ImmutableExecutorState& immutable_state,
-                        int64 step_id, bool vlog);
+                        int64_t step_id, bool vlog);
   ~SimplePropagatorState();
 
   // A `TaggedNode` corresponds to a single invocation of a node's kernel,
@@ -60,7 +60,7 @@ class SimplePropagatorState {
     const NodeItem& get_node_item() const { return *node_item; }
 
     bool get_is_dead() const { return false; }
-    int64 get_iter_num() const { return 0; }
+    int64_t get_iter_num() const { return 0; }
   };
 
   // A drop-in replacement for std::deque<TaggedNode>.  We typically don't
@@ -93,17 +93,18 @@ class SimplePropagatorState {
       }
     }
     bool empty() const { return ready_.empty(); }
+    int size() const { return ready_.size() - front_index_; }
 
    private:
     // TODO(b/152925936): Re-evaluate these constants with current usage
     // patterns.
     static constexpr int kSpillThreshold = 16384;
-    gtl::InlinedVector<TaggedNode, 16> ready_;
+    absl::InlinedVector<TaggedNode, 16UL> ready_;
     int front_index_;
   };
 
   // TODO(b/152925936): Re-evaluate this constant with current usage patterns.
-  typedef gtl::InlinedVector<TaggedNode, 8> TaggedNodeSeq;
+  typedef absl::InlinedVector<TaggedNode, 8UL> TaggedNodeSeq;
 
   // Creates and adds a `TaggedNode` for each node in `roots` to `*ready`.
   void ActivateRoots(gtl::ArraySlice<const NodeItem*> roots,
@@ -156,12 +157,12 @@ class SimplePropagatorState {
 
  private:
   SimplePropagatorState(const ImmutableExecutorState& immutable_state_,
-                        int64 step_id,
+                        int64_t step_id,
                         const ImmutableExecutorState::FrameInfo& finfo,
                         bool vlog);
 
   const ImmutableExecutorState& immutable_state_;
-  const int64 step_id_;
+  const int64_t step_id_;
   const bool vlog_;
 
   // The i-th node's j-th input is stored at

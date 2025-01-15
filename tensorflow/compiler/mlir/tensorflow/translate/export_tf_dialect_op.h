@@ -16,6 +16,9 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSLATE_EXPORT_TF_DIALECT_OP_H_
 #define TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSLATE_EXPORT_TF_DIALECT_OP_H_
 
+#include <memory>
+
+#include "absl/status/statusor.h"
 #include "llvm/ADT/StringRef.h"
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/utils/export_utils.h"
@@ -24,13 +27,12 @@ limitations under the License.
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op_def_builder.h"
 #include "tensorflow/core/platform/status.h"
-#include "tensorflow/stream_executor/lib/statusor.h"
 
 namespace tensorflow {
 
 // Extracts the attributes of a MLIR operation and populates the converted
 // attributes in a proto map<string, AttrValue>.
-Status GetAttrValuesFromOperation(
+absl::Status GetAttrValuesFromOperation(
     mlir::Operation* inst, llvm::StringRef name,
     const tensorflow::OpRegistrationData* op_reg_data,
     bool ignore_unregistered_attrs, AttrValueMap* attributes);
@@ -43,7 +45,7 @@ Status GetAttrValuesFromOperation(
 // ShapedType for the leading values with ShapedType in the results of the
 // nodes. Set it to true if the returned NodeDef will be executed by the linked
 // TF Eager runtime.
-StatusOr<std::unique_ptr<NodeDef>> ConvertTFDialectOpToNodeDef(
+absl::StatusOr<std::unique_ptr<NodeDef>> ConvertTFDialectOpToNodeDef(
     mlir::Operation* inst, llvm::StringRef name,
     bool ignore_unregistered_attrs);
 

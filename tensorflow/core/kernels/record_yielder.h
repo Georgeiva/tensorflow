@@ -63,7 +63,7 @@ class RecordYielder {
 
     // Random seed. It determines how data files are shuffled and how
     // records are shuffled.
-    int64 seed = 0;
+    int64_t seed = 0;
 
     // Each epoch, all files are first shuffled according to the
     // random seed and the epoch number, and then all files are
@@ -90,10 +90,10 @@ class RecordYielder {
   RecordYielder& operator=(const RecordYielder&) = delete;
 
   // Yields one 'value'.
-  Status YieldOne(tstring* value);
+  absl::Status YieldOne(tstring* value);
 
   // Returns the current epoch number.
-  int64 current_epoch() const { return epoch_; }
+  int64_t current_epoch() const { return epoch_; }
 
  private:
   typedef RecordYielder ME;
@@ -104,13 +104,13 @@ class RecordYielder {
   thread::ThreadPool* thread_;
 
   // Epoch number.
-  std::atomic<int64> epoch_;
+  std::atomic<int64_t> epoch_;
 
   mutex mu_;
 
   // Turned to true when this is deleted.
   bool stop_ TF_GUARDED_BY(mu_) = false;
-  Status status_ TF_GUARDED_BY(mu_);
+  absl::Status status_ TF_GUARDED_BY(mu_);
 
   // PRG used for randomization.
   std::mt19937_64 rnd_ TF_GUARDED_BY(mu_);
@@ -121,8 +121,8 @@ class RecordYielder {
   // True iff we are draining an epoch.
   bool epoch_end_ = false;
 
-  int64 num_records_added_in_epoch_ = 0;
-  int64 num_records_yielded_in_epoch_ = 0;
+  int64_t num_records_added_in_epoch_ = 0;
+  int64_t num_records_yielded_in_epoch_ = 0;
 
   // Trigger when the main loop has exited.
   Notification main_loop_done_;
@@ -151,7 +151,7 @@ class RecordYielder {
   void MainLoop();
   struct Shard;
   void ShardLoop(Shard* shard);
-  bool ShouldFinish(const Status& s);
+  bool ShouldFinish(const absl::Status& s);
   bool Add(std::vector<string>* values);
 };
 

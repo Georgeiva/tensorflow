@@ -34,7 +34,7 @@ namespace tensorflow {
 namespace {
 
 class ConstantTest : public ::testing::TestWithParam<
-                         std::tuple<DataType, std::vector<int64>, bool>> {
+                         std::tuple<DataType, std::vector<int64_t>, bool>> {
  public:
   ConstantTest()
       : device_mgr_(testing::CreateTestingDeviceMgr()),
@@ -76,7 +76,7 @@ TEST_P(ConstantTest, CreateConstantSuccessful) {
   // The revived tensorhandle should have the exact same dtype, shape, +
   // approx equivalent data to the original.
   ImmediateExecutionTensorHandle* handle = revived->handle();
-  Status status;
+  absl::Status status;
   AbstractTensorPtr revived_tensor(handle->Resolve(&status));
   TF_EXPECT_OK(status) << "Failed to convert tensorhandle to tensor";
   EXPECT_EQ(revived_tensor->Type(), expected.dtype());

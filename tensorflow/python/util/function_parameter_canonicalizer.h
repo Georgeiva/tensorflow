@@ -18,10 +18,11 @@ limitations under the License.
 
 #include <Python.h>
 
+#include <cstddef>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/types/span.h"
-#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/python/lib/core/safe_pyobject_ptr.h"
 
 namespace tensorflow {

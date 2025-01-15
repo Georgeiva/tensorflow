@@ -18,6 +18,9 @@ limitations under the License.
 #include "tensorflow/c/experimental/ops/gen/cpp/views/arg_type_view.h"
 #include "tensorflow/c/experimental/ops/gen/cpp/views/arg_view.h"
 #include "tensorflow/c/experimental/ops/gen/cpp/views/attr_view.h"
+#include "tensorflow/c/experimental/ops/gen/model/arg_spec.h"
+#include "tensorflow/c/experimental/ops/gen/model/attr_spec.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace generator {
@@ -33,6 +36,8 @@ string OpArgumentView::Initializer() const {
   }
   return absl::Substitute(" = $0", default_value_);
 }
+
+bool OpArgumentView::HasDefaultValue() const { return !default_value_.empty(); }
 
 OpArgumentView::OpArgumentView(string type, string var, string def)
     : type_name_(type), variable_name_(var), default_value_(def) {}

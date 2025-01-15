@@ -6,8 +6,10 @@ def aar_with_jni(
         name,
         android_library,
         headers = None,
-        flatten_headers = False):
-    """Generates an Android AAR given an Android library target.
+        flatten_headers = False,
+        strip_headers_prefix = "",
+        third_party_notice = None):
+    """Generates an Android AAR with repo root license given an Android library target.
 
     Args:
       name: Name of the generated .aar file.
@@ -18,6 +20,8 @@ def aar_with_jni(
           generated .aar file. This is useful for distributing self-contained
           .aars with native libs that can be used directly by native clients.
       flatten_headers: Whether to flatten the output paths of included headers.
+      strip_headers_prefix: The prefix to strip from the output paths of included headers.
+      third_party_notice: Optional. The third party dependency licenses as THIRD_PARTY_NOTICE.txt.
     """
 
     # Generate dummy AndroidManifest.xml for dummy apk usage
@@ -30,7 +34,7 @@ cat > $(OUTS) <<EOF
 <manifest
   xmlns:android="http://schemas.android.com/apk/res/android"
   package="dummy.package.for.so">
-  <uses-sdk android:minSdkVersion="999"/>
+  <uses-sdk android:minSdkVersion="34"/>
 </manifest>
 EOF
 """,
@@ -83,15 +87,63 @@ zip $$origdir/$(location :{1}.aar) LICENSE
                 """.format(src)
             else:
                 cmd += """
-                    mkdir -p headers/$$(dirname $(location {0}))
-                    cp -RL $$origdir/$(location {0}) headers/$(location {0})
-                """.format(src)
+                    default_dir=$$(dirname $(rootpath {0}))
+                    modified_dir=$$(echo $$default_dir | sed -e 's/^{1}//g')
+                    mkdir -p headers/$$modified_dir
+                    cp -RL $$origdir/$(location {0}) headers/$$modified_dir
+                    if [ -n "{1}" ]; then
+                      sed -i -e 's/^#include \"{1}/#include \"/g' headers/$$modified_dir/$$(basename $(location {0}))
+                    fi
+                """.format(src, strip_headers_prefix.replace("/", "\\/"))
         cmd += "zip -r $$origdir/$(location :{0}.aar) headers".format(name)
+
+    if third_party_notice:
+        srcs.append(third_party_notice)
+        cmd += """
+            cp $$origdir/$(location {0}) ./THIRD_PARTY_NOTICE.txt
+            zip $$origdir/$(location :{1}.aar) THIRD_PARTY_NOTICE.txt
+        """.format(third_party_notice, name)
 
     native.genrule(
         name = name,
         srcs = srcs,
         outs = [name + ".aar"],
+        # In some platforms we don't have an Android SDK/NDK and this target
+        # can't be built. We need to prevent the build system from trying to
+        # use the target in that case.
         tags = ["manual"],
+        cmd = cmd,
+    )
+
+def aar_without_jni(
+        name,
+        android_library):
+    """Generates an Android AAR with repo root license given a pure Java Android library target.
+
+    Args:
+      name: Name of the generated .aar file.
+      android_library: The `android_library` target to package. Note that the
+          AAR will contain *only that library's .jar` sources. It does not
+          package the transitive closure of all Java source dependencies.
+    """
+
+    srcs = [
+        android_library + ".aar",
+        "//:LICENSE",
+    ]
+
+    cmd = """
+cp $(location {0}.aar) $(location :{1}.aar)
+chmod +w $(location :{1}.aar)
+origdir=$$PWD
+cd $$(mktemp -d)
+cp $$origdir/$(location //:LICENSE) ./
+zip $$origdir/$(location :{1}.aar) LICENSE
+""".format(android_library, name)
+
+    native.genrule(
+        name = name,
+        srcs = srcs,
+        outs = [name + ".aar"],
         cmd = cmd,
     )

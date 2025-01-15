@@ -151,8 +151,8 @@ TEST_F(ArrayGradTest, MatrixDiagGrad) {
 TEST_F(ArrayGradTest, MatrixBandPartGrad) {
   TensorShape shape({5, 5});
   auto x = Placeholder(scope_, DT_FLOAT, Placeholder::Shape(shape));
-  const int64 num_lower = 1;
-  const int64 num_upper = 2;
+  const int64_t num_lower = 1;
+  const int64_t num_upper = 2;
   auto y = MatrixBandPart(scope_, x, num_lower, num_upper);
   RunTest(x, shape, y, shape);
 }
@@ -170,6 +170,14 @@ TEST_F(ArrayGradTest, GatherNdGrad_SliceIndexing) {
   TensorShape shape({2, 2});
   auto x = Placeholder(scope_, DT_FLOAT, Placeholder::Shape(shape));
   auto indices = Const(scope_, {{1}, {0}});
+  auto y = GatherNd(scope_, x, indices);
+  RunTest(x, shape, y, shape);
+}
+
+TEST_F(ArrayGradTest, GatherNdGrad_SliceIndexing_Int64) {
+  TensorShape shape({2, 2});
+  auto x = Placeholder(scope_, DT_FLOAT, Placeholder::Shape(shape));
+  auto indices = Cast(scope_, Const(scope_, {{1}, {0}}), DT_INT64);
   auto y = GatherNd(scope_, x, indices);
   RunTest(x, shape, y, shape);
 }

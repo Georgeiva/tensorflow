@@ -26,6 +26,7 @@ limitations under the License.
 
 #include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/platform/jpeg.h"
+#include "tensorflow/core/platform/tstring.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -89,7 +90,7 @@ struct UncompressFlags {
 uint8* Uncompress(const void* srcdata, int datasize,
                   const UncompressFlags& flags, int* width, int* height,
                   int* components,  // Output only: useful with autodetect
-                  int64* nwarn);
+                  int64_t* nwarn);
 
 // Version of Uncompress that allocates memory via a callback.  The callback
 // arguments are (width, height, components).  If the size is known ahead of
@@ -97,7 +98,7 @@ uint8* Uncompress(const void* srcdata, int datasize,
 // the buffer to be shaped based on the JPEG header.  The caller is responsible
 // for freeing the memory *even along error paths*.
 uint8* Uncompress(const void* srcdata, int datasize,
-                  const UncompressFlags& flags, int64* nwarn,
+                  const UncompressFlags& flags, int64_t* nwarn,
                   std::function<uint8*(int, int, int)> allocate_output);
 
 // Read jpeg header and get image information.  Returns true on success.
@@ -136,7 +137,7 @@ struct CompressFlags {
   int y_density = 300;
 
   // If not empty, embed this XMP metadata in the image header
-  StringPiece xmp_metadata;
+  absl::string_view xmp_metadata;
 
   // The distance in bytes from one scanline to the other.  Should be at least
   // equal to width*components*sizeof(JSAMPLE).  If 0 is passed, the stride

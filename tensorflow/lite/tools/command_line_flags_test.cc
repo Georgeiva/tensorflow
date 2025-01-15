@@ -15,7 +15,8 @@ limitations under the License.
 
 #include "tensorflow/lite/tools/command_line_flags.h"
 
-#include <gmock/gmock.h>
+#include <string>
+
 #include <gtest/gtest.h>
 #include "tensorflow/lite/tools/tool_params.h"
 

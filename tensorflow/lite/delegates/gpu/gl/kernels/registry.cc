@@ -42,6 +42,7 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/gl/kernels/prelu.h"
 #include "tensorflow/lite/delegates/gpu/gl/kernels/quantize_and_dequantize.h"
 #include "tensorflow/lite/delegates/gpu/gl/kernels/relu.h"
+#include "tensorflow/lite/delegates/gpu/gl/kernels/resampler.h"
 #include "tensorflow/lite/delegates/gpu/gl/kernels/reshape.h"
 #include "tensorflow/lite/delegates/gpu/gl/kernels/resize.h"
 #include "tensorflow/lite/delegates/gpu/gl/kernels/slice.h"
@@ -93,6 +94,7 @@ class Registry : public NodeShader {
     insert_op(Type::QUANTIZE_AND_DEQUANTIZE,
               NewQuantizeAndDequantizeNodeShader);
     insert_op(Type::RELU, NewReLUNodeShader);
+    insert_op(Type::RESAMPLER, NewResamplerNodeShader);
     insert_op(Type::RESIZE, NewResizeNodeShader);
     insert_op(Type::RESHAPE, NewReshapeNodeShader);
     insert_op(Type::SLICE, NewSliceNodeShader);
@@ -109,6 +111,7 @@ class Registry : public NodeShader {
     insert_elementwise_op(Type::FLOOR);
     insert_elementwise_op(Type::FLOOR_DIV);
     insert_elementwise_op(Type::FLOOR_MOD);
+    insert_elementwise_op(Type::GELU);
     insert_elementwise_op(Type::HARD_SWISH);
     insert_elementwise_op(Type::LOG);
     insert_elementwise_op(Type::NEG);
@@ -158,7 +161,7 @@ class Registry : public NodeShader {
 }  // namespace
 
 std::unique_ptr<NodeShader> NewNodeShaderRegistry() {
-  return absl::make_unique<Registry>();
+  return std::make_unique<Registry>();
 }
 
 }  // namespace gl

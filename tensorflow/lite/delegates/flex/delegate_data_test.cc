@@ -15,6 +15,7 @@ limitations under the License.
 #include "tensorflow/lite/delegates/flex/delegate_data.h"
 
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -26,8 +27,8 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/status.h"
-#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/core/api/error_reporter.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/core/subgraph.h"
 #include "tensorflow/lite/kernels/subgraph_test_util.h"
 #include "tensorflow/lite/testing/util.h"
@@ -70,20 +71,22 @@ TEST(DelegateDataTest, CheckFunctionDef) {
          std::set<std::string>* result) {
         result->insert("add_subgraph");
         result->insert("mul_subgraph");
-        return tensorflow::Status::OK();
+        return absl::OkStatus();
       };
 
   // Builds a TF Lite primary graph with two subgraphs.
   subgraph_test_util::SubgraphBuilder builder;
   std::unique_ptr<ErrorReporter> error_reporter =
-      absl::make_unique<TestErrorReporter>();
-  auto add_subgraph = absl::make_unique<Subgraph>(
+      std::make_unique<TestErrorReporter>();
+  auto add_subgraph = std::make_unique<Subgraph>(
       error_reporter.get(), /*external_contexts=*/nullptr,
-      /*subgraphs=*/nullptr, /*resources=*/nullptr, /*resource_ids=*/nullptr);
+      /*subgraphs=*/nullptr, /*resources=*/nullptr, /*resource_ids=*/nullptr,
+      /*initialization_status_map=*/nullptr);
   add_subgraph->SetName("add_subgraph");
-  auto mul_subgraph = absl::make_unique<Subgraph>(
+  auto mul_subgraph = std::make_unique<Subgraph>(
       error_reporter.get(), /*external_contexts=*/nullptr,
-      /*subgraphs=*/nullptr, /*resources=*/nullptr, /*resource_ids=*/nullptr);
+      /*subgraphs=*/nullptr, /*resources=*/nullptr, /*resource_ids=*/nullptr,
+      /*initialization_status_map=*/nullptr);
   mul_subgraph->SetName("mul_subgraph");
   builder.BuildAddSubgraph(add_subgraph.get());
   builder.BuildMulSubgraph(mul_subgraph.get());
@@ -91,11 +94,13 @@ TEST(DelegateDataTest, CheckFunctionDef) {
   subgraphs.push_back(std::move(add_subgraph));
   subgraphs.push_back(std::move(mul_subgraph));
   Subgraph main_subgraph(error_reporter.get(), nullptr, &subgraphs,
-                         /*resources=*/nullptr, /*resource_ids=*/nullptr);
+                         /*resources=*/nullptr, /*resource_ids=*/nullptr,
+                         /*initialization_status_map=*/nullptr);
   main_subgraph.SetName("main");
   TF_ASSERT_OK(RegisterFunctionDefForSubgraphs(
       main_subgraph, select_subgraphs_to_register,
-      eager_context->HostCPU()->resource_manager(), eager_context));
+      eager_context->HostCPU()->resource_manager(), eager_context,
+      /*flex_delegate=*/nullptr));
 
   const string add_fdef_txt = R"pb(
     signature {
@@ -211,20 +216,22 @@ TEST(DelegateDataTest, CheckFunctionDefWithOnlyMainGraph) {
          std::set<std::string>* result) {
         result->insert("add_subgraph");
         result->insert("mul_subgraph");
-        return tensorflow::Status::OK();
+        return absl::OkStatus();
       };
 
   // Builds a TF Lite primary graph with two subgraphs.
   subgraph_test_util::SubgraphBuilder builder;
   std::unique_ptr<ErrorReporter> error_reporter =
-      absl::make_unique<TestErrorReporter>();
+      std::make_unique<TestErrorReporter>();
   Subgraph main_subgraph(error_reporter.get(), /*external_contexts=*/nullptr,
                          /*subgraphs=*/nullptr, /*resources=*/nullptr,
-                         /*resource_ids*/ nullptr);
+                         /*resource_ids=*/nullptr,
+                         /*initialization_status_map=*/nullptr);
   main_subgraph.SetName("main");
   TF_ASSERT_OK(RegisterFunctionDefForSubgraphs(
       main_subgraph, select_subgraphs_to_register,
-      eager_context->HostCPU()->resource_manager(), eager_context));
+      eager_context->HostCPU()->resource_manager(), eager_context,
+      /*flex_delegate=*/nullptr));
 
   EXPECT_EQ(eager_context->GetFunctionDef("main"), nullptr);
 

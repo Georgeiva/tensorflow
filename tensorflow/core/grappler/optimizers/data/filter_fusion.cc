@@ -52,16 +52,18 @@ NodeDef MakeFusedFilterNode(const NodeDef& first_filter_node,
 
   for (auto key : {"output_shapes", "output_types"})
     graph_utils::CopyAttribute(key, second_filter_node, &fused_node);
+  graph_utils::MaybeSetFusedMetadata(first_filter_node, second_filter_node,
+                                     &fused_node);
 
   return fused_node;
 }
 
 }  // namespace
 
-Status FilterFusion::OptimizeAndCollectStats(Cluster* cluster,
-                                             const GrapplerItem& item,
-                                             GraphDef* output,
-                                             OptimizationStats* stats) {
+absl::Status FilterFusion::OptimizeAndCollectStats(Cluster* cluster,
+                                                   const GrapplerItem& item,
+                                                   GraphDef* output,
+                                                   OptimizationStats* stats) {
   GraphDef sorted_old_graph = item.graph;
   TF_RETURN_IF_ERROR(TopologicalSort(&sorted_old_graph));
   *output = sorted_old_graph;
@@ -123,7 +125,7 @@ Status FilterFusion::OptimizeAndCollectStats(Cluster* cluster,
   }
 
   TF_RETURN_IF_ERROR(graph.DeleteNodes(nodes_to_delete));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 REGISTER_GRAPH_OPTIMIZER_AS(FilterFusion, "filter_fusion");

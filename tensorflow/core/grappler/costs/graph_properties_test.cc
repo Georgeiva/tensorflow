@@ -105,7 +105,7 @@ class GraphPropertiesTest : public ::testing::Test {
       strings::StrAppend(&s, "[");
       for (int i = 0; i < p.shape().dim_size(); ++i) {
         strings::StrAppend(&s, i == 0 ? "" : ",",
-                           std::max<int64>(p.shape().dim(i).size(), -1));
+                           std::max<int64_t>(p.shape().dim(i).size(), -1));
       }
       strings::StrAppend(&s, "]");
     }
@@ -114,7 +114,7 @@ class GraphPropertiesTest : public ::testing::Test {
 
   // Compare values of integer (DT_INT32 or DT_INT64) tensor against expected
   // ones.
-  void ExpectTensorValues(const std::vector<int64>& expected,
+  void ExpectTensorValues(const std::vector<int64_t>& expected,
                           const TensorProto& tensor_proto_to_compare) {
     Tensor tensor;
     ASSERT_TRUE(tensor.FromProto(tensor_proto_to_compare));
@@ -128,7 +128,7 @@ class GraphPropertiesTest : public ::testing::Test {
       }
     } else {
       for (int i = 0; i < tensor.NumElements(); i++) {
-        EXPECT_EQ(expected[i], tensor.flat<int64>()(i));
+        EXPECT_EQ(expected[i], tensor.flat<int64_t>()(i));
       }
     }
   }
@@ -157,7 +157,7 @@ TEST_F(GraphPropertiesTest, StaticProperties) {
   CHECK(fake_input.NextItem(&item));
 
   GraphProperties properties(item);
-  Status s = properties.InferStatically(true);
+  absl::Status s = properties.InferStatically(true);
   TF_ASSERT_OK(s);
 
   for (const auto& node : item.graph.node()) {
@@ -198,7 +198,7 @@ TEST_F(GraphPropertiesTest, ClearProperties) {
   CHECK(fake_input.NextItem(&item));
 
   GraphProperties properties(item);
-  Status s = properties.InferStatically(true);
+  absl::Status s = properties.InferStatically(true);
   TF_ASSERT_OK(s);
 
   for (const auto& node : item.graph.node()) {
@@ -218,6 +218,21 @@ TEST_F(GraphPropertiesTest, ClearProperties) {
   }
 }
 
+TEST_F(GraphPropertiesTest, Clear) {
+  TrivialTestGraphInputYielder fake_input(4, 1, 10, false,
+                                          cluster_->GetDeviceNames());
+  GrapplerItem item;
+  CHECK(fake_input.NextItem(&item));
+
+  GraphProperties properties(item);
+  absl::Status s = properties.InferStatically(true);
+  TF_ASSERT_OK(s);
+
+  EXPECT_TRUE(properties.has_properties());
+  properties.Clear();
+  EXPECT_FALSE(properties.has_properties());
+}
+
 TEST_F(GraphPropertiesTest, DynamicProperties) {
   TrivialTestGraphInputYielder fake_input(4, 1, 10, false,
                                           cluster_->GetDeviceNames());
@@ -226,7 +241,7 @@ TEST_F(GraphPropertiesTest, DynamicProperties) {
 
   GraphProperties properties(item);
   TF_ASSERT_OK(cluster_->Initialize(item));
-  Status s = properties.InferDynamically(cluster_.get());
+  absl::Status s = properties.InferDynamically(cluster_.get());
   TF_ASSERT_OK(s);
 
   for (const auto& node : item.graph.node()) {
@@ -253,17 +268,7 @@ TEST_F(GraphPropertiesTest, DynamicProperties) {
         EXPECT_EQ(10, prop.shape().dim(0).size());
         EXPECT_EQ(1, prop.shape().dim(1).size());
         const auto out_props = properties.GetOutputProperties(node.name());
-#ifdef INTEL_MKL
-        if (!NativeFormatEnabled()) {
-          // Intel MKL AddN OP would have two output.
-          // One is the real output, another one for MKL metadata
-          EXPECT_EQ(2, out_props.size());
-        } else {
-          EXPECT_EQ(1, out_props.size());
-        }
-#else
         EXPECT_EQ(1, out_props.size());
-#endif  // INTEL_MKL
         string prop_str;
         ::tensorflow::protobuf::TextFormat::PrintToString(prop, &prop_str);
         string out_prop_str;
@@ -285,7 +290,7 @@ REGISTER_OP("DetectInputValueInShapeInferenceOp")
       if (c->input_tensor(0)) {
         // 10x10 if input_tensor is given to the inference context.
         c->set_output(0, c->Matrix(10, 10));
-        return Status::OK();
+        return absl::OkStatus();
       }
       // unknown rank if input_tensor is not provided.
       return shape_inference::UnknownShape(c);
@@ -295,7 +300,7 @@ REGISTER_OP("DetectInputValueInShapeInferenceOp")
 class ConstTensorSkipTestCase {
  public:
   ConstTensorSkipTestCase(const DataType data_type,
-                          const std::vector<int64> shape, const double value,
+                          const std::vector<int64_t> shape, const double value,
                           const bool expected)
       : data_type_(data_type),
         shape_(shape),
@@ -307,17 +312,18 @@ class ConstTensorSkipTestCase {
               << "data_type: " << data_type_ << ", shape: {"
               << absl::StrJoin(shape_, ",") << "}, value: " << value_
               << ", expected: " << expected_;
-    // Build a graph wiht Const --> Identity --> Detect.
+    // Build a graph with Const --> Identity --> Detect.
     GrapplerItem item;
-    const gtl::ArraySlice<int64> shape_array_slice(shape_);
+    const absl::Span<const int64_t> shape_array_slice(shape_);
     Tensor const_tensor_value(data_type_, TensorShape(shape_array_slice));
-    // Fille the const tensor value based on data type.
+    // Fill the const tensor value based on data type.
     switch (data_type_) {
       case DT_INT32:
         test::FillIota<int32>(&const_tensor_value, static_cast<int32>(value_));
         break;
       case DT_INT64:
-        test::FillIota<int64>(&const_tensor_value, static_cast<int64>(value_));
+        test::FillIota<int64_t>(&const_tensor_value,
+                                static_cast<int64_t>(value_));
         break;
       case DT_FLOAT:
         test::FillIota<float>(&const_tensor_value, static_cast<float>(value_));
@@ -398,7 +404,7 @@ class ConstTensorSkipTestCase {
 
  private:
   DataType data_type_;
-  std::vector<int64> shape_;
+  std::vector<int64_t> shape_;
   double value_;
   bool expected_;
 };
@@ -1134,7 +1140,7 @@ TEST_F(GraphPropertiesTest, TensorAsShapesPropagation) {
   ExpectTensorValues({99}, properties.GetOutputProperties("b")[0].value());
   ExpectTensorValues({99}, properties.GetInputProperties("b1")[0].value());
   ExpectTensorValues({99}, properties.GetOutputProperties("b1")[0].value());
-  std::vector<int64> c_values;
+  std::vector<int64_t> c_values;
   for (int i = 0; i < 4 * 4 * 4; i++) {
     c_values.push_back(1);
   }
@@ -1355,7 +1361,7 @@ TEST_F(GraphPropertiesTest, PackWithConstMinus1AndReshapes) {
   }
   // if input of Select can be either vector or the same shape to the
   // input/output; in this case, even if we know input and output are
-  // [4, ?], we can't say it's [4, ?] or a vector; hence, it shoudl be
+  // [4, ?], we can't say it's [4, ?] or a vector; hence, it should be
   // unknown.
   {
     const auto out_props = properties.GetOutputProperties("s1");
@@ -2060,7 +2066,7 @@ TEST_F(GraphPropertiesTest, FedNodes) {
   {
     // Conservative shape analysis: the shape of fed ports should be unknown
     GraphProperties properties(item);
-    Status s = properties.InferStatically(false);
+    absl::Status s = properties.InferStatically(false);
     TF_ASSERT_OK(s);
     for (const auto& node : item.graph.node()) {
       if (node.op() == "Const") {
@@ -2091,7 +2097,7 @@ TEST_F(GraphPropertiesTest, FedNodes) {
     // Optimistic shape analysis: the shape of fed ports should be derived from
     // the shape of the fanin.
     GraphProperties properties(item);
-    Status s = properties.InferStatically(true);
+    absl::Status s = properties.InferStatically(true);
     TF_ASSERT_OK(s);
     for (const auto& node : item.graph.node()) {
       if (node.op() == "Square" || node.op() == "AddN") {

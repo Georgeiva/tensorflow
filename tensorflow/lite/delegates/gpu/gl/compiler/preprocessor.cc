@@ -15,7 +15,11 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/compiler/preprocessor.h"
 
+#include <string>
+#include <utility>
+
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 
 namespace tflite {

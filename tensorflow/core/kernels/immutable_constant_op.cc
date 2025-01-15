@@ -26,13 +26,13 @@ class MemmappedTensorAllocator : public Allocator {
  public:
   MemmappedTensorAllocator() {}
 
-  Status InitializeFromRegion(const string& name, Env* env) {
+  absl::Status InitializeFromRegion(const string& name, Env* env) {
     const auto status =
         env->NewReadOnlyMemoryRegionFromFile(name, &memory_region_);
     if (!status.ok()) {
       return status;
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
   string Name() override { return "MemmappedTensorAllocator"; }
 
@@ -60,7 +60,7 @@ class MemmappedTensorAllocator : public Allocator {
       delete this;
     }
   }
-  const Status& allocation_status() const { return allocation_status_; }
+  const absl::Status& allocation_status() const { return allocation_status_; }
 
   void set_delete_on_deallocate() { delete_on_deallocate_ = true; }
 
@@ -73,13 +73,14 @@ class MemmappedTensorAllocator : public Allocator {
  private:
   std::unique_ptr<ReadOnlyMemoryRegion> memory_region_;
   // If there is an error during allocation we keep it in this status.
-  Status allocation_status_;
+  absl::Status allocation_status_;
 
   // When the allocator is owned by TensorBuffer it will be deleted on
   // de-allocation.
   bool delete_on_deallocate_ = false;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(MemmappedTensorAllocator);
+  MemmappedTensorAllocator(const MemmappedTensorAllocator&) = delete;
+  void operator=(const MemmappedTensorAllocator&) = delete;
 };
 }  // namespace
 
@@ -100,6 +101,9 @@ void ImmutableConstantOp::Compute(OpKernelContext* ctx) {
 
   OP_REQUIRES_OK(ctx,
                  allocator->InitializeFromRegion(region_name_, ctx->env()));
+  OP_REQUIRES(ctx, dtype_ != DT_STRING,
+              errors::Unimplemented("Sorry, DT_STRING is not currently "
+                                    "supported for ImmutableConstOp."));
   ctx->set_output(0, Tensor(allocator.get(), dtype_, shape_));
   OP_REQUIRES_OK(ctx, allocator->allocation_status());
   // Allocator is owned by the tensor from this point.
