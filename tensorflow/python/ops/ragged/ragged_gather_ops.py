@@ -14,10 +14,6 @@
 # ==============================================================================
 """Gather operations for RaggedTensors."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
@@ -28,13 +24,15 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops.ragged import ragged_array_ops
 from tensorflow.python.ops.ragged import ragged_math_ops
 from tensorflow.python.ops.ragged import ragged_tensor
+from tensorflow.python.util import dispatch
 
 
-#===============================================================================
+# ===============================================================================
 # ragged_gather
-#===============================================================================
-def gather(params,
-           indices,
+# ===============================================================================
+@dispatch.dispatch_for_api(array_ops.gather_v2)
+def gather(params: ragged_tensor.RaggedOrDense,
+           indices: ragged_tensor.RaggedOrDense,
            validate_indices=None,
            axis=None,
            batch_dims=0,
@@ -324,10 +322,27 @@ def _increase_rank_to(t, rank):
     return array_ops.reshape(t, new_shape)
 
 
-#===============================================================================
+@dispatch.dispatch_for_api(array_ops.gather)
+def _ragged_gather_v1(params: ragged_tensor.RaggedOrDense,
+                      indices: ragged_tensor.RaggedOrDense,
+                      validate_indices=None,
+                      name=None,
+                      axis=0,
+                      batch_dims=0):
+  return gather(params, indices, validate_indices, axis, batch_dims, name)
+
+
+# ===============================================================================
 # ragged.gather_nd
-#===============================================================================
-def gather_nd(params, indices, batch_dims=0, name=None):
+# ===============================================================================
+@dispatch.dispatch_for_api(array_ops.gather_nd_v2)
+def gather_nd(
+    params: ragged_tensor.RaggedOrDense,
+    indices: ragged_tensor.RaggedOrDense,
+    batch_dims=0,
+    name=None,
+    bad_indices_policy='',
+):
   """Gather slices from `params` using `n`-dimensional indices.
 
   This operation is similar to `gather`, but it uses the innermost dimension
@@ -346,6 +361,9 @@ def gather_nd(params, indices, batch_dims=0, name=None):
     indices: A potentially ragged tensor with shape `[B1...BM]`.
     batch_dims: Must be zero.
     name: A name for the operation (optional).
+    bad_indices_policy: A string. If `""` or `"DEFAULT"`, the default behavior
+      is used (error on CPU and ignore on GPU). If `"IGNORE"`, the bad indices
+      are ignored and 0 is stored in the
 
   Returns:
     A potentially ragged tensor with shape `[A1...AN, B_{I+1}...BM]`.
@@ -372,7 +390,14 @@ def gather_nd(params, indices, batch_dims=0, name=None):
   if not isinstance(batch_dims, int) or batch_dims != 0:
     raise ValueError('batch_dims != 0 is not supported for ragged gather yet.')
   if not (ragged_tensor.is_ragged(params) or ragged_tensor.is_ragged(indices)):
-    return array_ops.gather_nd(params, indices, name)
+    return array_ops.gather_nd(
+        params, indices, name=name, bad_indices_policy=bad_indices_policy
+    )
+
+  if bad_indices_policy not in ('', 'DEFAULT'):
+    raise ValueError(
+        'non-default bad_indices_policy not supported for ragged gather'
+    )
 
   with ops.name_scope(name, 'RaggedGatherNd', [params, indices]):
 
@@ -466,9 +491,22 @@ def gather_nd(params, indices, batch_dims=0, name=None):
       return gather(flattened_params, flattened_index_tuples)
 
 
-#===============================================================================
+@dispatch.dispatch_for_api(array_ops.gather_nd)
+def _ragged_gather_nd_v1(
+    params: ragged_tensor.RaggedOrDense,
+    indices: ragged_tensor.RaggedOrDense,
+    name=None,
+    batch_dims=0,
+    bad_indices_policy='',
+):
+  return gather_nd(
+      params, indices, batch_dims, name, bad_indices_policy=bad_indices_policy
+  )
+
+
+# ===============================================================================
 # Gradient for the RaggedGather kernel
-#===============================================================================
+# ===============================================================================
 @ops.RegisterGradient('RaggedGather')
 def _ragged_gather_grad(op, *grads):
   """Gradient for RaggedGather op."""

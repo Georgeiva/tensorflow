@@ -14,10 +14,13 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/kernels/parse_example/example_proto_fast_parsing.h"
 
+#include <algorithm>
+#include <utility>
+
 namespace tensorflow {
 namespace example {
 
-string ExampleName(const gtl::ArraySlice<tstring> example_names, int n) {
+string ExampleName(const absl::Span<const tstring> example_names, int n) {
   return example_names.empty() ? "<unknown>" : example_names[n];
 }
 
@@ -41,7 +44,7 @@ void CopySparseBufferToTensor(DataType dtype, size_t offset, SparseBuffer* src,
   switch (dtype) {
     case DT_INT64: {
       std::copy(src->int64_list.begin(), src->int64_list.end(),
-                dst->flat<int64>().data() + offset);
+                dst->flat<int64_t>().data() + offset);
       break;
     }
     case DT_FLOAT: {
@@ -67,13 +70,14 @@ uint8 PeekTag(protobuf::io::CodedInputStream* stream) {
   return *static_cast<const uint8*>(ptr);
 }
 
-bool ParseString(protobuf::io::CodedInputStream* stream, StringPiece* result) {
+bool ParseString(protobuf::io::CodedInputStream* stream,
+                 absl::string_view* result) {
   DCHECK(stream != nullptr);
   DCHECK(result != nullptr);
   uint32 length;
   if (!stream->ReadVarint32(&length)) return false;
   if (length == 0) {
-    *result = StringPiece(nullptr, 0);
+    *result = absl::string_view(nullptr, 0);
     return true;
   }
   const void* stream_alias;
@@ -82,7 +86,7 @@ bool ParseString(protobuf::io::CodedInputStream* stream, StringPiece* result) {
     return false;
   }
   if (static_cast<uint32>(stream_size) < length) return false;
-  *result = StringPiece(static_cast<const char*>(stream_alias), length);
+  *result = absl::string_view(static_cast<const char*>(stream_alias), length);
   stream->Skip(length);
   return true;
 }
@@ -97,7 +101,7 @@ bool ParseFeatureMapEntry(protobuf::io::CodedInputStream* stream,
   if (!stream->ExpectTag(kDelimitedTag(1))) return false;
   if (!ParseString(stream, &feature_map_entry->first)) return false;
   if (!stream->ExpectTag(kDelimitedTag(2))) return false;
-  StringPiece feature_string_piece;
+  absl::string_view feature_string_piece;
   if (!ParseString(stream, &feature_string_piece)) return false;
   feature_map_entry->second = parsed::Feature(feature_string_piece);
   if (!stream->ExpectAtEnd()) return false;
@@ -139,7 +143,7 @@ bool ParseExample(protobuf::io::CodedInputStream* stream,
   return true;
 }
 
-bool ParseExample(StringPiece serialized, parsed::Example* example) {
+bool ParseExample(absl::string_view serialized, parsed::Example* example) {
   DCHECK(example != nullptr);
   protobuf::io::CodedInputStream stream(
       reinterpret_cast<const uint8*>(serialized.data()), serialized.size());
@@ -153,7 +157,8 @@ void CopyOrMoveBlock(const tstring* b, const tstring* e, tstring* t) {
 }
 
 template <>
-const SmallVector<int64>& GetListFromBuffer<int64>(const SparseBuffer& buffer) {
+const SmallVector<int64_t>& GetListFromBuffer<int64_t>(
+    const SparseBuffer& buffer) {
   return buffer.int64_list;
 }
 template <>

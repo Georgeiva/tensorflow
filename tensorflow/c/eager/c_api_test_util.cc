@@ -15,8 +15,13 @@ limitations under the License.
 
 #include "tensorflow/c/eager/c_api_test_util.h"
 
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "tensorflow/c/eager/c_api.h"
 #include "tensorflow/c/eager/c_api_experimental.h"
+#include "tensorflow/c/eager/c_api_internal.h"
 #include "tensorflow/c/tf_datatype.h"
 #include "tensorflow/c/tf_tensor.h"
 #include "tensorflow/core/platform/logging.h"
@@ -26,6 +31,7 @@ limitations under the License.
 #include "tensorflow/core/protobuf/cluster.pb.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/protobuf/rewriter_config.pb.h"
+#include "tensorflow/core/util/port.h"
 
 using tensorflow::string;
 using tensorflow::tstring;
@@ -356,6 +362,47 @@ TFE_Op* AllReduceOp(TFE_Context* ctx, TFE_TensorHandle* in, int group_size) {
   return op;
 }
 
+TFE_Op* SendOp(TFE_Context* ctx, TFE_TensorHandle* in,
+               const std::string& op_name, const std::string& send_device,
+               const std::string& recv_device,
+               tensorflow::uint64 send_device_incarnation) {
+  TF_Status* status = TF_NewStatus();
+  TFE_Op* op = TFE_NewOp(ctx, op_name.c_str(), status);
+  CHECK_EQ(TF_OK, TF_GetCode(status)) << TF_Message(status);
+  TFE_OpAddInput(op, in, status);
+  CHECK_EQ(TF_OK, TF_GetCode(status)) << TF_Message(status);
+  TF_DeleteStatus(status);
+
+  TFE_OpSetAttrType(op, "T", TFE_TensorHandleDataType(in));
+  TFE_OpSetAttrString(op, "tensor_name", "dummy", 5);
+  TFE_OpSetAttrString(op, "send_device", send_device.c_str(),
+                      send_device.size());
+  TFE_OpSetAttrString(op, "recv_device", recv_device.c_str(),
+                      recv_device.size());
+  TFE_OpSetAttrInt(op, "send_device_incarnation", send_device_incarnation);
+
+  return op;
+}
+
+TFE_Op* RecvOp(TFE_Context* ctx, const std::string& op_name,
+               const std::string& send_device, const std::string& recv_device,
+               tensorflow::uint64 send_device_incarnation) {
+  TF_Status* status = TF_NewStatus();
+  TFE_Op* op = TFE_NewOp(ctx, op_name.c_str(), status);
+  CHECK_EQ(TF_OK, TF_GetCode(status)) << TF_Message(status);
+  TF_DeleteStatus(status);
+
+  TFE_OpSetAttrType(op, "tensor_type", TF_INT32);
+  TFE_OpSetAttrString(op, "tensor_name", "dummy", 5);
+  TFE_OpSetAttrString(op, "send_device", send_device.c_str(),
+                      send_device.size());
+  TFE_OpSetAttrString(op, "recv_device", recv_device.c_str(),
+                      recv_device.size());
+  TFE_OpSetAttrInt(op, "send_device_incarnation", send_device_incarnation);
+
+  return op;
+}
+
 bool GetDeviceName(TFE_Context* ctx, string* device_name,
                    const char* device_type) {
   std::unique_ptr<TF_Status, decltype(&TF_DeleteStatus)> status(
@@ -392,6 +439,8 @@ tensorflow::ServerDef GetServerDef(const string& job_name, int num_tasks) {
     int port = tensorflow::testing::PickUnusedPortOrDie();
     job_def->mutable_tasks()->insert(
         {i, tensorflow::strings::StrCat("localhost:", port)});
+    LOG(INFO) << "Picked test port: " << port << " for job: " << job_name
+              << ", task: " << i;
   }
   return server_def;
 }
@@ -401,7 +450,8 @@ tensorflow::ServerDef GetServerDef(int num_tasks) {
 }
 
 tensorflow::ServerDef GetMultiClientServerDef(const std::string& job_name,
-                                              int num_tasks) {
+                                              int num_tasks,
+                                              int num_virtual_gpus) {
   tensorflow::ServerDef server_def;
   server_def.set_protocol("grpc");
   server_def.set_job_name(job_name);
@@ -423,5 +473,135 @@ tensorflow::ServerDef GetMultiClientServerDef(const std::string& job_name,
       tensorflow::RewriterConfig::ON);
   rewrite_options->mutable_scoped_allocator_opts()->add_enable_op(
       "CollectiveReduce");
+
+  if ((tensorflow::IsGoogleCudaEnabled() || tensorflow::IsBuiltWithROCm()) &&
+      num_virtual_gpus > 0) {
+    tensorflow::GPUOptions* gpu_options =
+        server_def.mutable_default_session_config()->mutable_gpu_options();
+    auto virtual_devices =
+        gpu_options->mutable_experimental()->add_virtual_devices();
+    for (int i = 0; i < num_virtual_gpus; ++i) {
+      virtual_devices->add_memory_limit_mb(200);
+    }
+  }
   return server_def;
+}
+
+TFE_TensorHandle* CreateVarHandle(TFE_Context* ctx,
+                                  const tensorflow::string& device_name,
+                                  const tensorflow::string& variable_name) {
+  TF_Status* status = TF_NewStatus();
+  // Create the variable handle.
+  TFE_Op* op = TFE_NewOp(ctx, "VarHandleOp", status);
+  if (TF_GetCode(status) != TF_OK) return nullptr;
+  TFE_OpSetAttrType(op, "dtype", TF_FLOAT);
+  TFE_OpSetAttrShape(op, "shape", {}, 0, status);
+  TFE_OpSetAttrString(op, "container", "localhost", 0);
+  TFE_OpSetAttrString(op, "shared_name", variable_name.data(),
+                      variable_name.size());
+  if (!device_name.empty()) {
+    TFE_OpSetDevice(op, device_name.c_str(), status);
+  }
+  if (TF_GetCode(status) != TF_OK) return nullptr;
+  TFE_TensorHandle* var_handle = nullptr;
+  int num_retvals = 1;
+  TFE_Execute(op, &var_handle, &num_retvals, status);
+  if (TF_GetCode(status) != TF_OK) return nullptr;
+  TFE_DeleteOp(op);
+  if (TF_GetCode(status) != TF_OK) return nullptr;
+  CHECK_EQ(1, num_retvals);
+  TF_DeleteStatus(status);
+  return var_handle;
+}
+
+TFE_TensorHandle* CreateVariable(TFE_Context* ctx, float value,
+                                 const tensorflow::string& device_name,
+                                 const tensorflow::string& variable_name) {
+  TF_Status* status = TF_NewStatus();
+  TFE_TensorHandle* var_handle =
+      CreateVarHandle(ctx, device_name, variable_name);
+
+  // Assign 'value' to it.
+  TFE_Op* op = TFE_NewOp(ctx, "AssignVariableOp", status);
+  if (TF_GetCode(status) != TF_OK) return nullptr;
+  TFE_OpSetAttrType(op, "dtype", TF_FLOAT);
+  TFE_OpAddInput(op, var_handle, status);
+  if (!device_name.empty()) {
+    TFE_OpSetDevice(op, device_name.c_str(), status);
+  }
+
+  // Convert 'value' to a TF_Tensor then a TFE_TensorHandle.
+  std::unique_ptr<TF_Tensor, decltype(&TF_DeleteTensor)> t(
+      TF_AllocateTensor(TF_FLOAT, nullptr, 0, sizeof(value)), TF_DeleteTensor);
+  memcpy(TF_TensorData(t.get()), &value, TF_TensorByteSize(t.get()));
+
+  std::unique_ptr<TFE_TensorHandle, decltype(&TFE_DeleteTensorHandle)>
+      value_handle(TFE_NewTensorHandle(t.get(), status),
+                   TFE_DeleteTensorHandle);
+  if (TF_GetCode(status) != TF_OK) return nullptr;
+
+  TFE_OpAddInput(op, value_handle.get(), status);
+  if (TF_GetCode(status) != TF_OK) return nullptr;
+
+  int num_retvals = 0;
+  TFE_Execute(op, nullptr, &num_retvals, status);
+  TFE_DeleteOp(op);
+  if (TF_GetCode(status) != TF_OK) return nullptr;
+  CHECK_EQ(0, num_retvals);
+  TF_DeleteStatus(status);
+  return var_handle;
+}
+
+TFE_Context* CreateContext(const std::string& serialized_server_def,
+                           bool isolate_session_state,
+                           int64_t init_timeout_in_ms) {
+  TF_Status* status = TF_NewStatus();
+  TFE_ContextOptions* opts = TFE_NewContextOptions();
+  opts->session_options.options.config.set_isolate_session_state(
+      isolate_session_state);
+  TFE_ContextOptionsSetAsync(opts, static_cast<unsigned char>(false));
+  TFE_ContextOptionsSetDevicePlacementPolicy(opts, TFE_DEVICE_PLACEMENT_SILENT);
+  TFE_Context* ctx = TFE_NewContext(opts, status);
+  EXPECT_EQ(TF_GetCode(status), TF_OK) << TF_Message(status);
+  TFE_ContextSetServerDefWithTimeout(ctx, 0, serialized_server_def.data(),
+                                     serialized_server_def.size(),
+                                     init_timeout_in_ms, status,
+                                     /*clear_existing_contexts=*/false);
+  EXPECT_EQ(TF_GetCode(status), TF_OK) << TF_Message(status);
+  TFE_DeleteContextOptions(opts);
+  TF_DeleteStatus(status);
+  return ctx;
+}
+
+tensorflow::ServerDef ReplaceTaskInServerDef(
+    const tensorflow::ServerDef& server_def, int task_index) {
+  tensorflow::ServerDef server_def_copy = server_def;
+  tensorflow::ClusterDef* cluster_def = server_def_copy.mutable_cluster();
+  tensorflow::JobDef* job_def = cluster_def->mutable_job(0);
+  const int port = tensorflow::testing::PickUnusedPortOrDie();
+  job_def->mutable_tasks()->at(task_index) =
+      tensorflow::strings::StrCat("localhost:", port);
+  return server_def_copy;
+}
+
+void ReplaceTaskInServerDef(tensorflow::ServerDef* server_def, int task_index,
+                            const string& host, int port) {
+  tensorflow::JobDef* job_def = server_def->mutable_cluster()->mutable_job(0);
+  job_def->mutable_tasks()->at(task_index) =
+      tensorflow::strings::StrCat(host, ":", port);
+}
+
+std::vector<std::string> ListDeviceNames(TFE_Context* ctx) {
+  TF_Status* status = TF_NewStatus();
+  std::vector<std::string> device_names;
+  TF_DeviceList* devices = TFE_ContextListDevices(ctx, status);
+  EXPECT_EQ(TF_GetCode(status), TF_OK) << TF_Message(status);
+  const int num_devices = TF_DeviceListCount(devices);
+  for (int i = 0; i < num_devices; ++i) {
+    device_names.emplace_back(TF_DeviceListName(devices, i, status));
+    EXPECT_EQ(TF_GetCode(status), TF_OK) << TF_Message(status);
+  }
+  TF_DeleteDeviceList(devices);
+  TF_DeleteStatus(status);
+  return device_names;
 }

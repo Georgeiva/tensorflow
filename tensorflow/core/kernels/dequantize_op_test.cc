@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include <functional>
+#include <limits>
 #include <memory>
 #include <random>
 #include <vector>
@@ -43,7 +44,7 @@ class DequantizeOpTest : public OpsTestBase {
                                               float min_range, float max_range,
                                               Tensor* output) {
     float half_range =
-        !std::is_signed<T>::value
+        !std::numeric_limits<T>::is_signed
             ? 0.0f
             : (static_cast<float>(std::numeric_limits<T>::max()) -
                std::numeric_limits<T>::min() + 1) /
@@ -74,11 +75,11 @@ class DequantizeOpTest : public OpsTestBase {
     TF_ASSERT_OK(InitOp());
 
     std::vector<T> input;
-    for (int64 i = std::numeric_limits<T>::min();
+    for (int64_t i = std::numeric_limits<T>::min();
          i < std::numeric_limits<T>::max(); ++i) {
       input.push_back(static_cast<T>(i));
     }
-    TensorShape shape({static_cast<int64>(input.size())});
+    TensorShape shape({static_cast<int64_t>(input.size())});
     AddInputFromArray<T>(shape, input);
     AddInputFromArray<float>(TensorShape({}), {min_range});
     AddInputFromArray<float>(TensorShape({}), {max_range});
@@ -104,11 +105,11 @@ class DequantizeOpTest : public OpsTestBase {
     TF_ASSERT_OK(InitOp());
 
     std::vector<T> input;
-    for (int64 i = std::numeric_limits<T>::min();
+    for (int64_t i = std::numeric_limits<T>::min();
          i < std::numeric_limits<T>::max(); ++i) {
       input.push_back(static_cast<T>(i));
     }
-    TensorShape shape({static_cast<int64>(input.size())});
+    TensorShape shape({static_cast<int64_t>(input.size())});
     AddInputFromArray<T>(shape, input);
     AddInputFromArray<float>(TensorShape({}), {min_range});
     AddInputFromArray<float>(TensorShape({}), {max_range});
@@ -126,11 +127,11 @@ class DequantizeOpTest : public OpsTestBase {
   // Creates a tensor with the specified dims, using values chosen from data,
   // multiplied by (1 + index) along the axis dimension.
   template <typename T>
-  std::vector<T> ScalePerSliceAlongAxis(std::vector<int64> dims, int axis,
+  std::vector<T> ScalePerSliceAlongAxis(std::vector<int64_t> dims, int axis,
                                         const std::vector<T>& data) {
     uint32 seed = 123;
     std::minstd_rand rng(seed);
-    int64 out_size = 1;
+    int64_t out_size = 1;
     for (int dim : dims) {
       out_size *= dim;
     }
@@ -152,7 +153,7 @@ class DequantizeOpTest : public OpsTestBase {
   void RunDequantizeScaledTest(float min_range, float max_range, int axis,
                                const std::vector<T>& values,
                                const std::vector<float>& expected) {
-    const std::vector<int64> dims = {2, 3, 4, 5};
+    const std::vector<int64_t> dims = {2, 3, 4, 5};
     int num_slices = (axis == -1) ? 1 : dims[axis];
     TF_ASSERT_OK(NodeDefBuilder("dequantize_op", "Dequantize")
                      .Input(FakeInput(DataTypeToEnum<T>::v()))
@@ -249,15 +250,16 @@ TEST_F(DequantizeOpTest, DequantizeScaledQint8Axis3) {
 template <typename T>
 static void BM_DequantizeMinCombinedCpu(::testing::benchmark::State& state) {
   auto root = Scope::NewRootScope().ExitOnError();
-  const int64 num_values = 1500 * 250;
+  const int64_t num_values = 1500 * 250;
   std::vector<T> inputs;
 
   inputs.reserve(num_values);
   for (int i = 0; i < num_values; ++i) inputs.push_back(i);
 
-  ops::Dequantize(root, test::AsTensor<T>(inputs), test::AsScalar<float>(-1.5f),
-                  test::AsScalar<float>(20.5f),
-                  ops::Dequantize::Attrs().Mode("MIN_COMBINED"));
+  ops::Dequantize give_me_a_name(root, test::AsTensor<T>(inputs),
+                                 test::AsScalar<float>(-1.5f),
+                                 test::AsScalar<float>(20.5f),
+                                 ops::Dequantize::Attrs().Mode("MIN_COMBINED"));
   TF_CHECK_OK(root.status());
   Graph* g = new Graph(OpRegistry::Global());
   TF_CHECK_OK(root.ToGraph(g));
@@ -293,15 +295,16 @@ template <typename T>
 static void BM_DequantizeBfloat16MinCombinedCpu(
     ::testing::benchmark::State& state) {
   auto root = Scope::NewRootScope().ExitOnError();
-  const int64 num_values = 1500 * 250;
+  const int64_t num_values = 1500 * 250;
   std::vector<T> inputs;
 
   inputs.reserve(num_values);
   for (int i = 0; i < num_values; ++i) inputs.push_back(i);
 
-  ops::Dequantize(root, test::AsTensor<T>(inputs), test::AsScalar<float>(-1.5f),
-                  test::AsScalar<float>(20.5f),
-                  ops::Dequantize::Attrs().Dtype(DT_BFLOAT16));
+  ops::Dequantize give_me_a_name(root, test::AsTensor<T>(inputs),
+                                 test::AsScalar<float>(-1.5f),
+                                 test::AsScalar<float>(20.5f),
+                                 ops::Dequantize::Attrs().Dtype(DT_BFLOAT16));
   TF_CHECK_OK(root.status());
   Graph* g = new Graph(OpRegistry::Global());
   TF_CHECK_OK(root.ToGraph(g));

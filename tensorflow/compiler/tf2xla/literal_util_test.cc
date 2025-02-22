@@ -15,31 +15,38 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/literal_util.h"
 
-#include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/compiler/xla/literal_util.h"
+#include <gtest/gtest.h>
+#include "absl/types/span.h"
+#include "xla/literal.h"
+#include "xla/literal_util.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/framework/numeric_types.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
 
 TEST(LiteralUtil, LiteralToHostTensor) {
   // int64 literal can only be converted to an int64 host tensor.
-  std::vector<int64> int64_values = {1, 2, 3};
+  std::vector<int64_t> int64_values = {1, 2, 3};
   xla::Literal int64_values_literal =
-      xla::LiteralUtil::CreateR1(absl::Span<const int64>(int64_values));
+      xla::LiteralUtil::CreateR1(absl::Span<const int64_t>(int64_values));
   Tensor host_tensor;
   EXPECT_EQ("Cannot convert literal of type S64 to tensor of type int32",
             LiteralToHostTensor(int64_values_literal, DT_INT32, &host_tensor)
-                .error_message());
+                .message());
   EXPECT_EQ("Cannot convert literal of type S64 to tensor of type qint32",
             LiteralToHostTensor(int64_values_literal, DT_QINT32, &host_tensor)
-                .error_message());
+                .message());
   EXPECT_TRUE(
       LiteralToHostTensor(int64_values_literal, DT_INT64, &host_tensor).ok());
-  test::ExpectTensorEqual<int64>(host_tensor,
-                                 test::AsTensor<int64>(int64_values));
+  test::ExpectTensorEqual<int64_t>(host_tensor,
+                                   test::AsTensor<int64_t>(int64_values));
 }
 
 template <class T>

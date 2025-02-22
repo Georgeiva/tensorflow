@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Python wrappers for reader Datasets."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import csv
 import functools
@@ -25,9 +21,12 @@ import gzip
 import numpy as np
 
 from tensorflow.python import tf2
+from tensorflow.python.compat import v2_compat
 from tensorflow.python.data.experimental.ops import error_ops
 from tensorflow.python.data.experimental.ops import parsing_ops
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.data.ops import map_op
+from tensorflow.python.data.ops import options as options_lib
 from tensorflow.python.data.ops import readers as core_readers
 from tensorflow.python.data.util import convert
 from tensorflow.python.data.util import nest
@@ -116,14 +115,17 @@ def _next_csv_row(filenames, num_cols, field_delim, use_quote_delim, header,
           f,
           delimiter=field_delim,
           quoting=csv.QUOTE_MINIMAL if use_quote_delim else csv.QUOTE_NONE)
+      row_num = 1
       if header:
         next(rdr)  # Skip header lines
+        row_num += 1
 
       for csv_row in rdr:
         if len(csv_row) != num_cols:
           raise ValueError(
-              "Problem inferring types: CSV row has different number of fields "
-              "than expected.")
+              f"Problem inferring types: CSV row {row_num} has {len(csv_row)} "
+              f"number of fields. Expected: {num_cols}.")
+        row_num += 1
         yield csv_row
 
 
@@ -164,18 +166,19 @@ def _infer_column_names(filenames, field_delim, use_quote_delim, file_io_fn):
     try:
       column_names = next(csv.reader(f, **csv_kwargs))
     except StopIteration:
-      raise ValueError(("Received StopIteration when reading the header line "
-                        "of %s.  Empty file?") % filenames[0])
+      raise ValueError("Failed when reading the header line of "
+                       f"{filenames[0]}. Is it an empty file?")
 
   for name in filenames[1:]:
     with file_io_fn(name) as f:
       try:
         if next(csv.reader(f, **csv_kwargs)) != column_names:
           raise ValueError(
-              "Files have different column names in the header row.")
+              "All input CSV files should have the same column names in the "
+              f"header row. File {name} has different column names.")
       except StopIteration:
-        raise ValueError(("Received StopIteration when reading the header line "
-                          "of %s.  Empty file?") % filenames[0])
+        raise ValueError("Failed when reading the header line of "
+                         f"{name}. Is it an empty file?")
   return column_names
 
 
@@ -190,22 +193,26 @@ def _get_sorted_col_indices(select_columns, column_names):
     if isinstance(v, int):
       if v < 0 or v >= num_cols:
         raise ValueError(
-            "Column index %d specified in select_columns out of valid range." %
-            v)
+            f"Column index {v} specified in `select_columns` should be > 0 "
+            f" and <= {num_cols}, which is the number of columns.")
       results.append(v)
     # Otherwise, check that it's a valid column name and convert to the
     # the relevant column index.
     elif v not in names_to_indices:
       raise ValueError(
-          "Value '%s' specified in select_columns not a valid column index or "
-          "name." % v)
+          f"Column {v} specified in `select_columns` must be of one of the "
+          f"columns: {names_to_indices.keys()}.")
     else:
       results.append(names_to_indices[v])
 
   # Sort and ensure there are no duplicates
   results = sorted(set(results))
   if len(results) != len(select_columns):
-    raise ValueError("select_columns contains duplicate columns")
+    sorted_names = sorted(results)
+    duplicate_columns = set([a for a, b in zip(
+        sorted_names[:-1], sorted_names[1:]) if a == b])
+    raise ValueError("The `select_columns` argument contains duplicate "
+                     f"columns: {duplicate_columns}.")
   return results
 
 
@@ -339,6 +346,7 @@ def make_csv_dataset_v2(
     num_rows_for_inference=100,
     compression_type=None,
     ignore_errors=False,
+    encoding="utf-8",
 ):
   """Reads CSV files into a dataset.
 
@@ -367,7 +375,7 @@ def make_csv_dataset_v2(
   ```
   # No label column specified
   dataset = tf.data.experimental.make_csv_dataset(filename, batch_size=2)
-  iterator = ds.as_numpy_iterator()
+  iterator = dataset.as_numpy_iterator()
   print(dict(next(iterator)))
   # prints a dictionary of batched features:
   # OrderedDict([('Feature_A', array([1, 4], dtype=int32)),
@@ -378,7 +386,7 @@ def make_csv_dataset_v2(
   # Set Feature_B as label column
   dataset = tf.data.experimental.make_csv_dataset(
       filename, batch_size=2, label_name="Feature_B")
-  iterator = ds.as_numpy_iterator()
+  iterator = dataset.as_numpy_iterator()
   print(next(iterator))
   # prints (features, labels) tuple:
   # (OrderedDict([('Feature_A', array([1, 2], dtype=int32))]),
@@ -413,9 +421,7 @@ def make_csv_dataset_v2(
       index.
     label_name: A optional string corresponding to the label column. If
       provided, the data for this column is returned as a separate `Tensor` from
-      the features dictionary, so that the dataset complies with the format
-      expected by a `tf.Estimator.train` or `tf.Estimator.evaluate` input
-      function.
+      the features dictionary.
     select_columns: An optional list of integer indices or string column
       names, that specifies a subset of columns of CSV data to select. If
       column names are provided, these must correspond to names provided in
@@ -458,6 +464,7 @@ def make_csv_dataset_v2(
       such as malformed data or empty lines, and moves on to the next valid
       CSV record. Otherwise, the dataset raises an error and stops processing
       when encountering any invalid records. Defaults to `False`.
+    encoding: Encoding to use when reading. Defaults to `UTF-8`.
 
   Returns:
     A dataset, where each element is a (features, labels) tuple that corresponds
@@ -484,28 +491,40 @@ def make_csv_dataset_v2(
   # Clean arguments; figure out column names and defaults
   if column_names is None or column_defaults is None:
     # Find out which io function to open the file
-    file_io_fn = lambda filename: file_io.FileIO(filename, "r")
+    file_io_fn = lambda filename: file_io.FileIO(  # pylint: disable=g-long-lambda
+        filename, "r", encoding=encoding)
     if compression_type is not None:
       compression_type_value = tensor_util.constant_value(compression_type)
       if compression_type_value is None:
-        raise ValueError("Received unknown compression_type")
+        raise ValueError(
+            f"Received unknown `compression_type` {compression_type}. "
+            "Expected: GZIP, ZLIB or "" (empty string).")
       if compression_type_value == "GZIP":
-        file_io_fn = lambda filename: gzip.open(filename, "rt")
+        file_io_fn = lambda filename: gzip.open(  # pylint: disable=g-long-lambda
+            filename, "rt", encoding=encoding)
       elif compression_type_value == "ZLIB":
         raise ValueError(
-            "compression_type (%s) is not supported for probing columns" %
-            compression_type)
+            f"`compression_type` {compression_type} is not supported for "
+            "probing columns.")
       elif compression_type_value != "":
-        raise ValueError("compression_type (%s) is not supported" %
-                         compression_type)
+        raise ValueError(
+            f"Received unknown `compression_type` {compression_type}. "
+            "Expected: GZIP, ZLIB or "
+            " (empty string).")
   if column_names is None:
     if not header:
-      raise ValueError("Cannot infer column names without a header line.")
+      raise ValueError("Expected `column_names` or `header` arguments. Neither "
+                       "is provided.")
     # If column names are not provided, infer from the header lines
     column_names = _infer_column_names(filenames, field_delim, use_quote_delim,
                                        file_io_fn)
   if len(column_names) != len(set(column_names)):
-    raise ValueError("Cannot have duplicate column names.")
+    sorted_names = sorted(column_names)
+    duplicate_columns = set([a for a, b in zip(
+        sorted_names[:-1], sorted_names[1:]) if a == b])
+    raise ValueError(
+        "Either `column_names` argument or CSV header row contains duplicate "
+        f"column names: {duplicate_columns}.")
 
   if select_columns is not None:
     select_columns = _get_sorted_col_indices(select_columns, column_names)
@@ -527,15 +546,16 @@ def make_csv_dataset_v2(
 
   if select_columns is not None and len(column_defaults) != len(select_columns):
     raise ValueError(
-        "If specified, column_defaults and select_columns must have same "
-        "length."
-    )
+        "If specified, `column_defaults` and `select_columns` must have the "
+        f"same length: `column_defaults` has length {len(column_defaults)}, "
+        f"`select_columns` has length {len(select_columns)}.")
   if select_columns is not None and len(column_names) > len(select_columns):
     # Pick the relevant subset of column names
     column_names = [column_names[i] for i in select_columns]
 
   if label_name is not None and label_name not in column_names:
-    raise ValueError("`label_name` provided must be one of the columns.")
+    raise ValueError("`label_name` provided must be one of the columns: "
+                     f"{column_names}. Received: {label_name}.")
 
   def filename_to_dataset(filename):
     dataset = CsvDataset(
@@ -571,8 +591,8 @@ def make_csv_dataset_v2(
   if num_parallel_reads == dataset_ops.AUTOTUNE:
     dataset = dataset.interleave(
         filename_to_dataset, num_parallel_calls=num_parallel_reads)
-    options = dataset_ops.Options()
-    options.experimental_deterministic = not sloppy
+    options = options_lib.Options()
+    options.deterministic = not sloppy
     dataset = dataset.with_options(options)
   else:
     # Read files sequentially (if num_parallel_reads=1) or in parallel
@@ -599,7 +619,7 @@ def make_csv_dataset_v2(
   # indefinitely, and all batches will be full-sized.
   dataset = dataset.batch(batch_size=batch_size,
                           drop_remainder=num_epochs is None)
-  dataset = dataset_ops.MapDataset(
+  dataset = map_op._MapDataset(  # pylint: disable=protected-access
       dataset, map_fn, use_inter_op_parallelism=False)
   dataset = dataset.prefetch(prefetch_buffer_size)
 
@@ -628,13 +648,16 @@ def make_csv_dataset_v1(
     num_rows_for_inference=100,
     compression_type=None,
     ignore_errors=False,
+    encoding="utf-8",
 ):  # pylint: disable=missing-docstring
-  return dataset_ops.DatasetV1Adapter(make_csv_dataset_v2(
-      file_pattern, batch_size, column_names, column_defaults, label_name,
-      select_columns, field_delim, use_quote_delim, na_value, header,
-      num_epochs, shuffle, shuffle_buffer_size, shuffle_seed,
-      prefetch_buffer_size, num_parallel_reads, sloppy, num_rows_for_inference,
-      compression_type, ignore_errors))
+  return dataset_ops.DatasetV1Adapter(
+      make_csv_dataset_v2(file_pattern, batch_size, column_names,
+                          column_defaults, label_name, select_columns,
+                          field_delim, use_quote_delim, na_value, header,
+                          num_epochs, shuffle, shuffle_buffer_size,
+                          shuffle_seed, prefetch_buffer_size,
+                          num_parallel_reads, sloppy, num_rows_for_inference,
+                          compression_type, ignore_errors, encoding))
 make_csv_dataset_v1.__doc__ = make_csv_dataset_v2.__doc__
 
 
@@ -674,28 +697,29 @@ class CsvDatasetV2(dataset_ops.DatasetSource):
   ... )
 
   The expected output of its iterations is:
-
-  >>> for element in dataset.as_numpy_iterator():
-  ...   print(element)
-  (4.28e10, 5.55e6, 12)
-  (-5.3e14, 0.0, 2)
+  >>> for n0, n1, n2 in dataset.as_numpy_iterator():
+  ...   print(n0, n1, n2)
+  4.28e10 5.55e6 12
+  -5.3e14 0.0 2
 
   See
   https://www.tensorflow.org/tutorials/load_data/csv#tfdataexperimentalcsvdataset
   for more in-depth example usage.
   """
 
-  def __init__(self,
-               filenames,
-               record_defaults,
-               compression_type=None,
-               buffer_size=None,
-               header=False,
-               field_delim=",",
-               use_quote_delim=True,
-               na_value="",
-               select_cols=None,
-               exclude_cols=None):
+  def __init__(
+      self,
+      filenames,
+      record_defaults,
+      compression_type=None,
+      buffer_size=None,
+      header=False,
+      field_delim=",",
+      use_quote_delim=True,
+      na_value="",
+      select_cols=None,
+      exclude_cols=None,
+  ):
     """Creates a `CsvDataset` by reading and decoding CSV files.
 
     Args:
@@ -1023,8 +1047,8 @@ def make_batched_features_dataset_v2(file_pattern,
     dataset = dataset.interleave(
         lambda filename: reader(filename, *reader_args),
         num_parallel_calls=reader_num_threads)
-    options = dataset_ops.Options()
-    options.experimental_deterministic = not sloppy_ordering
+    options = options_lib.Options()
+    options.deterministic = not sloppy_ordering
     dataset = dataset.with_options(options)
   else:
     # Read files sequentially (if reader_num_threads=1) or in parallel
@@ -1043,7 +1067,7 @@ def make_batched_features_dataset_v2(file_pattern,
   # Extract values if the `Example` tensors are stored as key-value tuples.
   if dataset_ops.get_legacy_output_types(dataset) == (
       dtypes.string, dtypes.string):
-    dataset = dataset_ops.MapDataset(
+    dataset = map_op._MapDataset(  # pylint: disable=protected-access
         dataset, lambda _, v: v, use_inter_op_parallelism=False)
 
   # Apply dataset repeat and shuffle transformations.
@@ -1065,8 +1089,8 @@ def make_batched_features_dataset_v2(file_pattern,
   if label_key:
     if label_key not in features:
       raise ValueError(
-          "The `label_key` provided (%r) must be one of the `features` keys." %
-          label_key)
+          f"The `label_key` provided ({label_key}) must be one of the "
+          f"`features` keys: {features.keys()}.")
     dataset = dataset.map(lambda x: (x, x.pop(label_key)))
 
   dataset = dataset.prefetch(prefetch_buffer_size)
@@ -1113,7 +1137,7 @@ def _get_file_names(file_pattern, shuffle):
   """
   if isinstance(file_pattern, list):
     if not file_pattern:
-      raise ValueError("File pattern is empty.")
+      raise ValueError("Argument `file_pattern` should not be empty.")
     file_names = []
     for entry in file_pattern:
       file_names.extend(gfile.Glob(entry))
@@ -1121,7 +1145,7 @@ def _get_file_names(file_pattern, shuffle):
     file_names = list(gfile.Glob(file_pattern))
 
   if not file_names:
-    raise ValueError("No files match %s." % file_pattern)
+    raise ValueError(f"No files match `file_pattern` {file_pattern}.")
 
   # Sort files so it will be deterministic for unit tests.
   if not shuffle:
@@ -1196,3 +1220,20 @@ else:
   SqlDataset = SqlDatasetV1
   make_batched_features_dataset = make_batched_features_dataset_v1
   make_csv_dataset = make_csv_dataset_v1
+
+
+def _tf2_callback():
+  global CsvDataset, SqlDataset, make_batched_features_dataset, make_csv_dataset
+  if tf2.enabled():
+    CsvDataset = CsvDatasetV2
+    SqlDataset = SqlDatasetV2
+    make_batched_features_dataset = make_batched_features_dataset_v2
+    make_csv_dataset = make_csv_dataset_v2
+  else:
+    CsvDataset = CsvDatasetV1
+    SqlDataset = SqlDatasetV1
+    make_batched_features_dataset = make_batched_features_dataset_v1
+    make_csv_dataset = make_csv_dataset_v1
+
+
+v2_compat.register_data_v2_callback(_tf2_callback)

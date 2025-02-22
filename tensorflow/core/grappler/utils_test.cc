@@ -20,6 +20,7 @@ limitations under the License.
 #include <limits>
 #include <memory>
 
+#include "absl/strings/match.h"
 #include "absl/strings/substitute.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/framework/node_def.pb.h"
@@ -35,6 +36,7 @@ limitations under the License.
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -430,12 +432,12 @@ TEST(CheckAttrExists, All) {
   TF_EXPECT_OK(CheckAttrsExist(node, {"apple", "pear"}));
   TF_EXPECT_OK(CheckAttrsExist(node, {"pear", "apple"}));
 
-  Status status = CheckAttrExists(node, "banana");
+  absl::Status status = CheckAttrExists(node, "banana");
   EXPECT_FALSE(status.ok());
-  EXPECT_EQ(status.ToString(),
-            "Invalid argument: Node 'node' lacks 'banana' attr: name: \"node\" "
-            "attr { key: \"apple\" value { i: 7 } } attr { key: \"pear\" value "
-            "{ b: true } }");
+  EXPECT_EQ(status.code(), error::INVALID_ARGUMENT);
+  EXPECT_TRUE(absl::StrContains(
+      status.message(), absl::StrFormat("Node 'node' lacks 'banana' attr: %s",
+                                        node.ShortDebugString())));
   EXPECT_FALSE(CheckAttrsExist(node, {""}).ok());
   EXPECT_FALSE(CheckAttrsExist(node, {"pear", "cherry"}).ok());
   EXPECT_FALSE(CheckAttrsExist(node, {"banana", "apple"}).ok());
@@ -495,7 +497,7 @@ void BM_NodeNameAsStringPiece(::testing::benchmark::State& state) {
   string input(size + 3, 'x');
   input[size] = ':';
   for (auto s : state) {
-    StringPiece node_name = NodeNameAsStringPiece(input);
+    absl::string_view node_name = NodeNameAsStringPiece(input);
     CHECK_GT(node_name.size(), 0);
   }
 }
@@ -598,12 +600,12 @@ template <typename T>
 void TestSetTensorValue(DataType type, int val, bool success,
                         absl::string_view error_msg) {
   Tensor t(type, TensorShape({}));
-  Status s = SetTensorValue(t.dtype(), val, &t);
+  absl::Status s = SetTensorValue(t.dtype(), val, &t);
   EXPECT_EQ(s.ok(), success);
   if (s.ok()) {
     test::ExpectTensorEqual<T>(Tensor(static_cast<T>(val)), t);
   } else {
-    EXPECT_EQ(s.error_message(), error_msg);
+    EXPECT_EQ(s.message(), error_msg);
   }
 }
 

@@ -14,15 +14,19 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/kernels/save_restore_tensor.h"
+
+#include <memory>
 #include <numeric>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "xla/tsl/platform/env.h"
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/lib/strings/str_util.h"
@@ -43,7 +47,7 @@ void SaveTensors(
     bool save_slices) {
   const Tensor& filename_t = context->input(0);
   {
-    const int64 size = filename_t.NumElements();
+    const int64_t size = filename_t.NumElements();
     OP_REQUIRES(
         context, size == 1,
         errors::InvalidArgument(
@@ -64,7 +68,7 @@ void SaveTensors(
     const Tensor& tensor_shapes_and_slices_t = context->input(2);
     OP_REQUIRES(
         context,
-        tensor_shapes_and_slices_t.NumElements() == static_cast<int64>(N),
+        tensor_shapes_and_slices_t.NumElements() == static_cast<int64_t>(N),
         errors::InvalidArgument("Expected ", N,
                                 " elements for the tensor "
                                 "shapes and slices but got ",
@@ -84,12 +88,15 @@ void SaveTensors(
   checkpoint::TensorSliceWriter writer(filename_t.flat<tstring>()(0),
                                        std::move(builder_func));
 
-  Status s;
+  absl::Status s;
   auto tensor_names_flat = tensor_names_t.flat<tstring>();
 
   // Process tensors in sorted name order.  This allows us to avoid seeking
   // during restoration in the common case where we are restoring a full
   // checkpoint.
+  // RestoreTensorsV2 was changed to sort by file offset, so this sorting isn't
+  // strictly necessary anymore. However, restores with TF version <= 2.7 will
+  // still benefit.
   std::vector<size_t> sorted_name_idx(tensor_names_flat.size());
   std::iota(sorted_name_idx.begin(), sorted_name_idx.end(), 0);
   std::sort(sorted_name_idx.begin(), sorted_name_idx.end(),
@@ -146,16 +153,23 @@ void RestoreTensor(OpKernelContext* context,
                    int preferred_shard, bool restore_slice, int restore_index) {
   const Tensor& file_pattern_t = context->input(0);
   {
-    const int64 size = file_pattern_t.NumElements();
+    const int64_t size = file_pattern_t.NumElements();
     OP_REQUIRES(
         context, size == 1,
         errors::InvalidArgument(
             "Input 0 (file_pattern) must be a string scalar; got a tensor of ",
-            size, "elements"));
+            size, " elements"));
   }
   const string& file_pattern = file_pattern_t.flat<tstring>()(0);
 
   const Tensor& tensor_name_t = context->input(1);
+  {
+    const int64_t size = tensor_name_t.NumElements();
+    OP_REQUIRES(context, size > restore_index,
+                errors::InvalidArgument(
+                    "Input 1 (file_pattern) must be a have at least ",
+                    restore_index + 1, " elements"));
+  }
   const string& tensor_name = tensor_name_t.flat<tstring>()(restore_index);
 
   // If we cannot find a cached reader we will allocate our own.
@@ -235,16 +249,30 @@ void RestoreTensor(OpKernelContext* context,
 namespace {
 
 // Tensors larger than this threshold will be restored from a thread-pool.
-const int64 kLargeShapeThreshold = 16 << 20;  // 16M
+const int64_t kLargeShapeThreshold = 16 << 20;  // 16M
 
 // A restore operation for a single tensor.  Small tensors may be restored
 // directly from the op thread to improve read locality.  Large tensors can be
 // restored from a thread pool: this requires creating a separate BundleReader
 // for each restore.
 struct RestoreOp {
-  RestoreOp& operator=(const RestoreOp&) = delete;
+  RestoreOp(OpKernelContext* context, int idx, const string& tensor_name,
+            const string& shape_and_slice, const string& reader_prefix,
+            DataType dtype)
+      : context(context),
+        idx(idx),
+        tensor_name(tensor_name),
+        shape_and_slice(shape_and_slice),
+        reader_prefix(reader_prefix),
+        dtype(dtype) {}
 
-  bool should_run_in_pool(BundleReader* reader) const {
+  // Move-only. It does not make sense to "run()" a copied RestoreOp.
+  RestoreOp(const RestoreOp&) = delete;
+  RestoreOp& operator=(const RestoreOp&) = delete;
+  RestoreOp(RestoreOp&&) = default;
+  RestoreOp& operator=(RestoreOp&&) = default;
+
+  bool is_large_shape(BundleReader* reader) const {
     TensorShape restored_full_shape;
 
     // Ignore status here; we'll catch the error later.
@@ -256,8 +284,8 @@ struct RestoreOp {
   }
 
   // Run this restore operation using a new BundleReader.
-  void run_with_new_reader() {
-    BundleReader reader(Env::Default(), reader_prefix);
+  void run_with_new_reader(BundleCache* cache) {
+    BundleReader reader(tsl::Env::Default(), reader_prefix, {cache, false});
     if (!reader.status().ok()) {
       status = reader.status();
       return;
@@ -266,7 +294,7 @@ struct RestoreOp {
     status = run(&reader);
   }
 
-  Status run(BundleReader* reader) {
+  absl::Status run(BundleReader* reader) {
     TensorShape restored_full_shape;
     TF_RETURN_IF_ERROR(
         reader->LookupTensorShape(tensor_name, &restored_full_shape));
@@ -319,54 +347,55 @@ struct RestoreOp {
     }
     VLOG(1) << "Done restoring tensor " << idx << " : " << tensor_name << " : "
             << restored_full_shape.num_elements();
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   OpKernelContext* context;
-  size_t idx;
+  int idx;
   string tensor_name;
   string shape_and_slice;
   string reader_prefix;
+  DataType dtype;
 
-  ::tensorflow::Status status;
+  absl::Status status;
 };
 
 }  // namespace
 
-Status RestoreTensorsV2(OpKernelContext* context, const Tensor& prefix,
-                        const Tensor& tensor_names,
-                        const Tensor& shape_and_slices,
-                        gtl::ArraySlice<DataType> dtypes) {
+absl::Status RestoreTensorsV2(OpKernelContext* context, const Tensor& prefix,
+                              const Tensor& tensor_names,
+                              const Tensor& shape_and_slices,
+                              absl::Span<const DataType> dtypes) {
   const string& prefix_string = prefix.scalar<tstring>()();
 
   const auto& tensor_names_flat = tensor_names.flat<tstring>();
   const auto& shape_and_slices_flat = shape_and_slices.flat<tstring>();
 
-  // Sort lookup keys to improve locality when reading multiple tensors.
-  std::vector<size_t> sorted_name_idx(tensor_names_flat.size());
-  std::iota(sorted_name_idx.begin(), sorted_name_idx.end(), 0);
-  std::sort(sorted_name_idx.begin(), sorted_name_idx.end(),
-            [&tensor_names_flat](size_t a, size_t b) {
-              return tensor_names_flat(a) < tensor_names_flat(b);
-            });
+  std::vector<RestoreOp> restore_ops;
+  restore_ops.reserve(tensor_names_flat.size());
+  for (int i = 0; i < tensor_names_flat.size(); ++i) {
+    restore_ops.push_back({context, i, tensor_names_flat(i),
+                           shape_and_slices_flat(i), prefix_string, dtypes[i]});
+  }
 
-  std::vector<std::unique_ptr<RestoreOp> > pool_restore_ops;
-  std::vector<std::unique_ptr<RestoreOp> > direct_restore_ops;
-
-  BundleReader default_reader(Env::Default(), prefix_string);
+  tsl::Env* const env = tsl::Env::Default();
+  BundleCache cache(env);
+  BundleReader default_reader(env, prefix_string, {&cache, false});
   TF_RETURN_IF_ERROR(default_reader.status());
 
+  TF_RETURN_IF_ERROR(default_reader.SortForSequentialAccess<RestoreOp>(
+      restore_ops, [](const RestoreOp& op) { return op.tensor_name; }));
+
   std::vector<string> mismatched_errors;
-  for (const size_t i : sorted_name_idx) {
+  for (const RestoreOp& restore_op : restore_ops) {
     TensorShape restored_full_shape;
     DataType original_dtype;
-    const string& tensor_name = tensor_names_flat(i);
     TF_RETURN_IF_ERROR(default_reader.LookupDtypeAndShape(
-        tensor_name, &original_dtype, &restored_full_shape));
-    if (dtypes[i] != original_dtype) {
+        restore_op.tensor_name, &original_dtype, &restored_full_shape));
+    if (restore_op.dtype != original_dtype) {
       string error_msg = strings::StrCat(
-          "tensor_name = ", tensor_name, "; expected dtype ",
-          DataTypeString(dtypes[i]), " does not equal original dtype ",
+          "tensor_name = ", restore_op.tensor_name, "; expected dtype ",
+          DataTypeString(restore_op.dtype), " does not equal original dtype ",
           DataTypeString(original_dtype));
       mismatched_errors.emplace_back(error_msg);
     }
@@ -376,52 +405,80 @@ Status RestoreTensorsV2(OpKernelContext* context, const Tensor& prefix,
     return errors::InvalidArgument(error_msg);
   }
 
-  for (auto i : sorted_name_idx) {
-    const string& tensor_name = tensor_names_flat(i);
-    const string& shape_and_slice = shape_and_slices_flat(i);
-    auto op =
-        new RestoreOp{context, i, tensor_name, shape_and_slice, prefix_string};
-    if (op->should_run_in_pool(&default_reader)) {
-      pool_restore_ops.emplace_back(op);
+  // Split restore ops into two groups: large and small. We schedule
+  // large ops first, to prevent them from waiting on the small op.
+  std::vector<RestoreOp*> large_restore_ops;
+  std::vector<RestoreOp*> small_restore_ops;
+  for (RestoreOp& restore_op : restore_ops) {
+    if (restore_op.is_large_shape(&default_reader)) {
+      large_restore_ops.push_back(&restore_op);
     } else {
-      direct_restore_ops.emplace_back(op);
+      small_restore_ops.push_back(&restore_op);
     }
   }
 
-  {
-    // Schedule any threaded operations first, skipping thread pool creation if
-    // we don't have any expensive operations.
+  if (context->session_config() != nullptr &&
+      context->session_config()->intra_op_parallelism_threads() > 0) {
+    // If an explicit restore parallelism is specified, we use it to run
+    // run both small and large restore ops in parallel.
+    auto reader_pool = std::make_unique<thread::ThreadPool>(
+        tsl::Env::Default(), "restore_tensors",
+        context->session_config()->intra_op_parallelism_threads());
+
+    // Schedule large ops first, followed by the small.
+    for (auto* op : large_restore_ops) {
+      reader_pool->Schedule(
+          [op, &cache]() { op->run_with_new_reader(&cache); });
+    }
+    for (auto* op : small_restore_ops) {
+      reader_pool->Schedule(
+          [op, &cache]() { op->run_with_new_reader(&cache); });
+    }
+
+    // Wait for all scheduled work to finish and check the status of all
+    // ops that ran in the pool.
+    reader_pool.reset();
+    for (auto& op : restore_ops) {
+      TF_RETURN_IF_ERROR(op.status);
+    }
+  } else {
+    // If no restore parallelism is specified, we run large restore ops with
+    // a modest parallelism, and small restore ops serially.
+
+    // Avoid creating a pool if there are no large restore ops.
     std::unique_ptr<thread::ThreadPool> reader_pool;
-    if (!pool_restore_ops.empty()) {
+    if (!large_restore_ops.empty()) {
       reader_pool.reset(
           new thread::ThreadPool(Env::Default(), "restore_tensors", 8));
-      for (auto& op : pool_restore_ops) {
-        reader_pool->Schedule([&op]() { op->run_with_new_reader(); });
+      for (auto* op : large_restore_ops) {
+        reader_pool->Schedule(
+            [op, &cache]() { op->run_with_new_reader(&cache); });
       }
     }
 
-    // Read small tensors from the op thread
-    for (auto& op : direct_restore_ops) {
+    // Read small tensors from the op thread.
+    for (auto* op : small_restore_ops) {
       TF_RETURN_IF_ERROR(op->run(&default_reader));
     }
-  }
 
-  // Check status of pool ops; this must come after the pool shuts down.
-  for (auto& op : pool_restore_ops) {
-    TF_RETURN_IF_ERROR(op->status);
-  }
-
-  for (auto i : sorted_name_idx) {
-    const string& tensor_name = tensor_names_flat(i);
-    if (dtypes[i] != context->mutable_output(i)->dtype()) {
-      return errors::InvalidArgument(
-          "tensor_name = ", tensor_name, "; expected dtype ",
-          DataTypeString(dtypes[i]), " does not equal restored dtype ",
-          DataTypeString(context->mutable_output(i)->dtype()));
+    // Wait for all scheduled work to finish and check the status of all
+    // ops that ran in the pool.
+    reader_pool.reset();
+    for (auto* op : large_restore_ops) {
+      TF_RETURN_IF_ERROR(op->status);
     }
   }
 
-  return Status::OK();
+  for (const RestoreOp& restore_op : restore_ops) {
+    if (restore_op.dtype != context->mutable_output(restore_op.idx)->dtype()) {
+      return errors::InvalidArgument(
+          "tensor_name = ", restore_op.tensor_name, "; expected dtype ",
+          DataTypeString(restore_op.dtype), " does not equal restored dtype ",
+          DataTypeString(context->mutable_output(restore_op.idx)->dtype()));
+    }
+  }
+
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

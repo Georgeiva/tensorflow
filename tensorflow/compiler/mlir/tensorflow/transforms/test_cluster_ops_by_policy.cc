@@ -13,16 +13,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
+
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/transforms/cluster_ops_by_policy.h"
 
 namespace mlir {
-namespace TFDevice {
-
+namespace tf_test {
 namespace {
+
+using mlir::TFDevice::ClusteringPolicy;
+using mlir::TFDevice::ClusteringPolicySet;
+using mlir::TFDevice::ValueConstraint;
+using mlir::TFDevice::ValuesConstraintSet;
+
+#define GEN_PASS_DEF_TESTCLUSTERINGPOLICYPASS
+#define GEN_PASS_DECL_TESTCLUSTERINGPOLICYPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/test_passes.h.inc"
+
 struct TestClusteringPolicyPass
-    : public PassWrapper<TestClusteringPolicyPass, mlir::FunctionPass> {
-  void runOnFunction() override;
+    : public impl::TestClusteringPolicyPassBase<TestClusteringPolicyPass> {
+  void runOnOperation() override;
 };
 
 // Clustering policy for `test.OpA` and `test.OpB` operations;
@@ -49,10 +60,8 @@ class TestOpsClusteringPolicy : public ClusteringPolicy {
   }
 };
 
-}  // anonymous namespace
-
-void TestClusteringPolicyPass::runOnFunction() {
-  FuncOp func = getFunction();
+void TestClusteringPolicyPass::runOnOperation() {
+  func::FuncOp func = getOperation();
   ValuesConstraintSet constraints;
 
   ClusteringPolicySet policies;
@@ -63,18 +72,20 @@ void TestClusteringPolicyPass::runOnFunction() {
     return signalPassFailure();
 
   // Propagate constraints though the function body.
-  auto result = PropagateValuesConstraints(func.body(), policies, constraints);
+  auto result =
+      PropagateValuesConstraints(func.getBody(), policies, constraints,
+                                 /*resolve=*/false, /*emit_remarks=*/true);
   (void)result;
 
   // Emit remarks for all operations that use constrained values.
   EmitValueConstraintsRemarks(constraints);
 }
 
-static mlir::PassRegistration<TestClusteringPolicyPass>
-    tf_cpurt_test_clustering_policy(
-        "tf-test-clustering-policy",
-        "Annotates operations with clustering constraints inferred from set of "
-        "test policies");
+}  // anonymous namespace
 
-}  // namespace TFDevice
+std::unique_ptr<OperationPass<func::FuncOp>> CreateTestClusteringPolicyPass() {
+  return std::make_unique<TestClusteringPolicyPass>();
+}
+
+}  // namespace tf_test
 }  // namespace mlir

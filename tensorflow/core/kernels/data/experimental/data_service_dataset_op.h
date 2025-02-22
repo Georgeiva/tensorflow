@@ -15,11 +15,14 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_DATA_EXPERIMENTAL_DATA_SERVICE_DATASET_OP_H_
 #define TENSORFLOW_CORE_KERNELS_DATA_EXPERIMENTAL_DATA_SERVICE_DATASET_OP_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "absl/strings/str_cat.h"
-#include "tensorflow/core/data/service/data_service.h"
+#include "absl/time/time.h"
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/service/common.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/resource_mgr.h"
@@ -41,14 +44,14 @@ class IterationCounter : public ResourceBase {
     return absl::StrCat(counter_);
   }
 
-  int64 GetAndIncrement() {
+  int64_t GetAndIncrement() {
     mutex_lock l(mu_);
     return ++counter_;
   }
 
  private:
   mutable mutex mu_;
-  int64 counter_ TF_GUARDED_BY(mu_) = 0;
+  int64_t counter_ TF_GUARDED_BY(mu_) = 0;
 };
 
 // Creates a dataset for reading from the tf.data service.
@@ -72,6 +75,11 @@ class DataServiceDatasetOp : public DatasetOpKernel {
   static constexpr const char* const kIterationCounter = "iteration_counter";
   static constexpr const char* const kOutputTypes = "output_types";
   static constexpr const char* const kOutputShapes = "output_shapes";
+  static constexpr const char* const kUncompress = "uncompress";
+  static constexpr const char* const kUncompressFn = "uncompress_fn";
+  static constexpr const char* const kCrossTrainerCacheOptions =
+      "cross_trainer_cache_options";
+
   // Note: If a new constant is declared here, it *must* be defined in
   // data_service_dataset_op.cc, otherwise it will not compile in debug mode.
 
@@ -82,13 +90,15 @@ class DataServiceDatasetOp : public DatasetOpKernel {
 
  private:
   class Dataset;
-
   int op_version_;
-  int64 task_refresh_interval_hint_ms_;
+  absl::Duration task_refresh_interval_hint_;
   DataTypeVector output_types_;
   std::vector<PartialTensorShape> output_shapes_;
   std::string data_transfer_protocol_;
-  TargetWorkers target_workers_ = TargetWorkers::AUTO;
+  TargetWorkers target_workers_ = TARGET_WORKERS_AUTO;
+  bool uncompress_;
+  std::shared_ptr<FunctionMetadata> uncompress_fn_ = nullptr;
+  std::string seriazlied_cross_trainer_cache_options_;
 };
 
 }  // namespace data

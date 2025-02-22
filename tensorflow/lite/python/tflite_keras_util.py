@@ -21,13 +21,10 @@ could not be copied over are accessed using the dependency inversion principle.
 (for details, refer to tensorflow/python/util/keras_deps.py).
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import copy
 
 from tensorflow.python.eager import def_function
+from tensorflow.python.framework import tensor_spec
 from tensorflow.python.util import keras_deps
 from tensorflow.python.util import nest
 from tensorflow.python.util.compat import collections_abc
@@ -55,6 +52,40 @@ def _enforce_names_consistency(specs):
   return specs
 
 
+def get_save_spec(model):
+  """Returns the save spec of the subclassing keras model."""
+  shapes_dict = getattr(model, '_build_shapes_dict', None)
+  if not shapes_dict:
+    return None
+
+  if 'input_shape' not in shapes_dict:
+    raise ValueError(
+        'Model {} cannot be saved because the input shapes have not been set.'
+    )
+
+  input_shape = shapes_dict['input_shape']
+  if isinstance(input_shape, tuple):
+    shape = input_shape
+    shape = (None,) + shape[1:]
+    return tensor_spec.TensorSpec(
+        shape=shape, dtype=model.input_dtype
+    )
+  elif isinstance(input_shape, dict):
+    specs = {}
+    for key, shape in input_shape.items():
+      shape = (None,) + shape[1:]
+      specs[key] = tensor_spec.TensorSpec(
+          shape=shape, dtype=model.input_dtype, name=key
+      )
+    return specs
+  elif isinstance(input_shape, list):
+    specs = []
+    for shape in input_shape:
+      shape = (None,) + shape[1:]
+      specs.append(tensor_spec.TensorSpec(shape=shape, dtype=model.input_dtype))
+    return specs
+
+
 def model_input_signature(model, keep_original_batch_size=False):
   """Inspect model to get its input signature.
 
@@ -76,9 +107,19 @@ def model_input_signature(model, keep_original_batch_size=False):
     A list containing either a single TensorSpec or an object with nested
     TensorSpecs. This list does not contain the `training` argument.
   """
-  input_specs = model._get_save_spec(dynamic_batch=not keep_original_batch_size)  # pylint: disable=protected-access
-  if input_specs is None:
-    return None
+  if hasattr(model, 'save_spec'):
+    input_specs = model.save_spec(dynamic_batch=not keep_original_batch_size)
+    if input_specs is None:
+      return None
+    # The model's save spec returns (args, kwargs). Extract the first input arg
+    # to use as the input spec.
+    # TODO(b/188105669): Add support for multiple tensor arguments.
+    input_specs = input_specs[0][0]
+  else:
+    input_specs = model._get_save_spec(  # pylint: disable=protected-access
+        dynamic_batch=not keep_original_batch_size)
+    if input_specs is None:
+      return None
   input_specs = _enforce_names_consistency(input_specs)
   # Return a list with a single element as the model's input signature.
   if isinstance(input_specs,

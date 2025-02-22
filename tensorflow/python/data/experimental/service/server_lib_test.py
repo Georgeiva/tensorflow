@@ -14,16 +14,11 @@
 # ==============================================================================
 """Tests for tf.data service server lib."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import logging
 import tempfile
 import threading
 import unittest
 from tensorflow.python.data.experimental.service import server_lib
-from tensorflow.python.framework import errors
 from tensorflow.python.platform import test
 from tensorflow.python.profiler import profiler_client
 
@@ -85,7 +80,7 @@ class ServerLibTest(test.TestCase):
 
   def testStartDispatcherWithWrongFaultTolerantConfig(self):
     config = server_lib.DispatcherConfig(fault_tolerant_mode=True)
-    error = "Cannot enable fault tolerant mode without configuring a work_dir"
+    error = "Cannot enable fault tolerant mode without configuring a work dir"
     with self.assertRaisesRegex(ValueError, error):
       dispatcher = server_lib.DispatchServer(  # pylint: disable=unused-variable
           config=config, start=True)
@@ -115,19 +110,19 @@ class ServerLibTest(test.TestCase):
 
   def testStopDispatcher(self):
     dispatcher = server_lib.DispatchServer()
-    dispatcher._stop()
-    dispatcher._stop()
+    dispatcher.stop()
+    dispatcher.stop()
 
   def testStopWorker(self):
     dispatcher = server_lib.DispatchServer()
     worker = server_lib.WorkerServer(
         server_lib.WorkerConfig(dispatcher._address))
-    worker._stop()
-    worker._stop()
+    worker.stop()
+    worker.stop()
 
   def testStopStartDispatcher(self):
     dispatcher = server_lib.DispatchServer()
-    dispatcher._stop()
+    dispatcher.stop()
     with self.assertRaisesRegex(
         RuntimeError, "Server cannot be started after it has been stopped"):
       dispatcher.start()
@@ -136,21 +131,21 @@ class ServerLibTest(test.TestCase):
     dispatcher = server_lib.DispatchServer()
     worker = server_lib.WorkerServer(
         server_lib.WorkerConfig(dispatcher._address))
-    worker._stop()
+    worker.stop()
     with self.assertRaisesRegex(
         RuntimeError, "Server cannot be started after it has been stopped"):
       worker.start()
 
   def testJoinDispatcher(self):
     dispatcher = server_lib.DispatchServer()
-    dispatcher._stop()
+    dispatcher.stop()
     dispatcher.join()
 
   def testJoinWorker(self):
     dispatcher = server_lib.DispatchServer()
     worker = server_lib.WorkerServer(
         server_lib.WorkerConfig(dispatcher._address))
-    worker._stop()
+    worker.stop()
     worker.join()
 
   def testDispatcherNumWorkers(self):
@@ -166,13 +161,16 @@ class ServerLibTest(test.TestCase):
   def testProfileWorker(self):
     dispatcher = server_lib.DispatchServer()
     worker = server_lib.WorkerServer(
-        server_lib.WorkerConfig(dispatcher._address))
+        server_lib.WorkerConfig(dispatcher._address)
+    )
     # Test the profilers are successfully started and connected to profiler
     # service on the worker. Since there is no op running, it is expected to
-    # return UnavailableError with no trace events collected string.
-    with self.assertRaises(errors.UnavailableError) as error:
+    # return RuntimeError with no trace events collected string.
+    with self.assertRaises(RuntimeError) as error:
       profiler_client.trace(worker._address, tempfile.mkdtemp(), duration_ms=10)
-    self.assertStartsWith(str(error.exception), "No trace event was collected")
+    self.assertStartsWith(
+        str(error.exception), "UNAVAILABLE: No trace event was collected"
+    )
 
 
 if __name__ == "__main__":

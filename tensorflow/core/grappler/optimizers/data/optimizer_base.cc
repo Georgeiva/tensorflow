@@ -15,15 +15,16 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/optimizers/data/optimizer_base.h"
 
-#include "tensorflow/core/common_runtime/metrics.h"
+#include "tensorflow/core/framework/metrics.h"
 
 namespace tensorflow {
 namespace grappler {
 
-Status TFDataOptimizerBase::Optimize(Cluster* cluster, const GrapplerItem& item,
-                                     GraphDef* output) {
+absl::Status TFDataOptimizerBase::Optimize(Cluster* cluster,
+                                           const GrapplerItem& item,
+                                           GraphDef* output) {
   OptimizationStats stats;
-  Status s = OptimizeAndCollectStats(cluster, item, output, &stats);
+  absl::Status s = OptimizeAndCollectStats(cluster, item, output, &stats);
   if (s.ok() && stats.num_changes > 0) {
     metrics::RecordTFDataOptimization(name(), stats.num_changes);
   }

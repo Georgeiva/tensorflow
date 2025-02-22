@@ -15,20 +15,26 @@ limitations under the License.
 
 // Native XLA implementations of simple binary Ops
 
+#include <cstdint>
+#include <tuple>
+#include <vector>
+
+#include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/kernels/cwise_ops.h"
 #include "tensorflow/compiler/tf2xla/lib/broadcast.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/client_library.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/lib/math.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/primitive_util.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "xla/client/client_library.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/lib/math.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/primitive_util.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 
 namespace tensorflow {
 namespace {
@@ -36,24 +42,24 @@ namespace {
 // A subclass of a XlaBinaryOp must build the computation that
 // describes the (tensor,tensor)->tensor function to apply to each element of
 // the input.
-#define XLA_MAKE_BINARY(NAME, HLO)                                       \
-  class NAME##Op : public XlaBinaryOp {                                  \
-   public:                                                               \
-    explicit NAME##Op(OpKernelConstruction* ctx) : XlaBinaryOp(ctx) {}   \
-    xla::XlaOp Computation(                                              \
-        XlaOpKernelContext* ctx, const xla::XlaOp& lhs,                  \
-        const absl::Span<const int64>& lhs_shape, const xla::XlaOp& rhs, \
-        const absl::Span<const int64>& rhs_shape,                        \
-        const BCast& broadcast_helper,                                   \
-        const std::vector<int64>& extend_dimensions) override {          \
-      xla::XlaBuilder* b = ctx->builder();                               \
-      (void)b;                                                           \
-      (void)lhs_shape;                                                   \
-      (void)rhs_shape;                                                   \
-      (void)extend_dimensions;                                           \
-      return HLO;                                                        \
-    }                                                                    \
-  };                                                                     \
+#define XLA_MAKE_BINARY(NAME, HLO)                                         \
+  class NAME##Op : public XlaBinaryOp {                                    \
+   public:                                                                 \
+    explicit NAME##Op(OpKernelConstruction* ctx) : XlaBinaryOp(ctx) {}     \
+    xla::XlaOp Computation(                                                \
+        XlaOpKernelContext* ctx, const xla::XlaOp& lhs,                    \
+        const absl::Span<const int64_t>& lhs_shape, const xla::XlaOp& rhs, \
+        const absl::Span<const int64_t>& rhs_shape,                        \
+        const BCast& broadcast_helper,                                     \
+        const std::vector<int64_t>& extend_dimensions) override {          \
+      xla::XlaBuilder* b = ctx->builder();                                 \
+      (void)b;                                                             \
+      (void)lhs_shape;                                                     \
+      (void)rhs_shape;                                                     \
+      (void)extend_dimensions;                                             \
+      return HLO;                                                          \
+    }                                                                      \
+  };                                                                       \
   REGISTER_XLA_OP(Name(#NAME), NAME##Op)
 
 XLA_MAKE_BINARY(Add, xla::Add(lhs, rhs, extend_dimensions));
@@ -212,7 +218,24 @@ XLA_MAKE_BINARY(
     xla::Div(xla::Mul(rhs, XlaHelpers::FloatLiteral(b, input_type(0), 0.5)),
              lhs, extend_dimensions));
 
-XLA_MAKE_BINARY(TruncateDiv, xla::Div(lhs, rhs, extend_dimensions));
+// Implementation of TruncateDiv.
+//
+// For floating-point values, returns trunc(x / y).  For integers, simply
+// returns x / y.
+static xla::XlaOp TruncateDivImpl(xla::XlaBuilder* b, DataType dtype,
+                                  xla::XlaOp x, xla::XlaOp y,
+                                  const BCast& broadcast_helper) {
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  if (!DataTypeIsFloating(dtype)) {
+    return xla::Div(x, y);
+  }
+  auto zero = XlaHelpers::Zero(b, dtype);
+  auto x_div_y = xla::Div(x, y);
+  auto round_up = xla::Lt(x_div_y, zero);
+  return xla::Select(round_up, xla::Ceil(x_div_y), xla::Floor(x_div_y));
+}
+XLA_MAKE_BINARY(TruncateDiv,
+                TruncateDivImpl(b, input_type(0), lhs, rhs, broadcast_helper));
 XLA_MAKE_BINARY(TruncateMod, xla::Rem(lhs, rhs, extend_dimensions));
 
 // Comparison ops
@@ -242,8 +265,9 @@ XLA_MAKE_BINARY(TanhGrad,
 
 XLA_MAKE_BINARY(Pow, xla::Pow(lhs, rhs, extend_dimensions));
 
-xla::XlaOp SquaredDifferenceImpl(DataType dtype, xla::XlaOp x, xla::XlaOp y,
-                                 const std::vector<int64>& extend_dimensions) {
+xla::XlaOp SquaredDifferenceImpl(
+    DataType dtype, xla::XlaOp x, xla::XlaOp y,
+    const std::vector<int64_t>& extend_dimensions) {
   auto difference = xla::Sub(x, y, extend_dimensions);
   if (DataTypeIsComplex(dtype)) {
     return xla::Conj(difference) * difference;
@@ -317,7 +341,7 @@ class ApproximateEqualOp : public XlaOpKernel {
     auto abs = xla::Abs(xla::Sub(ctx->Input(0), ctx->Input(1)));
     auto abs_shape = b->GetShape(abs);
     OP_REQUIRES_OK(ctx, abs_shape.status());
-    auto abs_type = abs_shape.ValueOrDie().element_type();
+    auto abs_type = abs_shape.value().element_type();
     auto result =
         xla::Lt(abs, xla::ConvertElementType(
                          xla::ConstantR0<float>(b, tolerance_), abs_type));

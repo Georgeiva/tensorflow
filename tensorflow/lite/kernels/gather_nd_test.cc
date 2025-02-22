@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -68,18 +68,35 @@ TEST(GatherNdOpTest, ElementIndexingIntoMatrix) {
   GatherNdOpModel m({TensorType_FLOAT32, {2, 2}}, {TensorType_INT32, {2, 2}});
   m.SetInput<float>({1.1, 1.2, 2.1, 2.2});
   m.SetPositions<int32_t>({0, 0, 1, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
-  EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray({1.1, 2.2}));
+  EXPECT_THAT(m.GetOutput<float>(), Pointwise(FloatingPointEq(), {1.1, 2.2}));
+}
+
+TEST(GatherNdOpTest, ErrorOnOutOfBoundsTooLarge) {
+  GatherNdOpModel m({TensorType_FLOAT32, {2, 2}}, {TensorType_INT32, {2, 2}});
+  m.SetInput<float>({1.1, 1.2, 2.1, 2.2});
+  m.SetPositions<int32_t>({0, 0, 2, 0});
+  EXPECT_EQ(m.Invoke(), kTfLiteError);
+  m.SetPositions<int32_t>({0, 0, 1, 2});
+  EXPECT_EQ(m.Invoke(), kTfLiteError);
+}
+
+TEST(GatherNdOpTest, ErrorOnOutOfBoundsNegative) {
+  GatherNdOpModel m({TensorType_FLOAT32, {2, 2}}, {TensorType_INT32, {2, 2}});
+  m.SetInput<float>({1.1, 1.2, 2.1, 2.2});
+  m.SetPositions<int32_t>({1, -1, 1, 1});
+  EXPECT_EQ(m.Invoke(), kTfLiteError);
 }
 
 TEST(GatherNdOpTest, SliceIndexingIntoMatrix) {
   GatherNdOpModel m({TensorType_FLOAT32, {2, 2}}, {TensorType_INT32, {2, 1}});
   m.SetInput<float>({1.1, 1.2, 2.1, 2.2});
   m.SetPositions<int32_t>({1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
-  EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray({2.1, 2.2, 1.1, 1.2}));
+  EXPECT_THAT(m.GetOutput<float>(),
+              Pointwise(FloatingPointEq(), {2.1, 2.2, 1.1, 1.2}));
 }
 
 TEST(GatherNdOpTest, BatchedIndexingIntoMatrix1) {
@@ -87,9 +104,10 @@ TEST(GatherNdOpTest, BatchedIndexingIntoMatrix1) {
                     {TensorType_INT32, {2, 1, 1}});
   m.SetInput<float>({1.1, 1.2, 2.1, 2.2});
   m.SetPositions<int32_t>({1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
-  EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray({2.1, 2.2, 1.1, 1.2}));
+  EXPECT_THAT(m.GetOutput<float>(),
+              Pointwise(FloatingPointEq(), {2.1, 2.2, 1.1, 1.2}));
 }
 
 TEST(GatherNdOpTest, BatchedIndexingIntoMatrix2) {
@@ -97,18 +115,18 @@ TEST(GatherNdOpTest, BatchedIndexingIntoMatrix2) {
                     {TensorType_INT32, {2, 1, 2}});
   m.SetInput<float>({1.1, 1.2, 2.1, 2.2});
   m.SetPositions<int32_t>({0, 0, 1, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
-  EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray({1.1, 2.2}));
+  EXPECT_THAT(m.GetOutput<float>(), Pointwise(FloatingPointEq(), {1.1, 2.2}));
 }
 
 TEST(GatherNdOpTest, DuplicateIndexingIntoMatrix) {
   GatherNdOpModel m({TensorType_FLOAT32, {2, 2}}, {TensorType_INT32, {2, 2}});
   m.SetInput<float>({1.1, 1.2, 2.1, 2.2});
   m.SetPositions<int32_t>({0, 0, 0, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
-  EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray({1.1, 1.1}));
+  EXPECT_THAT(m.GetOutput<float>(), Pointwise(FloatingPointEq(), {1.1, 1.1}));
 }
 
 TEST(GatherNdOpTest, ElementIndexingIntoRank3Tensor) {
@@ -118,9 +136,9 @@ TEST(GatherNdOpTest, ElementIndexingIntoRank3Tensor) {
                      3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
                      5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
   m.SetPositions<int32_t>({0, 0, 1, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
-  EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray({-1.2, -4.1}));
+  EXPECT_THAT(m.GetOutput<float>(), Pointwise(FloatingPointEq(), {-1.2, -4.1}));
 }
 
 TEST(GatherNdOpTest, SliceIndexingIntoRank3Tensor) {
@@ -130,11 +148,11 @@ TEST(GatherNdOpTest, SliceIndexingIntoRank3Tensor) {
                      3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
                      5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
   m.SetPositions<int32_t>({0, 2});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
-              ElementsAreArray({1.1, -1.2, 1.3, -2.1, 2.2, 2.3, 5.1, -5.2, 5.3,
-                                6.1, -6.2, 6.3}));
+              Pointwise(FloatingPointEq(), {1.1, -1.2, 1.3, -2.1, 2.2, 2.3, 5.1,
+                                            -5.2, 5.3, 6.1, -6.2, 6.3}));
 }
 
 TEST(GatherNdOpTest, BatchedIndexingIntoRank3Tensor1) {
@@ -144,9 +162,9 @@ TEST(GatherNdOpTest, BatchedIndexingIntoRank3Tensor1) {
                      3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
                      5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
   m.SetPositions<int32_t>({0, 0, 1, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
-  EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray({-1.2, -4.1}));
+  EXPECT_THAT(m.GetOutput<float>(), Pointwise(FloatingPointEq(), {-1.2, -4.1}));
 }
 
 TEST(GatherNdOpTest, BatchedIndexingIntoRank3Tensor2) {
@@ -156,11 +174,11 @@ TEST(GatherNdOpTest, BatchedIndexingIntoRank3Tensor2) {
                      3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
                      5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
   m.SetPositions<int32_t>({1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
-              ElementsAreArray({3.1, 3.2, -3.3, -4.1, -4.2, 4.3, 1.1, -1.2, 1.3,
-                                -2.1, 2.2, 2.3}));
+              Pointwise(FloatingPointEq(), {3.1, 3.2, -3.3, -4.1, -4.2, 4.3,
+                                            1.1, -1.2, 1.3, -2.1, 2.2, 2.3}));
 }
 
 TEST(GatherNdOpTest, BatchedIndexingIntoRank3Tensor3) {
@@ -170,11 +188,11 @@ TEST(GatherNdOpTest, BatchedIndexingIntoRank3Tensor3) {
                      3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
                      5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
   m.SetPositions<int32_t>({0, 1, 1, 0, 0, 0, 2, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
-              ElementsAreArray({-2.1, 2.2, 2.3, 3.1, 3.2, -3.3, 1.1, -1.2, 1.3,
-                                6.1, -6.2, 6.3}));
+              Pointwise(FloatingPointEq(), {-2.1, 2.2, 2.3, 3.1, 3.2, -3.3, 1.1,
+                                            -1.2, 1.3, 6.1, -6.2, 6.3}));
 }
 
 TEST(GatherNdOpTest, BatchedIndexingIntoRank3Tensor4) {
@@ -184,9 +202,10 @@ TEST(GatherNdOpTest, BatchedIndexingIntoRank3Tensor4) {
                      3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
                      5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
   m.SetPositions<int32_t>({0, 0, 1, 1, 0, 1, 1, 1, 2, 2, 1, 2});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
-  EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray({-1.2, 3.2, 4.3, 6.3}));
+  EXPECT_THAT(m.GetOutput<float>(),
+              Pointwise(FloatingPointEq(), {-1.2, 3.2, 4.3, 6.3}));
 }
 
 TEST(GatherNdOpTest, DuplicateIndexingIntoRank3Tensor) {
@@ -196,10 +215,10 @@ TEST(GatherNdOpTest, DuplicateIndexingIntoRank3Tensor) {
                      3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
                      5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
   m.SetPositions<int32_t>({0, 1, 0, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
-              ElementsAreArray({-2.1, 2.2, 2.3, -2.1, 2.2, 2.3}));
+              Pointwise(FloatingPointEq(), {-2.1, 2.2, 2.3, -2.1, 2.2, 2.3}));
 }
 
 TEST(GatherNdOpTest, Float32Int32) {
@@ -209,10 +228,10 @@ TEST(GatherNdOpTest, Float32Int32) {
                      3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
                      5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
   m.SetPositions<int32_t>({0, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
-              ElementsAreArray({-2.1, 2.2, 2.3, 3.1, 3.2, -3.3}));
+              Pointwise(FloatingPointEq(), {-2.1, 2.2, 2.3, 3.1, 3.2, -3.3}));
 }
 
 TEST(GatherNdOpTest, Float32Int64) {
@@ -222,10 +241,10 @@ TEST(GatherNdOpTest, Float32Int64) {
                      3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
                      5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
   m.SetPositions<int64_t>({0LL, 1LL, 1LL, 0LL});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
-              ElementsAreArray({-2.1, 2.2, 2.3, 3.1, 3.2, -3.3}));
+              Pointwise(FloatingPointEq(), {-2.1, 2.2, 2.3, 3.1, 3.2, -3.3}));
 }
 
 TEST(GatherNdOpTest, Int32Int32) {
@@ -234,7 +253,7 @@ TEST(GatherNdOpTest, Int32Int32) {
                        3, 3, -3, -4, -4, 4,  //
                        5, -5, 5, 6, -6, 6});
   m.SetPositions<int32_t>({0, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<int32_t>(), ElementsAreArray({-2, 2, 2, 3, 3, -3}));
 }
@@ -245,7 +264,7 @@ TEST(GatherNdOpTest, Int32Int64) {
                        3, 3, -3, -4, -4, 4,  //
                        5, -5, 5, 6, -6, 6});
   m.SetPositions<int64_t>({0LL, 1LL, 1LL, 0LL});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<int32_t>(), ElementsAreArray({-2, 2, 2, 3, 3, -3}));
 }
@@ -256,7 +275,7 @@ TEST(GatherNdOpTest, Uint8Int32) {
                        3, 3, 3, 4, 4, 4,  //
                        5, 5, 5, 6, 6, 6});
   m.SetPositions<int32_t>({0, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<uint8_t>(), ElementsAreArray({2, 2, 2, 3, 3, 3}));
 }
@@ -267,7 +286,7 @@ TEST(GatherNdOpTest, Uint8Int64) {
                        3, 3, 3, 4, 4, 4,  //
                        5, 5, 5, 6, 6, 6});
   m.SetPositions<int64_t>({0, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<uint8_t>(), ElementsAreArray({2, 2, 2, 3, 3, 3}));
 }
@@ -278,7 +297,7 @@ TEST(GatherNdOpTest, Int8Int32) {
                       3, 3, -3, -4, -4, 4,  //
                       5, -5, 5, 6, -6, 6});
   m.SetPositions<int32_t>({0, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<int8_t>(), ElementsAreArray({-2, 2, 2, 3, 3, -3}));
 }
@@ -289,7 +308,7 @@ TEST(GatherNdOpTest, Int8Int64) {
                       3, 3, -3, -4, -4, 4,  //
                       5, -5, 5, 6, -6, 6});
   m.SetPositions<int64_t>({0LL, 1LL, 1LL, 0LL});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<int8_t>(), ElementsAreArray({-2, 2, 2, 3, 3, -3}));
 }
@@ -300,7 +319,7 @@ TEST(GatherNdOpTest, Int16Int32) {
                        3, 3, -3, -4, -4, 4,  //
                        5, -5, 5, 6, -6, 6});
   m.SetPositions<int32_t>({0, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<int16_t>(), ElementsAreArray({-2, 2, 2, 3, 3, -3}));
 }
@@ -311,7 +330,7 @@ TEST(GatherNdOpTest, Int16Int64) {
                        3, 3, -3, -4, -4, 4,  //
                        5, -5, 5, 6, -6, 6});
   m.SetPositions<int64_t>({0LL, 1LL, 1LL, 0LL});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<int16_t>(), ElementsAreArray({-2, 2, 2, 3, 3, -3}));
 }
@@ -322,7 +341,7 @@ TEST(GatherNdOpTest, Int64Int32) {
                        3LL, 3LL, -3LL, -4LL, -4LL, 4LL,  //
                        5LL, -5LL, 5LL, 6LL, -6LL, 6LL});
   m.SetPositions<int32_t>({0, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<int64_t>(),
               ElementsAreArray({-2LL, 2LL, 2LL, 3LL, 3LL, -3LL}));
@@ -334,19 +353,37 @@ TEST(GatherNdOpTest, Int64Int64) {
                        3LL, 3LL, -3LL, -4LL, -4LL, 4LL,  //
                        5LL, -5LL, 5LL, 6LL, -6LL, 6LL});
   m.SetPositions<int64_t>({0LL, 1LL, 1LL, 0LL});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<int64_t>(),
               ElementsAreArray({-2LL, 2LL, 2LL, 3LL, 3LL, -3LL}));
 }
 
+TEST(GatherNdOpTest, Float32Int16) {
+  GatherNdOpModel m({TensorType_FLOAT32, {3, 2, 3}},
+                    {TensorType_INT16, {2, 2}});
+  m.SetInput<float>({1.1, -1.2, 1.3, -2.1, 2.2, 2.3,   //
+                     3.1, 3.2, -3.3, -4.1, -4.2, 4.3,  //
+                     5.1, -5.2, 5.3, 6.1, -6.2, 6.3});
+  m.SetPositions<int16_t>({0, 1, 1, 0});
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+
+  EXPECT_THAT(m.GetOutput<float>(),
+              Pointwise(FloatingPointEq(), {-2.1, 2.2, 2.3, 3.1, 3.2, -3.3}));
+}
+
 TEST(GatherNdOpTest, StringInt32) {
   GatherNdOpModel m({TensorType_STRING, {3, 2, 3}}, {TensorType_INT32, {2, 2}});
-  m.SetInput<std::string>({"A", "B", "C", "D", "E", "F",  //
-                           "G", "H", "I", "J", "K", "L",  //
-                           "M", "N", "O", "P", "Q", "R"});
+  m.SetInput<std::string>({"A", "B", "C",  //
+                           "D", "E", "F",  //
+                           //
+                           "G", "H", "I",  //
+                           "J", "K", "L",  //
+                           //
+                           "M", "N", "O",  //
+                           "P", "Q", "R"});
   m.SetPositions<int32_t>({0, 1, 1, 0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<std::string>(),
               ElementsAreArray({"D", "E", "F", "G", "H", "I"}));
@@ -354,14 +391,56 @@ TEST(GatherNdOpTest, StringInt32) {
 
 TEST(GatherNdOpTest, StringInt64) {
   GatherNdOpModel m({TensorType_STRING, {3, 2, 3}}, {TensorType_INT64, {2, 2}});
-  m.SetInput<std::string>({"A", "B", "C", "D", "E", "F",  //
-                           "G", "H", "I", "J", "K", "L",  //
-                           "M", "N", "O", "P", "Q", "R"});
+  m.SetInput<std::string>({"A", "B", "C",  //
+                           "D", "E", "F",  //
+                           //
+                           "G", "H", "I",  //
+                           "J", "K", "L",  //
+                           //
+                           "M", "N", "O",  //
+                           "P", "Q", "R"});
   m.SetPositions<int64_t>({0LL, 1LL, 1LL, 0LL});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<std::string>(),
               ElementsAreArray({"D", "E", "F", "G", "H", "I"}));
 }
+
+TEST(GatherNdOpTest, StringOutOfBoundsTooLarge) {
+  GatherNdOpModel m({TensorType_STRING, {3, 2, 3}}, {TensorType_INT32, {2, 2}});
+  m.SetInput<std::string>({"A", "B", "C",  //
+                           "D", "E", "F",  //
+                           //
+                           "G", "H", "I",  //
+                           "J", "K", "L",  //
+                           //
+                           "M", "N", "O",  //
+                           "P", "Q", "R"});
+  m.SetPositions<int32_t>({0, 0, 3, 0});
+  ASSERT_EQ(m.Invoke(), kTfLiteError);
+  m.SetPositions<int32_t>({0, 0, 2, 2});
+  ASSERT_EQ(m.Invoke(), kTfLiteError);
+}
+
+TEST(GatherNdOpTest, StringOutOfBoundsNegative) {
+  GatherNdOpModel m({TensorType_STRING, {3, 2, 3}}, {TensorType_INT32, {2, 2}});
+  m.SetInput<std::string>({"A", "B", "C",  //
+                           "D", "E", "F",  //
+                           //
+                           "G", "H", "I",  //
+                           "J", "K", "L",  //
+                           //
+                           "M", "N", "O",  //
+                           "P", "Q", "R"});
+  m.SetPositions<int32_t>({1, -1, 0, 0});
+  ASSERT_EQ(m.Invoke(), kTfLiteError);
+}
+
+TEST(GatherNdOpTest, EmptyParamsAndIndex) {
+  GatherNdOpModel m({TensorType_FLOAT32, {1, 0}}, {TensorType_INT32, {0, 2}});
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({0}));
+}
+
 }  // namespace
 }  // namespace tflite

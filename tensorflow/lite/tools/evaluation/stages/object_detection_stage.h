@@ -20,6 +20,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/tools/evaluation/evaluation_delegate_provider.h"
 #include "tensorflow/lite/tools/evaluation/evaluation_stage.h"
 #include "tensorflow/lite/tools/evaluation/proto/evaluation_config.pb.h"
@@ -35,10 +36,11 @@ namespace evaluation {
 // Assumes that the object detection model's signature (number of
 // inputs/outputs, ordering of outputs & what they denote) is same as the
 // MobileNet SSD model:
-// https://www.tensorflow.org/lite/models/object_detection/overview#output.
+// https://www.tensorflow.org/lite/examples/object_detection/overview#output_signature.
 // Input size/type & number of detections could be different.
-// TODO(b/133772912): Generalize support for other types of object detection
-// models.
+//
+// This class will be extended to support other types of detection models, if
+// required in the future.
 class ObjectDetectionStage : public EvaluationStage {
  public:
   explicit ObjectDetectionStage(const EvaluationStageConfig& config)

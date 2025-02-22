@@ -14,11 +14,12 @@ limitations under the License.
 ==============================================================================*/
 
 #include <stdio.h>
+
 #include <set>
 
+#include "xla/tsl/platform/protobuf_compiler.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/protobuf.h"
-#include "tensorflow/core/platform/protobuf_compiler.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/tools/proto_text/gen_proto_text_functions_lib.h"
 

@@ -117,10 +117,10 @@ static void BM_IncreasingSequence(benchmark::State& state) {
     helper.MakeOp(DT_FLOAT_REF);
     helper.AddIncreasingInput(batch_size, input_size);
     state.ResumeTiming();
-    Status stat = helper.RunOpKernel();
+    absl::Status stat = helper.RunOpKernel();
   }
   state.SetItemsProcessed(
-      static_cast<int64>(batch_size * input_size * state.iterations()));
+      static_cast<int64_t>(batch_size * input_size * state.iterations()));
 }
 
 BENCHMARK(BM_IncreasingSequence)

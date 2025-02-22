@@ -20,7 +20,6 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
-#include "absl/strings/str_join.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
 
 namespace tflite {
@@ -62,11 +61,16 @@ bool ModelTransformer::Apply(const std::string& name,
       continue;
     }
     auto result = transformation->ApplyToNode(node, graph_);
+    last_transformation_message_ = result.message;
     if (result.status == TransformStatus::INVALID) {
       return false;
     }
   }
   return true;
+}
+
+const std::string& ModelTransformer::last_transformation_message() const {
+  return last_transformation_message_;
 }
 
 bool ModelTransformer::ApplyStartingWithNode(
@@ -99,6 +103,7 @@ bool ModelTransformer::ApplyStartingWithNode(
       auto preceding_node =
           graph_->FindProducer(graph_->FindInputs(first_in_sequence)[0]->id);
       auto result = transformation->ApplyToNodesSequence(nodes, graph_);
+      last_transformation_message_ = result.message;
       if (result.status == TransformStatus::INVALID) {
         // graph is broken now.
         return false;

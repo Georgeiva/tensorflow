@@ -89,7 +89,7 @@ void NodeNamePartsFromInput(const string& input_name, string* prefix,
   } else {
     *suffix = ":" + input_parts[1];
   }
-  StringPiece node_name_piece(input_parts[0]);
+  absl::string_view node_name_piece(input_parts[0]);
   if (absl::ConsumePrefix(&node_name_piece, "^")) {
     *prefix = "^";
   } else {
@@ -181,13 +181,13 @@ void RemoveAttributes(const GraphDef& input_graph_def,
   }
 }
 
-Status SortByExecutionOrder(const GraphDef& input_graph_def,
-                            GraphDef* output_graph_def) {
+absl::Status SortByExecutionOrder(const GraphDef& input_graph_def,
+                                  GraphDef* output_graph_def) {
   const int num_nodes = input_graph_def.node_size();
   std::vector<int> ready;
   std::vector<int> pending_count;
   pending_count.reserve(num_nodes);
-  std::vector<gtl::InlinedVector<int, 4>> outputs(num_nodes);
+  std::vector<absl::InlinedVector<int, 4UL>> outputs(num_nodes);
 
   std::map<string, int> name_index;
   for (int i = 0; i < input_graph_def.node_size(); ++i) {
@@ -200,7 +200,7 @@ Status SortByExecutionOrder(const GraphDef& input_graph_def,
     const NodeDef& node_def(input_graph_def.node(n));
     if (IsMerge(node_def)) {
       // for merge only wait for one non-control input.
-      int32 num_control_edges = 0;
+      int32_t num_control_edges = 0;
       for (int i = 0; i < node_def.input_size(); ++i) {
         if (absl::StartsWith(node_def.input(i), "^")) {
           num_control_edges++;
@@ -252,7 +252,7 @@ Status SortByExecutionOrder(const GraphDef& input_graph_def,
   if (processed < num_nodes) {
     LOG(WARNING) << "IN " << __func__ << (num_nodes - processed)
                  << " NODES IN A CYCLE";
-    for (int64 i = 0; i < num_nodes; i++) {
+    for (int64_t i = 0; i < num_nodes; i++) {
       if (pending_count[i] != 0) {
         LOG(WARNING) << "PENDING: " << SummarizeNodeDef(input_graph_def.node(i))
                      << "WITH PENDING COUNT = " << pending_count[i];
@@ -260,7 +260,7 @@ Status SortByExecutionOrder(const GraphDef& input_graph_def,
     }
     return errors::InvalidArgument(num_nodes - processed, " nodes in a cycle");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 string OpTypePattern::DebugString() const {
@@ -288,8 +288,8 @@ GraphMatcher::GraphMatcher(const GraphDef& graph_def) {
   MapNamesToNodes(graph_def_, &node_map_);
 }
 
-Status GraphMatcher::GetOpTypeMatches(const OpTypePattern& pattern,
-                                      std::vector<NodeMatch>* matches) {
+absl::Status GraphMatcher::GetOpTypeMatches(const OpTypePattern& pattern,
+                                            std::vector<NodeMatch>* matches) {
   std::set<string> matched_nodes;
   for (const NodeDef& node : graph_def_.node()) {
     // Skip any nodes that are already part of a match.
@@ -302,7 +302,7 @@ Status GraphMatcher::GetOpTypeMatches(const OpTypePattern& pattern,
       matches->push_back(match);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool GraphMatcher::DoesOpTypeMatch(
@@ -360,11 +360,11 @@ bool GraphMatcher::DoesOpTypeMatch(
   return true;
 }
 
-Status ReplaceMatchingOpTypes(
+absl::Status ReplaceMatchingOpTypes(
     const GraphDef& input_graph_def, const OpTypePattern& pattern,
-    const std::function<Status(const NodeMatch&, const std::set<string>&,
-                               const std::set<string>&, std::vector<NodeDef>*)>&
-        node_generator,
+    const std::function<absl::Status(const NodeMatch&, const std::set<string>&,
+                                     const std::set<string>&,
+                                     std::vector<NodeDef>*)>& node_generator,
     const ReplaceMatchingOpTypesOptions& options, GraphDef* output_graph_def) {
   // Start off by retrieving all the matching subgraphs.
   GraphMatcher matcher(input_graph_def);
@@ -471,13 +471,13 @@ Status ReplaceMatchingOpTypes(
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RenameNodeInputs(const GraphDef& input_graph_def,
-                        const std::map<string, string>& inputs_to_rename,
-                        const std::unordered_set<string>& nodes_to_ignore,
-                        GraphDef* output_graph_def) {
+absl::Status RenameNodeInputs(const GraphDef& input_graph_def,
+                              const std::map<string, string>& inputs_to_rename,
+                              const std::unordered_set<string>& nodes_to_ignore,
+                              GraphDef* output_graph_def) {
   std::map<string, std::vector<std::pair<string, string>>>
       canonical_inputs_to_rename;
   for (const auto& input_to_rename : inputs_to_rename) {
@@ -512,7 +512,7 @@ Status RenameNodeInputs(const GraphDef& input_graph_def,
           const string& dest_name = input_to_rename.second;
           bool is_match;
           string match_name;
-          if (str_util::EndsWith(source_name, ":*")) {
+          if (absl::EndsWith(source_name, ":*")) {
             is_match = true;
             string prefix;
             string unused_node_name;
@@ -537,7 +537,7 @@ Status RenameNodeInputs(const GraphDef& input_graph_def,
       *(new_node->mutable_input()->Add()) = new_input_name;
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void CopyOriginalMatch(const NodeMatch& match,
@@ -569,7 +569,7 @@ void FindInvalidInputs(const GraphDef& graph_def,
   }
 }
 
-Status IsGraphValid(const GraphDef& graph_def) {
+absl::Status IsGraphValid(const GraphDef& graph_def) {
   std::vector<std::pair<string, string>> invalid_inputs;
   FindInvalidInputs(graph_def, &invalid_inputs);
   if (!invalid_inputs.empty()) {
@@ -583,26 +583,27 @@ Status IsGraphValid(const GraphDef& graph_def) {
     return errors::Internal(
         "Invalid graph with inputs referring to nonexistent nodes");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status GetInOutTypes(const NodeDef& node_def, DataTypeVector* inputs,
-                     DataTypeVector* outputs) {
+absl::Status GetInOutTypes(const NodeDef& node_def, DataTypeVector* inputs,
+                           DataTypeVector* outputs) {
   const OpDef* op_def;
   TF_RETURN_IF_ERROR(OpRegistry::Global()->LookUpOpDef(node_def.op(), &op_def));
   TF_RETURN_IF_ERROR(InOutTypesForNode(node_def, *op_def, inputs, outputs));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status TensorShapeFromString(const string& shape_string, TensorShape* result) {
+absl::Status TensorShapeFromString(const string& shape_string,
+                                   TensorShape* result) {
   if (shape_string.empty()) {
     return errors::InvalidArgument("Specified shape is empty.");
   }
   std::vector<string> dims_as_str = str_util::Split(shape_string, ",");
-  std::vector<int64> dims;
+  std::vector<int64_t> dims;
   for (const string& dim : dims_as_str) {
-    int64 tmp;
-    if (strings::safe_strto64(dim, &tmp)) {
+    int64_t tmp;
+    if (absl::SimpleAtoi(dim, &tmp)) {
       dims.push_back(tmp);
     } else {
       return errors::InvalidArgument("Could parse as shape: '", shape_string,
@@ -610,7 +611,7 @@ Status TensorShapeFromString(const string& shape_string, TensorShape* result) {
     }
   }
   *result = TensorShape(dims);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 int TransformFuncContext::CountParameters(const string& name) const {
@@ -621,16 +622,15 @@ int TransformFuncContext::CountParameters(const string& name) const {
   }
 }
 
-Status TransformFuncContext::GetOneStringParameter(const string& name,
-                                                   const string& default_value,
-                                                   string* result) const {
+absl::Status TransformFuncContext::GetOneStringParameter(
+    const string& name, const string& default_value, string* result) const {
   const int params_count = CountParameters(name);
   if (params_count == 0) {
     *result = default_value;
-    return Status::OK();
+    return absl::OkStatus();
   } else if (params_count == 1) {
     *result = params.at(name).at(0);
-    return Status::OK();
+    return absl::OkStatus();
   } else {
     return errors::InvalidArgument("Expected a single '", name,
                                    "' parameter, but found ", params_count,
@@ -638,65 +638,65 @@ Status TransformFuncContext::GetOneStringParameter(const string& name,
   }
 }
 
-Status TransformFuncContext::GetOneInt32Parameter(const string& name,
-                                                  int32 default_value,
-                                                  int32* result) const {
+absl::Status TransformFuncContext::GetOneInt32Parameter(const string& name,
+                                                        int32_t default_value,
+                                                        int32* result) const {
   const int params_count = CountParameters(name);
   if (params_count == 0) {
     *result = default_value;
-    return Status::OK();
+    return absl::OkStatus();
   }
   string string_value;
   TF_RETURN_IF_ERROR(GetOneStringParameter(name, "", &string_value));
-  if (!strings::safe_strto32(StringPiece(string_value), result)) {
+  if (!absl::SimpleAtoi(absl::string_view(string_value), result)) {
     return errors::InvalidArgument("Couldn't interpret the ", name,
                                    " argument as a number:", string_value);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status TransformFuncContext::GetOneInt64Parameter(const string& name,
-                                                  int64 default_value,
-                                                  int64* result) const {
+absl::Status TransformFuncContext::GetOneInt64Parameter(const string& name,
+                                                        int64_t default_value,
+                                                        int64_t* result) const {
   const int params_count = CountParameters(name);
   if (params_count == 0) {
     *result = default_value;
-    return Status::OK();
+    return absl::OkStatus();
   }
   string string_value;
   TF_RETURN_IF_ERROR(GetOneStringParameter(name, "", &string_value));
-  if (!strings::safe_strto64(StringPiece(string_value), result)) {
+  if (!absl::SimpleAtoi(absl::string_view(string_value), result)) {
     return errors::InvalidArgument("Couldn't interpret the ", name,
                                    " argument as a number:", string_value);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status TransformFuncContext::GetOneFloatParameter(const string& name,
-                                                  float default_value,
-                                                  float* result) const {
+absl::Status TransformFuncContext::GetOneFloatParameter(const string& name,
+                                                        float default_value,
+                                                        float* result) const {
   const int params_count = CountParameters(name);
   if (params_count == 0) {
     *result = default_value;
-    return Status::OK();
+    return absl::OkStatus();
   }
   string string_value;
   TF_RETURN_IF_ERROR(GetOneStringParameter(name, "", &string_value));
-  if (!strings::safe_strtof(string_value.c_str(), result)) {
+  if (!absl::SimpleAtof(string_value.c_str(), result)) {
     return errors::InvalidArgument(
         "Couldn't interpret the ", name,
         " argument as a float number:", string_value);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status TransformFuncContext::GetOneBoolParameter(const string& name,
-                                                 bool default_value,
-                                                 bool* result) const {
+absl::Status TransformFuncContext::GetOneBoolParameter(const string& name,
+                                                       bool default_value,
+                                                       bool* result) const {
   const int params_count = CountParameters(name);
   if (params_count == 0) {
     *result = default_value;
-    return Status::OK();
+    return absl::OkStatus();
   }
   string string_value;
   TF_RETURN_IF_ERROR(GetOneStringParameter(name, "", &string_value));
@@ -709,7 +709,7 @@ Status TransformFuncContext::GetOneBoolParameter(const string& name,
                                    " argument as a boolean:", string_value,
                                    " (expected true, false, 0 or 1)");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace graph_transforms

@@ -22,9 +22,8 @@ namespace functor {
 #if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 DEFINE_BINARY10(less_equal, Eigen::half, float, double, int64, uint8, uint16,
                 uint32, uint64, int8, int16);
-#else
-DEFINE_BINARY4(less_equal, uint8, uint16, uint32, uint64);
 #endif
+DEFINE_BINARY1(less_equal, bfloat16);
 }  // namespace functor
 }  // namespace tensorflow
 

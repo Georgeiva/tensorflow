@@ -13,13 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_MLIR_LITE_METRICS_UTIL_H_
-#define TENSORFLOW_COMPILER_MLIR_LITE_METRICS_UTIL_H_
+#ifndef TENSORFLOW_COMPILER_MLIR_LITE_METRICS_TYPES_UTIL_H_
+#define TENSORFLOW_COMPILER_MLIR_LITE_METRICS_TYPES_UTIL_H_
 
+#include <cstddef>
 #include <functional>
+#include <string>
 
 #include "mlir/IR/Location.h"  // from @llvm-project
-#include "tensorflow/lite/python/metrics_wrapper/converter_error_data.pb.h"
+#include "tensorflow/compiler/mlir/lite/metrics/converter_error_data.pb.h"
 
 namespace mlir {
 namespace TFL {
@@ -49,8 +51,8 @@ struct ConverterErrorDataHash {
   }
 };
 
-// The comparision function for ConverterErrorData.
-struct ConverterErrorDataComparision {
+// The comparison function for ConverterErrorData.
+struct ConverterErrorDataComparison {
   std::size_t operator()(
       const tflite::metrics::ConverterErrorData& a,
       const tflite::metrics::ConverterErrorData& b) const noexcept {
@@ -62,8 +64,8 @@ struct ConverterErrorDataComparision {
 tflite::metrics::ConverterErrorData NewConverterErrorData(
     const std ::string& pass_name, const std::string& error_message,
     tflite::metrics::ConverterErrorData::ErrorCode error_code,
-    const std::string& op_name);
+    const std::string& op_name, const Location& location);
 
 }  // namespace TFL
 }  // namespace mlir
-#endif  // TENSORFLOW_COMPILER_MLIR_LITE_METRICS_UTIL_H_
+#endif  // TENSORFLOW_COMPILER_MLIR_LITE_METRICS_TYPES_UTIL_H_

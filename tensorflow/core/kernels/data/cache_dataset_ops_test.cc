@@ -11,8 +11,14 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/cache_dataset_ops.h"
 
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "tensorflow/core/data/dataset_test_base.h"
 #include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/serialization_utils.h"
 #include "tensorflow/core/platform/path.h"
 
 namespace tensorflow {
@@ -33,7 +39,7 @@ class CacheDatasetParams : public DatasetParams {
       : DatasetParams(std::move(output_dtypes), std::move(output_shapes),
                       std::move(node_name)),
         filename_(filename) {
-    input_dataset_params_.push_back(absl::make_unique<T>(input_dataset_params));
+    input_dataset_params_.push_back(std::make_unique<T>(input_dataset_params));
     iterator_prefix_ =
         name_utils::IteratorPrefix(input_dataset_params.dataset_type(),
                                    input_dataset_params.iterator_prefix());
@@ -45,15 +51,16 @@ class CacheDatasetParams : public DatasetParams {
     return {filename_tensor};
   }
 
-  Status GetInputNames(std::vector<string>* input_names) const override {
+  absl::Status GetInputNames(std::vector<string>* input_names) const override {
     *input_names = {CacheDatasetOp::kInputDataset, CacheDatasetOp::kFileName};
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status GetAttributes(AttributeVector* attr_vector) const override {
-    *attr_vector = {{CacheDatasetOp::kOutputTypes, output_dtypes_},
-                    {CacheDatasetOp::kOutputShapes, output_shapes_}};
-    return Status::OK();
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override {
+    *attr_vector = {{"output_types", output_dtypes_},
+                    {"output_shapes", output_shapes_},
+                    {"metadata", ""}};
+    return absl::OkStatus();
   }
 
   string dataset_type() const override { return CacheDatasetOp::kDatasetType; }
@@ -66,26 +73,26 @@ class CacheDatasetParams : public DatasetParams {
 
 class CacheDatasetOpTest : public DatasetOpsTestBase {
  public:
-  Status Initialize(const DatasetParams& dataset_params) {
+  absl::Status Initialize(const DatasetParams& dataset_params) {
     TF_RETURN_IF_ERROR(DatasetOpsTestBase::Initialize(dataset_params));
     auto params = static_cast<const CacheDatasetParams&>(dataset_params);
     cache_filename_ = params.filename();
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   ~CacheDatasetOpTest() override {
     if (!cache_filename_.empty()) {
       std::vector<string> cache_files;
-      Status s = device_->env()->GetMatchingPaths(
+      absl::Status s = device_->env()->GetMatchingPaths(
           strings::StrCat(cache_filename_, "*"), &cache_files);
       if (!s.ok()) {
         LOG(WARNING) << "Failed to get matching files on " << cache_filename_
-                     << "* : " << s.ToString();
+                     << "* : " << s;
       }
       for (const string& path : cache_files) {
         s = device_->env()->DeleteFile(path);
         if (!s.ok()) {
-          LOG(WARNING) << "Failed to delete " << path << " : " << s.ToString();
+          LOG(WARNING) << "Failed to delete " << path << " : " << s;
         }
       }
     }
@@ -98,8 +105,8 @@ class CacheDatasetOpTest : public DatasetOpsTestBase {
 // Test case 1: cache data in file.
 CacheDatasetParams CacheDatasetParams1() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{3, 3, 1},
-                                          {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
       /*node_name=*/"tensor_slice");
   return CacheDatasetParams(
       std::move(tensor_slice_dataset_params),
@@ -111,7 +118,7 @@ CacheDatasetParams CacheDatasetParams1() {
 // Test case 2: cache empty data in file.
 CacheDatasetParams CacheDatasetParams2() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{0}, {})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{0}, {})},
       /*node_name=*/"tensor_slice");
   return CacheDatasetParams(
       std::move(tensor_slice_dataset_params),
@@ -123,8 +130,8 @@ CacheDatasetParams CacheDatasetParams2() {
 // Test case 3: cache data in memory.
 CacheDatasetParams CacheDatasetParams3() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{3, 3, 1},
-                                          {0, 1, 2, 3, 4, 5, 6, 7, 8})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{3, 3, 1},
+                                            {0, 1, 2, 3, 4, 5, 6, 7, 8})},
       /*node_name=*/"tensor_slice");
   return CacheDatasetParams(std::move(tensor_slice_dataset_params),
                             /*filename=*/"",
@@ -136,7 +143,7 @@ CacheDatasetParams CacheDatasetParams3() {
 // Test case 4: cache empty data in memory.
 CacheDatasetParams CacheDatasetParams4() {
   auto tensor_slice_dataset_params = TensorSliceDatasetParams(
-      /*components=*/{CreateTensor<int64>(TensorShape{0}, {})},
+      /*components=*/{CreateTensor<int64_t>(TensorShape{0}, {})},
       /*node_name=*/"tensor_slice");
   return CacheDatasetParams(std::move(tensor_slice_dataset_params),
                             /*filename=*/"",
@@ -148,14 +155,14 @@ CacheDatasetParams CacheDatasetParams4() {
 std::vector<GetNextTestCase<CacheDatasetParams>> GetNextTestCases() {
   return {{/*dataset_params=*/CacheDatasetParams1(),
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape({3, 1}),
-                                {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}})},
+           CreateTensors<int64_t>(TensorShape({3, 1}),
+                                  {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}})},
           {/*dataset_params=*/CacheDatasetParams2(),
            /*expected_outputs=*/{}},
           {/*dataset_params=*/CacheDatasetParams3(),
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape({3, 1}),
-                                {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}})},
+           CreateTensors<int64_t>(TensorShape({3, 1}),
+                                  {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}})},
           {/*dataset_params=*/CacheDatasetParams4(),
            /*expected_outputs=*/{}}};
 }
@@ -286,16 +293,16 @@ IteratorSaveAndRestoreTestCases() {
   return {{/*dataset_params=*/CacheDatasetParams1(),
            /*breakpoints=*/{0, 2, 4, 11},
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape({3, 1}),
-                                {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}})},
+           CreateTensors<int64_t>(TensorShape({3, 1}),
+                                  {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}})},
           {/*dataset_params=*/CacheDatasetParams2(),
            /*breakpoints=*/{0, 2, 4, 11},
            /*expected_outputs=*/{}},
           {/*dataset_params=*/CacheDatasetParams3(),
            /*breakpoints=*/{0, 2, 4, 11},
            /*expected_outputs=*/
-           CreateTensors<int64>(TensorShape({3, 1}),
-                                {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}})},
+           CreateTensors<int64_t>(TensorShape({3, 1}),
+                                  {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}})},
           {/*dataset_params=*/CacheDatasetParams4(),
            /*breakpoints=*/{0, 2, 4, 11},
            /*expected_outputs=*/{}}};

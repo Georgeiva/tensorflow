@@ -15,26 +15,25 @@ limitations under the License.
 
 // XLA-specific Ops for softmax.
 
-#include "absl/strings/match.h"
+#include <cmath>
+#include <cstdint>
+#include <tuple>
+#include <utility>
+
 #include "tensorflow/compiler/tf2xla/lib/broadcast.h"
 #include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
-#include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/shape.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/errors.h"
-#include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/util/bcast.h"
 
 namespace tensorflow {
 namespace {
@@ -145,8 +144,8 @@ class SparseSoftmaxXentWithLogitsOp : public XlaOpKernel {
                     "Must have at least one class, but got logits shape ",
                     logits_shape.DebugString()));
 
-    int64 batch_size = logits_shape.dim_size(0);
-    int64 depth = logits_shape.dim_size(1);
+    int64_t batch_size = logits_shape.dim_size(0);
+    int64_t depth = logits_shape.dim_size(1);
 
     const DataType logits_type = input_type(0);
     const xla::PrimitiveType xla_logits_type = ctx->input_xla_type(0);

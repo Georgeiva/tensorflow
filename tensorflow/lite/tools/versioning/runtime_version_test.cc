@@ -14,9 +14,10 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/tools/versioning/runtime_version.h"
 
-#include <gmock/gmock.h>
+#include <string>
+
 #include <gtest/gtest.h>
-#include "tensorflow/lite/kernels/register.h"
+#include "tensorflow/lite/core/kernels/register.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 namespace tflite {
 

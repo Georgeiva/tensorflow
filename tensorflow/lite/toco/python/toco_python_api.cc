@@ -14,33 +14,30 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/toco/python/toco_python_api.h"
 
-#include <fstream>
-#include <map>
-#include <string>
-#include <vector>
+#include <Python.h>
 
-#include "google/protobuf/text_format.h"
+#include <fstream>
+#include <memory>
+#include <string>
+
+#include "absl/container/flat_hash_set.h"
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "tensorflow/c/kernels.h"
-#include "tensorflow/compiler/mlir/lite/python/graphdef_to_tfl_flatbuffer.h"
-#include "tensorflow/compiler/mlir/lite/python/saved_model_to_tfl_flatbuffer.h"
-#include "tensorflow/compiler/mlir/lite/quantization/lite/quantize_model.h"
-#include "tensorflow/compiler/mlir/lite/sparsity/sparsify_model.h"
+#include "tensorflow/c/tf_status.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_def.pb.h"
-#include "tensorflow/core/platform/logging.h"
-#include "tensorflow/lite/c/common.h"
-#include "tensorflow/lite/core/api/error_reporter.h"
-#include "tensorflow/lite/python/interpreter_wrapper/python_error_reporter.h"
+#include "tensorflow/core/framework/op_def_builder.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/lite/python/interpreter_wrapper/python_utils.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-#include "tensorflow/lite/toco/import_tensorflow.h"
 #include "tensorflow/lite/toco/logging/conversion_log_util.h"
 #include "tensorflow/lite/toco/logging/toco_conversion_log.pb.h"
+#include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/model_flags.pb.h"
 #include "tensorflow/lite/toco/toco_convert.h"
 #include "tensorflow/lite/toco/toco_flags.pb.h"
 #include "tensorflow/lite/toco/toco_graphviz_dump_options.h"
-#include "tensorflow/lite/toco/toco_port.h"
 #include "tensorflow/lite/toco/toco_tooling.h"
 #include "tensorflow/lite/toco/toco_types.h"
 #include "tensorflow/lite/toco/tooling_util.h"
@@ -52,7 +49,7 @@ void PopulateConversionLogHelper(const toco::ModelFlags& model_flags,
                                  toco::TocoFlags* toco_flags,
                                  const std::string& input_contents_txt,
                                  const std::string& output_file_contents_txt,
-                                 const std::string& error_message,
+                                 absl::string_view error_message,
                                  GraphVizDumpOptions* dump_options) {
   // Make sure the graphviz file will be dumped under the same folder.
   dump_options->dump_graphviz = toco_flags->conversion_summary_dir();
@@ -91,9 +88,7 @@ void PopulateConversionLogHelper(const toco::ModelFlags& model_flags,
 // sure we input and output bytes rather than unicode strings for Python3.
 PyObject* TocoConvert(PyObject* model_flags_proto_txt_raw,
                       PyObject* toco_flags_proto_txt_raw,
-                      PyObject* input_contents_txt_raw, bool extended_return,
-                      PyObject* debug_info_txt_raw,
-                      bool enable_mlir_converter) {
+                      PyObject* input_contents_txt_raw, bool extended_return) {
   // Use Python C API to validate and convert arguments. In py3 (bytes),
   // in py2 (str).
   auto ConvertArg = [&](PyObject* obj, bool* error) {
@@ -136,31 +131,11 @@ PyObject* TocoConvert(PyObject* model_flags_proto_txt_raw,
     return nullptr;
   }
 
-  tensorflow::GraphDebugInfo debug_info;
-  if (debug_info_txt_raw && debug_info_txt_raw != Py_None) {
-    std::string debug_info_txt = ConvertArg(debug_info_txt_raw, &error);
-    if (error) {
-      PyErr_SetString(PyExc_ValueError, "Input DebugInfo is invalid.");
-      return nullptr;
-    }
-    if (!debug_info.ParseFromString(debug_info_txt)) {
-      PyErr_SetString(PyExc_ValueError,
-                      "Failed to convert DebugInfo to Python String.");
-      return nullptr;
-    }
-  }
-
-  tensorflow::GraphDef graph_def;
   std::string input_contents_txt;
   if (model_flags.saved_model_dir().empty()) {
     input_contents_txt = ConvertArg(input_contents_txt_raw, &error);
     if (error) {
       PyErr_SetString(PyExc_ValueError, "Input GraphDef is invalid.");
-      return nullptr;
-    }
-    if (!graph_def.ParseFromString(input_contents_txt)) {
-      PyErr_SetString(PyExc_ValueError,
-                      "Failed to convert GraphDef to Python String.");
       return nullptr;
     }
   }
@@ -174,41 +149,18 @@ PyObject* TocoConvert(PyObject* model_flags_proto_txt_raw,
   }
 
   std::string output_file_contents_txt;
-  tensorflow::Status status;
-  int64 arithmetic_ops_count;
+  int64_t arithmetic_ops_count;
 
   // Convert model.
-  if (enable_mlir_converter) {
-    if (!model_flags.saved_model_dir().empty()) {
-      status = tensorflow::ConvertSavedModelToTFLiteFlatBuffer(
-          model_flags, toco_flags, &output_file_contents_txt);
-    } else {
-      tensorflow::GraphDef graph_def;
-      if (!graph_def.ParseFromString(input_contents_txt)) {
-        PyErr_SetString(PyExc_ValueError,
-                        "Failed to convert GraphDef to Python String.");
-        return nullptr;
-      }
-
-      status = tensorflow::ConvertGraphDefToTFLiteFlatBuffer(
-          model_flags, toco_flags, debug_info, graph_def,
-          &output_file_contents_txt);
-      if (!toco_flags.conversion_summary_dir().empty()) {
-        PopulateConversionLogHelper(
-            model_flags, &toco_flags, input_contents_txt,
-            output_file_contents_txt, status.error_message(), &dump_options);
-      }
-    }
-  } else {
-    status = Convert(input_contents_txt, toco_flags, model_flags,
-                     &output_file_contents_txt, &arithmetic_ops_count);
-  }
+  absl::Status status =
+      Convert(input_contents_txt, toco_flags, model_flags,
+              &output_file_contents_txt, &arithmetic_ops_count);
 
   if (!status.ok()) {
-    PyErr_SetString(PyExc_Exception, status.error_message().c_str());
+    PyErr_SetString(PyExc_Exception, absl::StatusMessageAsCStr(status));
     return nullptr;
   }
-  if (extended_return && !enable_mlir_converter) {
+  if (extended_return) {
     PyObject* dict = PyDict_New();
     PyDict_SetItemString(
         dict, "flatbuffer",
@@ -240,82 +192,37 @@ tflite::TensorType FromTocoDataTypeToTflitToTensorType(int inference_type) {
   }
 }
 
-PyObject* MlirQuantizeModel(PyObject* data, bool disable_per_channel,
-                            bool fully_quantize, int inference_type,
-                            int input_data_type, int output_data_type,
-                            bool enable_numeric_verify) {
-  using tflite::interpreter_wrapper::PythonErrorReporter;
-  char* buf = nullptr;
-  Py_ssize_t length;
-  std::unique_ptr<PythonErrorReporter> error_reporter(new PythonErrorReporter);
-
-  if (tflite::python_utils::ConvertFromPyString(data, &buf, &length) == -1) {
-    PyErr_Format(PyExc_ValueError, "Failed to convert input PyObject");
-    return nullptr;
+int ToStringSet(PyObject* py_denylist,
+                absl::flat_hash_set<std::string>* string_set) {
+  using tflite::python_utils::ConvertFromPyString;
+  // Ensure op_denylist is non null
+  if (!py_denylist) {
+    return 0;
   }
-  std::unique_ptr<tflite::FlatBufferModel> model =
-      tflite::FlatBufferModel::BuildFromBuffer(buf, length,
-                                               error_reporter.get());
-  if (!model) {
-    PyErr_Format(PyExc_ValueError, "Invalid model");
-    return nullptr;
+  if (PyList_Check(py_denylist)) {
+    for (int i = 0; i < PyList_GET_SIZE(py_denylist); ++i) {
+      PyObject* value = PyList_GetItem(py_denylist, i);
+      char* str_buf;
+      Py_ssize_t length;
+      if (ConvertFromPyString(value, &str_buf, &length) == -1) {
+        return -1;
+      }
+      string_set->emplace(str_buf, length);
+    }
   }
-  auto tflite_model = absl::make_unique<tflite::ModelT>();
-  model->GetModel()->UnPackTo(tflite_model.get(), nullptr);
-
-  tflite::TensorType inference_tensor_type =
-      FromTocoDataTypeToTflitToTensorType(inference_type);
-  tflite::TensorType input_type =
-      FromTocoDataTypeToTflitToTensorType(input_data_type);
-  tflite::TensorType output_type =
-      FromTocoDataTypeToTflitToTensorType(output_data_type);
-
-  flatbuffers::FlatBufferBuilder builder;
-  auto status = mlir::lite::QuantizeModel(
-      *tflite_model, input_type, output_type, inference_tensor_type, {},
-      disable_per_channel, fully_quantize, &builder, error_reporter.get(),
-      enable_numeric_verify);
-
-  if (status != kTfLiteOk) {
-    error_reporter->exception();
-    return nullptr;
+  if (PySet_Check(py_denylist)) {
+    auto* tmp = PySet_New(py_denylist);
+    while (PySet_GET_SIZE(tmp)) {
+      PyObject* value = PySet_Pop(tmp);
+      char* str_buf;
+      Py_ssize_t length;
+      if (ConvertFromPyString(value, &str_buf, &length) == -1) {
+        return -1;
+      }
+      string_set->emplace(str_buf, length);
+    }
   }
-  return tflite::python_utils::ConvertToPyString(
-      reinterpret_cast<const char*>(builder.GetCurrentBufferPointer()),
-      builder.GetSize());
-}
-
-PyObject* MlirSparsifyModel(PyObject* data) {
-  using tflite::interpreter_wrapper::PythonErrorReporter;
-  char* buf = nullptr;
-  Py_ssize_t length;
-  std::unique_ptr<PythonErrorReporter> error_reporter(new PythonErrorReporter);
-
-  if (tflite::python_utils::ConvertFromPyString(data, &buf, &length) == -1) {
-    PyErr_Format(PyExc_ValueError, "Failed to convert input PyObject");
-    return nullptr;
-  }
-  std::unique_ptr<tflite::FlatBufferModel> model =
-      tflite::FlatBufferModel::BuildFromBuffer(buf, length,
-                                               error_reporter.get());
-  if (!model) {
-    PyErr_Format(PyExc_ValueError, "Invalid model");
-    return nullptr;
-  }
-  auto tflite_model = absl::make_unique<tflite::ModelT>();
-  model->GetModel()->UnPackTo(tflite_model.get(), nullptr);
-
-  flatbuffers::FlatBufferBuilder builder;
-  auto status =
-      mlir::lite::SparsifyModel(*tflite_model, &builder, error_reporter.get());
-
-  if (status != kTfLiteOk) {
-    error_reporter->exception();
-    return nullptr;
-  }
-  return tflite::python_utils::ConvertToPyString(
-      reinterpret_cast<const char*>(builder.GetCurrentBufferPointer()),
-      builder.GetSize());
+  return 0;
 }
 
 PyObject* RegisterCustomOpdefs(PyObject* list) {
@@ -324,7 +231,7 @@ PyObject* RegisterCustomOpdefs(PyObject* list) {
     return nullptr;
   }
 
-  int64 size = PyList_Size(list);
+  int64_t size = PyList_Size(list);
   for (int i = 0; i < size; ++i) {
     // Get character array from Python object.
     char* tf_opdefs;
@@ -350,10 +257,9 @@ PyObject* RegisterCustomOpdefs(PyObject* list) {
 
     // Register extra opdefs to TensorFlow global op registry.
     tensorflow::OpRegistry::Global()->Register(
-        [opdef](
-            tensorflow::OpRegistrationData* op_reg_data) -> tensorflow::Status {
+        [opdef](tensorflow::OpRegistrationData* op_reg_data) -> absl::Status {
           *op_reg_data = tensorflow::OpRegistrationData(opdef);
-          return tensorflow::Status::OK();
+          return absl::OkStatus();
         });
 
     // Register the corresponding fake op kernel.

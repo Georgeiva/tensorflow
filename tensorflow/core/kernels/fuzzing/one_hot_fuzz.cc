@@ -13,9 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/cc/framework/scope.h"
 #include "tensorflow/cc/ops/array_ops.h"
-#include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/fuzzing/fuzz_session.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace fuzzing {
@@ -36,8 +40,8 @@ class FuzzOneHot : public FuzzSession {
   }
 
   void FuzzImpl(const uint8_t* data, size_t size) override {
-    int64 input_size;
-    int32 depth;
+    int64_t input_size;
+    int32_t depth;
     uint8 on, off;
     const uint8_t* input_data;
 
@@ -50,13 +54,13 @@ class FuzzOneHot : public FuzzSession {
       depth = static_cast<int32>(data[0]);
       on = data[1];
       off = data[2];
-      input_size = static_cast<int64>(size - 3);
+      input_size = static_cast<int64_t>(size - 3);
       input_data = data + 3;
     } else {
       depth = 1;
       on = 1;
       off = 0;
-      input_size = static_cast<int64>(size);
+      input_size = static_cast<int64_t>(size);
       input_data = data;
     }
 

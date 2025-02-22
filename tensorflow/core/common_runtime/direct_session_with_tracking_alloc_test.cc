@@ -88,9 +88,10 @@ TEST(DirectSessionWithTrackingAllocTest, CostModelTest) {
   std::vector<string> output_names = {y->name() + ":0"};
   std::vector<string> target_nodes = {y_neg->name()};
   std::vector<Tensor> outputs;
-  const int64 start_micros = Env::Default()->NowMicros();
-  Status s = session->Run(inputs, output_names, target_nodes, &outputs);
-  const int64 run_duration_micros = Env::Default()->NowMicros() - start_micros;
+  const int64_t start_micros = Env::Default()->NowMicros();
+  absl::Status s = session->Run(inputs, output_names, target_nodes, &outputs);
+  const int64_t run_duration_micros =
+      Env::Default()->NowMicros() - start_micros;
   TF_ASSERT_OK(s);
 
   DirectSession* ds = static_cast<DirectSession*>(session.get());
@@ -199,16 +200,17 @@ static void TestHWAccelerator(bool enableHWTrace) {
   std::vector<string> output_names = {y->name() + ":0"};
   std::vector<string> target_nodes = {y_neg->name()};
   std::vector<Tensor> outputs;
-  const int64 start_micros = Env::Default()->NowMicros();
+  const int64_t start_micros = Env::Default()->NowMicros();
 
   RunOptions run_options;
   if (enableHWTrace) {
     run_options.set_trace_level(RunOptions::FULL_TRACE);
   }
   RunMetadata run_metadata;
-  Status s = session->Run(run_options, inputs, output_names, target_nodes,
-                          &outputs, &run_metadata);
-  const int64 run_duration_micros = Env::Default()->NowMicros() - start_micros;
+  absl::Status s = session->Run(run_options, inputs, output_names, target_nodes,
+                                &outputs, &run_metadata);
+  const int64_t run_duration_micros =
+      Env::Default()->NowMicros() - start_micros;
   TF_ASSERT_OK(s);
 
   DirectSession* ds = static_cast<DirectSession*>(session.get());
@@ -284,10 +286,11 @@ TEST(DirectSessionWithTrackingAllocTest, CostGraph) {
   std::vector<string> target_nodes = {y_neg->name()};
   std::vector<Tensor> outputs;
   RunMetadata run_metadata;
-  const int64 start_micros = Env::Default()->NowMicros();
-  Status s = session->Run(run_options, inputs, output_names, target_nodes,
-                          &outputs, &run_metadata);
-  const int64 run_duration_micros = Env::Default()->NowMicros() - start_micros;
+  const int64_t start_micros = Env::Default()->NowMicros();
+  absl::Status s = session->Run(run_options, inputs, output_names, target_nodes,
+                                &outputs, &run_metadata);
+  const int64_t run_duration_micros =
+      Env::Default()->NowMicros() - start_micros;
   TF_ASSERT_OK(s);
 
   EXPECT_LE(2, run_metadata.cost_graph().node_size());
@@ -341,8 +344,8 @@ TEST(DirectSessionWithTrackingAllocTest, TrackMemoryAllocation) {
   std::vector<string> output_names = {y->name() + ":0"};
   std::vector<Tensor> outputs;
   RunMetadata run_metadata;
-  Status s = session->Run(run_options, inputs, output_names, {}, &outputs,
-                          &run_metadata);
+  absl::Status s = session->Run(run_options, inputs, output_names, {}, &outputs,
+                                &run_metadata);
   TF_ASSERT_OK(s);
 
   for (const auto& dev_stat : run_metadata.step_stats().dev_stats()) {

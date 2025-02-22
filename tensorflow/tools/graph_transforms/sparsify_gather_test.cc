@@ -29,16 +29,16 @@ namespace tensorflow {
 namespace graph_transforms {
 
 // Declarations so we don't need a public header.
-Status SparsifyGather(const GraphDef& input_graph_def,
-                      const TransformFuncContext& context,
-                      GraphDef* output_graph_def);
-Status ReadTensorFromCheckpoint(
+absl::Status SparsifyGather(const GraphDef& input_graph_def,
+                            const TransformFuncContext& context,
+                            GraphDef* output_graph_def);
+absl::Status ReadTensorFromCheckpoint(
     const string& tensor_name, const std::unique_ptr<BundleReader>& ckpt_reader,
     const string& shape_and_slice, Tensor* tensor);
 
 class SparsifyGatherTest : public ::testing::Test {
  protected:
-  NodeDef* CreateNode(const StringPiece name, const StringPiece op,
+  NodeDef* CreateNode(const absl::string_view name, const absl::string_view op,
                       const std::vector<NodeDef*>& inputs, GraphDef* graph_def,
                       bool control_dep = false) {
     NodeDef* node_def = graph_def->add_node();
@@ -56,7 +56,7 @@ class SparsifyGatherTest : public ::testing::Test {
     return node_def;
   }
 
-  void MakeGather(StringPiece name, bool gather_v2, NodeDef* params,
+  void MakeGather(absl::string_view name, bool gather_v2, NodeDef* params,
                   NodeDef* indices, GraphDef* graph_def) {
     if (gather_v2) {
       NodeDef* axis_node =
@@ -210,8 +210,8 @@ class SparsifyGatherTest : public ::testing::Test {
     EXPECT_EQ(1, node_lookup.count("w/part_1/indices"));
     EXPECT_EQ("Const", node_lookup.at("w/part_1/indices")->op());
     Tensor expected_indices_tensor(DT_INT64, TensorShape({3}));
-    test::FillValues<int64>(&expected_indices_tensor, {0, 2, 3});
-    test::ExpectTensorEqual<int64>(
+    test::FillValues<int64_t>(&expected_indices_tensor, {0, 2, 3});
+    test::ExpectTensorEqual<int64_t>(
         expected_indices_tensor,
         GetNodeTensorAttr(*(node_lookup.at("w/part_1/indices")), "value"));
 
@@ -432,8 +432,8 @@ class SparsifyGatherTest : public ::testing::Test {
     EXPECT_EQ(1, node_lookup.count("w1/part_1/indices"));
     EXPECT_EQ("Const", node_lookup.at("w1/part_1/indices")->op());
     Tensor expected_indices_tensor1(DT_INT64, TensorShape({3}));
-    test::FillValues<int64>(&expected_indices_tensor1, {0, 2, 3});
-    test::ExpectTensorEqual<int64>(
+    test::FillValues<int64_t>(&expected_indices_tensor1, {0, 2, 3});
+    test::ExpectTensorEqual<int64_t>(
         expected_indices_tensor1,
         GetNodeTensorAttr(*(node_lookup.at("w1/part_1/indices")), "value"));
 
@@ -481,8 +481,8 @@ class SparsifyGatherTest : public ::testing::Test {
     EXPECT_EQ(1, node_lookup.count("w2/part_1/indices"));
     EXPECT_EQ("Const", node_lookup.at("w2/part_1/indices")->op());
     Tensor expected_indices_tensor2(DT_INT64, TensorShape({3}));
-    test::FillValues<int64>(&expected_indices_tensor2, {0, 2, 3});
-    test::ExpectTensorEqual<int64>(
+    test::FillValues<int64_t>(&expected_indices_tensor2, {0, 2, 3});
+    test::ExpectTensorEqual<int64_t>(
         expected_indices_tensor2,
         GetNodeTensorAttr(*(node_lookup.at("w2/part_1/indices")), "value"));
 

@@ -79,7 +79,7 @@ class LookupTableOp : public OpKernel {
                     container->MemoryUsed() + table_.AllocatedBytes());
               }
               *ret = container;
-              return Status::OK();
+              return absl::OkStatus();
             };
 
     lookup::LookupInterface* table = nullptr;
@@ -130,7 +130,43 @@ class LookupTableOp : public OpKernel {
   ContainerInfo cinfo_;
   bool use_node_name_sharing_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(LookupTableOp);
+  LookupTableOp(const LookupTableOp&) = delete;
+  void operator=(const LookupTableOp&) = delete;
+};
+
+// An anonymous version of LookupTableOp, which creates a new table resource
+// everytime `Compute` is called. The resource can only be accessed by the
+// returned resource handle (e.g. it can't be looked up by a name in a resource
+// manager). The resource will be automatically deleted when all resource
+// handles pointing to it are gone.
+template <class Container, class key_dtype, class value_dtype>
+class AnonymousLookupTableOp : public OpKernel {
+ public:
+  explicit AnonymousLookupTableOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+
+  void Compute(OpKernelContext* ctx) override {
+    lookup::LookupInterface* table = new Container(ctx, this);
+    if (!ctx->status().ok()) {
+      table->Unref();
+      return;
+    }
+    Tensor table_tensor;
+    OP_REQUIRES_OK(
+        ctx, ctx->allocate_temp(tensorflow::DT_RESOURCE,
+                                tensorflow::TensorShape({}), &table_tensor));
+    if (ctx->track_allocations()) {
+      ctx->record_persistent_memory_allocation(table->MemoryUsed() +
+                                               table_tensor.AllocatedBytes());
+    }
+    table_tensor.scalar<ResourceHandle>()() =
+        ResourceHandle::MakeRefCountingHandle<lookup::LookupInterface>(
+            table, ctx->device()->name());
+    ctx->set_output(0, table_tensor);
+  }
+
+ private:
+  AnonymousLookupTableOp(const AnonymousLookupTableOp&) = delete;
+  void operator=(const AnonymousLookupTableOp&) = delete;
 };
 
 namespace lookup {
@@ -185,7 +221,7 @@ class HashTable : public InitializableLookupTable {
  public:
   HashTable(OpKernelContext* ctx, OpKernel* kernel) {}
 
-  Status AsGraphDef(GraphDefBuilder* builder, Node** out) const override {
+  absl::Status AsGraphDef(GraphDefBuilder* builder, Node** out) const override {
     // We set use_node_name_sharing with a unique node name so that the resource
     // can outlive the HashTableV2 kernel. This means that the lifetime of the
     // HashTable resource will be tied to the lifetime of the resource manager
@@ -200,7 +236,7 @@ class HashTable : public InitializableLookupTable {
                            .WithAttr("use_node_name_sharing", true));
     if (table_.empty()) {
       *out = hash_table_node;
-      return Status::OK();
+      return absl::OkStatus();
     }
 
     if (initializer_serializer_ == nullptr) {
@@ -215,7 +251,7 @@ class HashTable : public InitializableLookupTable {
         builder, hash_table_node, &initializer));
     *out = ops::UnaryOp("Identity", hash_table_node,
                         builder->opts().WithControlInput(initializer));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   size_t size() const override {
@@ -225,12 +261,12 @@ class HashTable : public InitializableLookupTable {
       return table_.size();
   }
 
-  Status ExportValues(OpKernelContext* context) override {
+  absl::Status ExportValues(OpKernelContext* context) override {
     if (!is_initialized()) {
       return errors::Aborted("HashTable is not initialized.");
     }
 
-    const int64 size = table_.size();
+    const int64_t size = table_.size();
 
     Tensor* keys;
     Tensor* values;
@@ -241,12 +277,12 @@ class HashTable : public InitializableLookupTable {
 
     auto keys_data = keys->flat<K>();
     auto values_data = values->flat<V>();
-    int64 i = 0;
+    int64_t i = 0;
     for (auto it = table_.begin(); it != table_.end(); ++it, ++i) {
       keys_data(i) = it->first;
       values_data(i) = it->second;
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   DataType key_dtype() const override { return DataTypeToEnum<K>::v(); }
@@ -254,24 +290,24 @@ class HashTable : public InitializableLookupTable {
   DataType value_dtype() const override { return DataTypeToEnum<V>::v(); }
 
  protected:
-  Status DoPrepare(size_t size) override {
+  absl::Status DoPrepare(size_t size) override {
     if (is_initialized()) {
       return errors::Aborted("HashTable already initialized.");
     }
     if (size > 0) {
       table_.reserve(size);
     }
-    return Status::OK();
+    return absl::OkStatus();
   };
 
-  Status DoLazyPrepare(std::function<int64(void)> size_fn) override {
+  absl::Status DoLazyPrepare(std::function<int64(void)> size_fn) override {
     return DoPrepare(size_fn());
   }
 
-  Status DoInsert(const Tensor& keys, const Tensor& values) override {
+  absl::Status DoInsert(const Tensor& keys, const Tensor& values) override {
     const auto key_values = keys.flat<K>();
     const auto value_values = values.flat<V>();
-    for (int64 i = 0; i < key_values.size(); ++i) {
+    for (int64_t i = 0; i < key_values.size(); ++i) {
       auto&& key = SubtleMustCopyIfIntegral(key_values(i));
       auto&& value = SubtleMustCopyIfIntegral(value_values(i));
       auto result = table_.try_emplace(key, value);
@@ -281,27 +317,27 @@ class HashTable : public InitializableLookupTable {
             result.first->second, " and trying to add value ", value);
       }
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status DoFind(const Tensor& key, Tensor* value,
-                const Tensor& default_value) override {
+  absl::Status DoFind(const Tensor& key, Tensor* value,
+                      const Tensor& default_value) override {
     const V default_val = default_value.flat<V>()(0);
     const auto key_values = key.flat<K>();
     auto value_values = value->flat<V>();
 
-    for (int64 i = 0; i < key_values.size(); ++i) {
+    for (int64_t i = 0; i < key_values.size(); ++i) {
       value_values(i) = gtl::FindWithDefault(
           table_, SubtleMustCopyIfIntegral(key_values(i)), default_val);
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  int64 MemoryUsed() const override {
+  int64_t MemoryUsed() const override {
     if (!is_initialized()) {
       return 0;
     }
-    const int64 num_elements = table_.size();
+    const int64_t num_elements = table_.size();
     return num_elements * (sizeof(K) + sizeof(V));
   }
 

@@ -26,9 +26,9 @@ limitations under the License.
 #include "tensorflow/core/platform/byte_order.h"
 #include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/util.h"
+#include "tsl/platform/tracing.h"
 
 namespace tensorflow {
 
@@ -36,13 +36,13 @@ namespace {
 
 // Use environment setting if specified (init once)
 int32 GetEnvNumInterOpThreads() {
-  static int32 env_num_threads = NumInterOpThreadsFromEnvironment();
+  static int32_t env_num_threads = NumInterOpThreadsFromEnvironment();
   return env_num_threads;
 }
 
 int32 DefaultNumInterOpThreads() {
 #ifndef __ANDROID__
-  int32 env_num_threads = GetEnvNumInterOpThreads();
+  int32_t env_num_threads = GetEnvNumInterOpThreads();
   if (env_num_threads > 0) {
     return env_num_threads;
   }
@@ -72,7 +72,7 @@ int32 DefaultNumInterOpThreads() {
 }
 
 static thread::ThreadPool* InitComputePool(const SessionOptions& options) {
-  int32 inter_op_parallelism_threads =
+  int32_t inter_op_parallelism_threads =
       options.config.inter_op_parallelism_threads();
   if (inter_op_parallelism_threads == 0) {
     inter_op_parallelism_threads = DefaultNumInterOpThreads();
@@ -91,15 +91,15 @@ thread::ThreadPool* ComputePool(const SessionOptions& options) {
 }
 
 int32 NumInterOpThreadsFromEnvironment() {
-  int32 num;
+  int32_t num;
   const char* val = std::getenv("TF_NUM_INTEROP_THREADS");
-  return (val && strings::safe_strto32(val, &num)) ? num : 0;
+  return (val && absl::SimpleAtoi(val, &num)) ? num : 0;
 }
 
 int32 NumIntraOpThreadsFromEnvironment() {
-  int32 num;
+  int32_t num;
   const char* val = std::getenv("TF_NUM_INTRAOP_THREADS");
-  return (val && strings::safe_strto32(val, &num)) ? num : 0;
+  return (val && absl::SimpleAtoi(val, &num)) ? num : 0;
 }
 #if defined(ENABLE_ONEDNN_OPENMP) && defined(ENABLE_MKL)
 int32 OMPThreadsFromEnvironment() {
@@ -123,9 +123,9 @@ int32 DefaultNumIntraOpThreads() {
 }
 #endif  // defined(ENABLE_ONEDNN_OPENMP) && defined(ENABLE_MKL)
 int32 NumInterOpThreadsFromSessionOptions(const SessionOptions& options) {
-  const int32 inter_op = options.config.inter_op_parallelism_threads();
+  const int32_t inter_op = options.config.inter_op_parallelism_threads();
   if (inter_op > 0) return inter_op;
-  const int32 env_inter_op = GetEnvNumInterOpThreads();
+  const int32_t env_inter_op = GetEnvNumInterOpThreads();
   if (env_inter_op > 0) return env_inter_op;
 
 #if defined(ENABLE_ONEDNN_OPENMP) && defined(ENABLE_MKL)
@@ -154,29 +154,33 @@ int32 NumInterOpThreadsFromSessionOptions(const SessionOptions& options) {
 }
 
 thread::ThreadPool* NewThreadPoolFromSessionOptions(
-    const SessionOptions& options) {
-  const int32 num_threads = NumInterOpThreadsFromSessionOptions(options);
-  VLOG(1) << "Direct session inter op parallelism threads: " << num_threads;
+    const SessionOptions& options, int32_t num_threads) {
+  const int32_t num_threads_real =
+      num_threads > 0 ? num_threads
+                      : NumInterOpThreadsFromSessionOptions(options);
+  VLOG(1) << "Session inter op parallelism threads: " << num_threads_real;
   return new thread::ThreadPool(
-      options.env, ThreadOptions(), "Compute", num_threads,
+      options.env, ThreadOptions(), "Compute", num_threads_real,
       !options.config.experimental().disable_thread_spinning(),
       /*allocator=*/nullptr);
 }
 
-void SchedClosure(std::function<void()> closure) {
-  if (!tracing::EventCollector::IsEnabled()) {
+void SchedClosure(absl::AnyInvocable<void()> closure) {
+  if (!tsl::tracing::EventCollector::IsEnabled()) {
     return Env::Default()->SchedClosure(std::move(closure));
   }
-  uint64 id = tracing::GetUniqueArg();
-  tracing::RecordEvent(tracing::EventCategory::kScheduleClosure, id);
+  uint64 id = tsl::tracing::GetUniqueArg();
+  tsl::tracing::RecordEvent(tsl::tracing::EventCategory::kScheduleClosure, id);
 
-  Env::Default()->SchedClosure([id, closure = std::move(closure)]() {
-    tracing::ScopedRegion region(tracing::EventCategory::kRunClosure, id);
+  Env::Default()->SchedClosure([id, closure = std::move(closure)]() mutable {
+    tsl::tracing::ScopedRegion region(tsl::tracing::EventCategory::kRunClosure,
+                                      id);
     closure();
   });
 }
 
-void SchedNonBlockingClosureAfter(int64 micros, std::function<void()> closure) {
+void SchedNonBlockingClosureAfter(int64_t micros,
+                                  absl::AnyInvocable<void()> closure) {
   Env::Default()->SchedClosureAfter(micros, std::move(closure));
 }
 

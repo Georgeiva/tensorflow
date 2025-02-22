@@ -1,4 +1,3 @@
-# python3
 # Copyright 2017 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,11 +14,7 @@
 # ==============================================================================
 """Tests for call_trees module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import imp
+import types
 
 from tensorflow.python.autograph.converters import call_trees
 from tensorflow.python.autograph.converters import functions
@@ -219,7 +214,7 @@ class CallTreesTest(converter_testing.TestCase):
 
     tracking_list = []
 
-    pdb = imp.new_module('fake_pdb')
+    pdb = types.ModuleType('fake_pdb')
     pdb.set_trace = lambda: tracking_list.append(1)
 
     def f():

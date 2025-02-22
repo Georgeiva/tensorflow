@@ -12,13 +12,15 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "tensorflow/lite/allocation.h"
+#include "tensorflow/compiler/mlir/lite/allocation.h"
+
+#include <cstddef>
 
 #if defined(__linux__)
 #include <fcntl.h>
 #endif
 
-#include <string>
+#include <sys/stat.h>
 
 #include <gtest/gtest.h>
 #include "tensorflow/lite/testing/util.h"
@@ -61,6 +63,41 @@ TEST(MMAPAllocation, TestInvalidFileDescriptor) {
   EXPECT_FALSE(allocation.valid());
 }
 
+TEST(MMAPAllocation, TestInvalidSizeAndOffset) {
+  if (!MMAPAllocation::IsSupported()) {
+    return;
+  }
+
+  int fd =
+      open("tensorflow/lite/testdata/empty_model.bin", O_RDONLY);
+  ASSERT_GT(fd, 0);
+
+  struct stat fd_stat;
+  ASSERT_EQ(fstat(fd, &fd_stat), 0);
+
+  size_t file_size = fd_stat.st_size;
+
+  TestErrorReporter error_reporter;
+  MMAPAllocation allocation_invalid_offset(fd, /*offset=*/file_size + 100,
+                                           /*length=*/1, &error_reporter);
+  EXPECT_FALSE(allocation_invalid_offset.valid());
+
+  MMAPAllocation allocation_invalid_length(fd, /*offset=*/0, /*length=*/0,
+                                           &error_reporter);
+  EXPECT_FALSE(allocation_invalid_length.valid());
+
+  MMAPAllocation allocation_excessive_length(fd, /*offset=*/0,
+                                             /*length=*/file_size + 1,
+                                             &error_reporter);
+  EXPECT_FALSE(allocation_excessive_length.valid());
+
+  MMAPAllocation allocation_excessive_length_with_offset(
+      fd, /*offset=*/10, /*length=*/file_size, &error_reporter);
+  EXPECT_FALSE(allocation_excessive_length_with_offset.valid());
+
+  close(fd);
+}
+
 TEST(MMAPAllocation, TestValidFileDescriptor) {
   if (!MMAPAllocation::IsSupported()) {
     return;
@@ -79,6 +116,30 @@ TEST(MMAPAllocation, TestValidFileDescriptor) {
 
   close(fd);
 }
-#endif
+
+TEST(MMAPAllocation, TestValidFileDescriptorWithOffset) {
+  if (!MMAPAllocation::IsSupported()) {
+    return;
+  }
+
+  int fd =
+      open("tensorflow/lite/testdata/empty_model.bin", O_RDONLY);
+  ASSERT_GT(fd, 0);
+
+  struct stat fd_stat;
+  ASSERT_EQ(fstat(fd, &fd_stat), 0);
+  size_t file_size = fd_stat.st_size;
+
+  TestErrorReporter error_reporter;
+  MMAPAllocation allocation(fd, /*offset=*/10, /*length=*/file_size - 10,
+                            &error_reporter);
+  EXPECT_TRUE(allocation.valid());
+  EXPECT_GT(allocation.fd(), 0);
+  EXPECT_GT(allocation.bytes(), 0);
+  EXPECT_NE(allocation.base(), nullptr);
+
+  close(fd);
+}
+#endif  // defined(__linux__)
 
 }  // namespace tflite

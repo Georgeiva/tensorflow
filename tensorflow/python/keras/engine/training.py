@@ -22,10 +22,11 @@ import warnings
 import weakref
 
 from tensorflow.python.autograph.lang import directives
-from tensorflow.python.data.experimental.ops import distribute_options
-from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.checkpoint import checkpoint as trackable_utils
+from tensorflow.python.checkpoint import checkpoint_management
+from tensorflow.python.data.ops import options as options_lib
 from tensorflow.python.distribute import collective_all_reduce_strategy
-from tensorflow.python.distribute import distribution_strategy_context as ds_context
+from tensorflow.python.distribute import distribute_lib
 from tensorflow.python.distribute import values as ds_values
 from tensorflow.python.distribute.coordinator import cluster_coordinator
 from tensorflow.python.eager import backprop
@@ -37,6 +38,7 @@ from tensorflow.python.framework import errors_impl
 from tensorflow.python.framework import func_graph
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.keras import backend
 from tensorflow.python.keras import callbacks as callbacks_module
@@ -56,13 +58,13 @@ from tensorflow.python.keras.saving.saved_model import json_utils
 from tensorflow.python.keras.saving.saved_model import model_serialization
 from tensorflow.python.keras.utils import generic_utils
 from tensorflow.python.keras.utils import layer_utils
-from tensorflow.python.keras.utils import object_identity
 from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.keras.utils import version_utils
 from tensorflow.python.keras.utils.io_utils import ask_to_proceed_with_overwrite
 from tensorflow.python.keras.utils.io_utils import path_to_string
 from tensorflow.python.keras.utils.mode_keys import ModeKeys
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import sparse_ops
 from tensorflow.python.ops import summary_ops_v2
@@ -71,14 +73,11 @@ from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.profiler import trace
 from tensorflow.python.saved_model import constants as sm_constants
 from tensorflow.python.saved_model import loader_impl as sm_loader
-from tensorflow.python.training import checkpoint_management
+from tensorflow.python.trackable import base as trackable
 from tensorflow.python.training import py_checkpoint_reader
-from tensorflow.python.training.tracking import base as trackable
-from tensorflow.python.training.tracking import graph_view as graph_view_lib
-from tensorflow.python.training.tracking import util as trackable_utils
+from tensorflow.python.types import data as data_types
 from tensorflow.python.util import nest
 from tensorflow.python.util import tf_decorator
-from tensorflow.python.util.tf_export import keras_export
 from tensorflow.tools.docs import doc_controls
 
 
@@ -87,11 +86,6 @@ try:
   import h5py
 except ImportError:
   h5py = None
-
-try:
-  import yaml
-except ImportError:
-  yaml = None
 # pylint: enable=g-import-not-at-top
 
 
@@ -134,7 +128,6 @@ def is_functional_model_init_params(args, kwargs):
           'inputs' in kwargs and 'outputs' in kwargs)
 
 
-@keras_export('keras.Model', 'keras.models.Model')
 class Model(base_layer.Layer, version_utils.ModelVersionSelector):
   """`Model` groups layers into an object with training and inference features.
 
@@ -228,7 +221,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
   @trackable.no_automatic_dependency_tracking
   def __init__(self, *args, **kwargs):
     self._is_model_for_instrumentation = True
-    base_layer.keras_api_gauge.get_cell('model').set(True)
 
     # Special case for Subclassed Functional Model, which we couldn't detect
     # when __new__ is called. We only realize it is a functional model when it
@@ -265,7 +257,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
                 other_kwargs))
       return
 
-    base_layer.keras_api_gauge.get_cell('Model subclass').set(True)
     # The following are implemented as property functions:
     # self.trainable_weights
     # self.non_trainable_weights
@@ -301,8 +292,8 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     self._maybe_create_attribute('optimizer', None)
 
     # Model must be created under scope of DistStrat it will be trained with.
-    if ds_context.has_strategy():
-      self._distribution_strategy = ds_context.get_strategy()
+    if distribute_lib.has_strategy():
+      self._distribution_strategy = distribute_lib.get_strategy()
     else:
       self._distribution_strategy = None
 
@@ -316,7 +307,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     # Fault-tolerance handler. Set in `ModelCheckpoint`.
     self._training_state = None
     self._saved_model_inputs_spec = None
-    self._trackable_saver = saver_with_op_caching(self)
+    self._checkpoint = trackable_utils.Checkpoint(root=weakref.ref(self))
 
     self._steps_per_execution = None
 
@@ -558,7 +549,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         ValueError: In case of invalid arguments for
             `optimizer`, `loss` or `metrics`.
     """
-    base_layer.keras_api_gauge.get_cell('compile').set(True)
     with self.distribute_strategy.scope():
       if 'experimental_steps_per_execution' in kwargs:
         logging.warning('The argument `steps_per_execution` is no longer '
@@ -733,7 +723,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
   @property
   def distribute_strategy(self):
     """The `tf.distribute.Strategy` this model was created under."""
-    return self._distribution_strategy or ds_context.get_strategy()
+    return self._distribution_strategy or distribute_lib.get_strategy()
 
   @property
   def run_eagerly(self):
@@ -1114,7 +1104,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         ValueError: In case of mismatch between the provided input data
             and what the model expects or when the input data is empty.
     """
-    base_layer.keras_api_gauge.get_cell('fit').set(True)
     # Legacy graph support is contained in `training_v1.Model`.
     version_utils.disallow_legacy_graph('Model', 'fit')
     self._assert_compile_was_called()
@@ -1451,7 +1440,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         RuntimeError: If `model.evaluate` is wrapped in `tf.function`.
         ValueError: in case of invalid arguments.
     """
-    base_layer.keras_api_gauge.get_cell('evaluate').set(True)
     version_utils.disallow_legacy_graph('Model', 'evaluate')
     self._assert_compile_was_called()
     self._check_call_args('evaluate')
@@ -1684,7 +1672,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
             or in case a stateful model receives a number of samples
             that is not a multiple of the batch size.
     """
-    base_layer.keras_api_gauge.get_cell('predict').set(True)
     version_utils.disallow_legacy_graph('Model', 'predict')
     self._check_call_args('predict')
     _disallow_inside_tf_function('predict')
@@ -1706,12 +1693,12 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     outputs = None
     with self.distribute_strategy.scope():
       # Creates a `tf.data.Dataset` and handles batch and epoch iteration.
-      dataset_types = (dataset_ops.DatasetV1, dataset_ops.DatasetV2)
+      dataset_types = (data_types.DatasetV1, data_types.DatasetV2)
       if (self._in_multi_worker_mode() or _is_tpu_multi_host(
           self.distribute_strategy)) and isinstance(x, dataset_types):
         try:
-          options = dataset_ops.Options()
-          data_option = distribute_options.AutoShardPolicy.DATA
+          options = options_lib.Options()
+          data_option = options_lib.AutoShardPolicy.DATA
           options.experimental_distribute.auto_shard_policy = data_option
           x = x.with_options(options)
         except ValueError:
@@ -2251,11 +2238,10 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       with h5py.File(filepath, 'w') as f:
         hdf5_format.save_weights_to_hdf5_group(f, self.layers)
     else:
-      if context.executing_eagerly():
-        session = None
-      else:
-        session = backend.get_session()
-      self._trackable_saver.save(filepath, session=session, options=options)
+      if not context.executing_eagerly():
+        # Call `get_session` to initialize any uninitialized variables.
+        backend.get_session()
+      self._checkpoint.write(filepath, options=options)
       # Record this checkpoint so it's visible from tf.train.latest_checkpoint.
       checkpoint_management.update_checkpoint_state_internal(
           save_dir=os.path.dirname(filepath),
@@ -2328,7 +2314,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
     filepath, save_format = _detect_save_format(filepath)
     if save_format == 'tf':
-      status = self._trackable_saver.restore(filepath, options)
+      status = self._checkpoint.read(filepath, options)
       if by_name:
         raise NotImplementedError(
             'Weights may only be loaded based on topology into Models when '
@@ -2422,6 +2408,9 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
   def to_yaml(self, **kwargs):
     """Returns a yaml string containing the network configuration.
 
+    Note: Since TF 2.6, this method is no longer supported and will raise a
+    RuntimeError.
+
     To load a network from a yaml save file, use
     `keras.models.model_from_yaml(yaml_string, custom_objects={})`.
 
@@ -2437,12 +2426,12 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         A YAML string.
 
     Raises:
-        ImportError: if yaml module is not found.
+        RuntimeError: announces that the method poses a security risk
     """
-    if yaml is None:
-      raise ImportError(
-          'Requires yaml module installed (`pip install pyyaml`).')
-    return yaml.dump(self._updated_config(), **kwargs)
+    raise RuntimeError(
+        'Method `model.to_yaml()` has been removed due to security risk of '
+        'arbitrary code execution. Please use `model.to_json()` instead.'
+    )
 
   def reset_states(self):
     for layer in self.layers:
@@ -2661,8 +2650,8 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
                       (invalid_kwargs,))
 
     # Model must be created and compiled with the same DistStrat.
-    if self.built and ds_context.has_strategy():
-      strategy = ds_context.get_strategy()
+    if self.built and distribute_lib.has_strategy():
+      strategy = distribute_lib.get_strategy()
       for v in self.variables:
         if not strategy.extended.variable_created_in_scope(v):
           raise ValueError(
@@ -2742,23 +2731,27 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
   def _trackable_saved_model_saver(self):
     return model_serialization.ModelSavedModelSaver(self)
 
-  def _list_functions_for_serialization(self, serialization_cache):
-    # SavedModel needs to ignore the execution functions.
-    train_function = self.train_function
-    test_function = self.test_function
-    predict_function = self.predict_function
-    train_tf_function = self.train_tf_function
-    self.train_function = None
-    self.test_function = None
-    self.predict_function = None
-    self.train_tf_function = None
-    functions = super(
-        Model, self)._list_functions_for_serialization(serialization_cache)
-    self.train_function = train_function
-    self.test_function = test_function
-    self.predict_function = predict_function
-    self.train_tf_function = train_tf_function
-    return functions
+  def _trackable_children(self, save_type='checkpoint', **kwargs):
+    if save_type == 'savedmodel':
+      # SavedModel needs to ignore the execution functions.
+      train_function = self.train_function
+      test_function = self.test_function
+      predict_function = self.predict_function
+      train_tf_function = self.train_tf_function
+      self.train_function = None
+      self.test_function = None
+      self.predict_function = None
+      self.train_tf_function = None
+
+    children = super(Model, self)._trackable_children(save_type, **kwargs)
+
+    if save_type == 'savedmodel':
+      self.train_function = train_function
+      self.test_function = test_function
+      self.predict_function = predict_function
+      self.train_tf_function = train_tf_function
+
+    return children
 
   def _should_eval(self, epoch, validation_freq):
     epoch = epoch + 1  # one-index the user-facing epoch.
@@ -2852,7 +2845,10 @@ def concat(tensors, axis=0):
   """Concats `tensor`s along `axis`."""
   if isinstance(tensors[0], sparse_tensor.SparseTensor):
     return sparse_ops.sparse_concat_v2(axis=axis, sp_inputs=tensors)
-  return array_ops.concat(tensors, axis=axis)
+  elif _is_scalar(tensors[0]):
+    return array_ops_stack.stack(tensors, axis=axis)
+  else:
+    return array_ops.concat(tensors, axis=axis)
 
 
 def _is_tpu_multi_host(strategy):
@@ -2911,7 +2907,8 @@ def _multi_worker_concat(v, strategy):
 
 
 def _is_scalar(x):
-  return isinstance(x, (ops.Tensor, variables.Variable)) and x.shape.rank == 0
+  return isinstance(
+      x, (tensor_lib.Tensor, variables.Variable)) and x.shape.rank == 0
 
 
 def write_scalar_summaries(logs, step):
@@ -2999,13 +2996,3 @@ def flatten_metrics_in_order(logs, metrics_names):
 def _is_per_replica_instance(obj):
   return (isinstance(obj, ds_values.DistributedValues) and
           isinstance(obj, composite_tensor.CompositeTensor))
-
-
-def saver_with_op_caching(obj):
-  if context.executing_eagerly():
-    saveables_cache = None
-  else:
-    saveables_cache = object_identity.ObjectIdentityWeakKeyDictionary()
-  return trackable_utils.TrackableSaver(
-      graph_view_lib.ObjectGraphView(
-          weakref.ref(obj), saveables_cache=saveables_cache))

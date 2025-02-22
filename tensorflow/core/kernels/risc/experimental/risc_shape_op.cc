@@ -13,9 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/core/framework/op.h"
+#include <cstdint>
+
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace risc {
@@ -35,8 +37,8 @@ REGISTER_KERNEL_BUILDER(
     Name("RiscShape").Device(DEVICE_CPU).TypeConstraint<int32>("out_type"),
     RiscShapeOp<int32>);
 REGISTER_KERNEL_BUILDER(
-    Name("RiscShape").Device(DEVICE_CPU).TypeConstraint<int64>("out_type"),
-    RiscShapeOp<int64>);
+    Name("RiscShape").Device(DEVICE_CPU).TypeConstraint<int64_t>("out_type"),
+    RiscShapeOp<int64_t>);
 
 }  // namespace experimental
 }  // namespace risc
