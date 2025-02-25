@@ -58,8 +58,8 @@ template <>
 Status ReshapeSparseTensorFunctor<GPUDevice>::operator()(
     OpKernelContext* context, const TensorShape& input_shape,
     const TensorShape& output_shape,
-    typename TTypes<int64>::ConstMatrix input_indices,
-    typename TTypes<int64>::Matrix output_indices) const {
+    typename TTypes<int64_t>::ConstMatrix input_indices,
+    typename TTypes<int64_t>::Matrix output_indices) const {
   const int64 input_rank = input_shape.dims();
   const int64 output_rank = output_shape.dims();
   const int64 nnz = input_indices.dimension(0);
@@ -68,32 +68,26 @@ Status ReshapeSparseTensorFunctor<GPUDevice>::operator()(
   Tensor input_shape_gpu_t;
   TF_RETURN_IF_ERROR(context->allocate_temp(DT_INT64, TensorShape({input_rank}),
                                             &input_shape_gpu_t));
-  auto input_shape_gpu = input_shape_gpu_t.flat<int64>();
+  auto input_shape_gpu = input_shape_gpu_t.flat<int64_t>();
   Tensor output_shape_gpu_t;
   TF_RETURN_IF_ERROR(context->allocate_temp(
       DT_INT64, TensorShape({output_rank}), &output_shape_gpu_t));
-  auto output_shape_gpu = output_shape_gpu_t.flat<int64>();
+  auto output_shape_gpu = output_shape_gpu_t.flat<int64_t>();
   se::Stream* stream = context->op_device_context()->stream();
   if (!stream) return errors::Internal("No GPU stream available.");
   se::DeviceMemoryBase input_shape_gpu_mem(input_shape_gpu.data(),
                                            input_rank * sizeof(int64));
-  if (!stream
-           ->ThenMemcpy(&input_shape_gpu_mem, input_shape.dim_sizes().data(),
-                        input_rank * sizeof(int64))
-           .ok()) {
-    return errors::Internal("Failed to copy input_shape to device");
-  }
+  TF_RETURN_IF_ERROR(stream->Memcpy(&input_shape_gpu_mem,
+                                    input_shape.dim_sizes().data(),
+                                    input_rank * sizeof(int64)));
   se::DeviceMemoryBase output_shape_gpu_mem(output_shape_gpu.data(),
                                             output_rank * sizeof(int64));
-  if (!stream
-           ->ThenMemcpy(&output_shape_gpu_mem, output_shape.dim_sizes().data(),
-                        output_rank * sizeof(int64))
-           .ok()) {
-    return errors::Internal("Failed to copy output_shape to device");
-  }
+  TF_RETURN_IF_ERROR(stream->Memcpy(&output_shape_gpu_mem,
+                                    output_shape.dim_sizes().data(),
+                                    output_rank * sizeof(int64)));
   const GPUDevice& device = context->template eigen_device<GPUDevice>();
   auto config = GetGpuLaunchConfig(nnz, device);
-  return GpuLaunchKernel(ReshapeSparseTensorKernel<int64>, config.block_count,
+  return GpuLaunchKernel(ReshapeSparseTensorKernel<int64_t>, config.block_count,
                          config.thread_per_block, 0, device.stream(), nnz,
                          /*input_rank=*/input_rank,
                          /*output_rank=*/output_rank,

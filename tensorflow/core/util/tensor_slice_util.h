@@ -110,7 +110,7 @@ struct CopyThatWorksWithStringPointer<Eigen::half> {
                     d(d_start[0] + i0, d_start[1] + i1, d_start[2] + i2,
                       d_start[3] + i3, d_start[4] + i4, d_start[5] + i5,
                       d_start[6] + i6, d_start[7] + i7) =
-                        Eigen::half_impl::raw_uint16_to_half(
+                        Eigen::numext::bit_cast<Eigen::half, uint16_t>(
                             s(s_start[0] + i0, s_start[1] + i1, s_start[2] + i2,
                               s_start[3] + i3, s_start[4] + i4, s_start[5] + i5,
                               s_start[6] + i6, s_start[7] + i7));
@@ -151,7 +151,7 @@ static bool CopyDataFromTensorSliceToTensorSlice(const TensorShape& shape,
     // We need to compute the applied shapes after applying slice_s and
     // slice_d.
     TensorShape shp_s, shp_d;
-    Status s;
+    absl::Status s;
     s = slice_s.SliceTensorShape(shape, &shp_s);
     if (!s.ok()) {
       LOG(WARNING) << s;

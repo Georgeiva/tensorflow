@@ -35,10 +35,11 @@ typedef Eigen::ThreadPoolDevice CPUDevice;
 
 template struct FillProjectiveTransform<CPUDevice, uint8>;
 template struct FillProjectiveTransform<CPUDevice, int32>;
-template struct FillProjectiveTransform<CPUDevice, int64>;
+template struct FillProjectiveTransform<CPUDevice, int64_t>;
 template struct FillProjectiveTransform<CPUDevice, Eigen::half>;
 template struct FillProjectiveTransform<CPUDevice, float>;
 template struct FillProjectiveTransform<CPUDevice, double>;
+template struct FillProjectiveTransform<CPUDevice, bfloat16>;
 
 }  // end namespace functor
 
@@ -64,7 +65,7 @@ void DoImageProjectiveTransformOp(OpKernelContext* ctx,
               errors::InvalidArgument(
                   "Input transform should be num_images x 8 or 1 x 8"));
 
-  int32 out_height, out_width;
+  int32_t out_height, out_width;
   // Kernel is shared by legacy "ImageProjectiveTransform" op with 2 args.
   if (ctx->num_inputs() >= 3) {
     const Tensor& shape_t = ctx->input(2);
@@ -96,11 +97,12 @@ void DoImageProjectiveTransformOp(OpKernelContext* ctx,
   }
 
   Tensor* output_t;
+  TensorShape output_shape;
   OP_REQUIRES_OK(
-      ctx, ctx->allocate_output(0,
-                                TensorShape({images_t.dim_size(0), out_height,
-                                             out_width, images_t.dim_size(3)}),
-                                &output_t));
+      ctx, TensorShape::BuildTensorShape({images_t.dim_size(0), out_height,
+                                          out_width, images_t.dim_size(3)},
+                                         &output_shape));
+  OP_REQUIRES_OK(ctx, ctx->allocate_output(0, output_shape, &output_t));
   auto output = output_t->tensor<T, 4>();
   auto images = images_t.tensor<T, 4>();
   auto transform = transform_t.matrix<float>();
@@ -162,6 +164,7 @@ TF_CALL_int64(REGISTER);
 TF_CALL_half(REGISTER);
 TF_CALL_float(REGISTER);
 TF_CALL_double(REGISTER);
+TF_CALL_bfloat16(REGISTER);
 
 #undef REGISTER
 
@@ -185,6 +188,7 @@ TF_CALL_int64(REGISTER);
 TF_CALL_half(REGISTER);
 TF_CALL_float(REGISTER);
 TF_CALL_double(REGISTER);
+TF_CALL_bfloat16(REGISTER);
 
 #undef REGISTER
 

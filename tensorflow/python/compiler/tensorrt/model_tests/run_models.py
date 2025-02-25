@@ -18,10 +18,10 @@ import functools
 import os
 import tempfile
 from typing import Callable, Iterable, Sequence
+from collections import namedtuple
 
 from absl import app
 from absl import flags
-from absl import logging
 
 from tensorflow.python.compiler.tensorrt import trt_convert as trt
 from tensorflow.python.compiler.tensorrt.model_tests import model_handler
@@ -31,6 +31,7 @@ from tensorflow.python.framework import config as framework_config
 from tensorflow.python.framework import ops as framework_ops
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import test as platform_test
+from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.saved_model import signature_constants
 from tensorflow.python.saved_model import tag_constants
 
@@ -55,6 +56,9 @@ flags.DEFINE_integer("batch_size", 128,
 flags.DEFINE_boolean("use_tf2", True,
                      "Whether to test with TF2 behavior or not (TF1).")
 
+flags.DEFINE_boolean("use_int8", True,
+                     "Whether to convert with INT8 precision.")
+
 flags.DEFINE_enum("latency_baseline", "GPU", ["CPU", "GPU"],
                   "The baseline version for latency improvement analysis.")
 
@@ -62,12 +66,33 @@ flags.DEFINE_enum("numerics_baseline", "CPU", ["CPU", "GPU"],
                   "The baseline version for numerical difference analysis.")
 
 flags.DEFINE_float(
-    "speedup_tolerance", 0.95,
-    "Log errors whenever mean TensorRT speedup is lower than the tolerance.")
+    "fp32_speedup_tolerance", 0.90,
+    "Log errors whenever mean TensorRT fp32 speedup is lower than the tolerance."
+)
 
 flags.DEFINE_float(
-    "diff_tolerance", 0.05,
-    "Log errors whenever mean TensorRT relative difference is larger than "
+    "fp16_speedup_tolerance", 0.90,
+    "Log errors whenever mean TensorRT fp16 speedup is lower than the tolerance."
+)
+
+flags.DEFINE_float(
+    "int8_speedup_tolerance", 0.90,
+    "Log errors whenever mean TensorRT int8 speedup is lower than the tolerance."
+)
+
+flags.DEFINE_float(
+    "fp32_abs_tolerance", 1e-05,
+    "Log errors whenever mean TensorRT fp32 absolute difference is larger than "
+    "the tolerance.")
+
+flags.DEFINE_float(
+    "fp16_abs_tolerance", 5e-02,
+    "Log errors whenever mean TensorRT fp16 absolute difference is larger than "
+    "the tolerance.")
+
+flags.DEFINE_float(
+    "int8_abs_tolerance", 5e-01,
+    "Log errors whenever mean TensorRT int8 absolute difference is larger than "
     "the tolerance.")
 
 flags.DEFINE_integer(
@@ -98,7 +123,7 @@ class SampleRunner(object):
 
   def __init__(self, saved_model_dir: str, saved_model_tags: Sequence[str],
                saved_model_signature_key: str, batch_size: int, output_dir: str,
-               output_format: str, use_tf2: bool,
+               output_format: str, use_tf2: bool, use_int8: bool,
                analyzer: result_analyzer.ResultAnalyzer):
     self._output_dir = output_dir or tempfile.mkdtemp(
         prefix="tf2trt_model_tests")
@@ -114,6 +139,15 @@ class SampleRunner(object):
     self._model_handler_manager_cls = (
         model_handler.ModelHandlerManagerV2
         if use_tf2 else model_handler.ModelHandlerManagerV1)
+
+    if use_int8:
+      self._precision_modes = [
+          trt.TrtPrecisionMode.FP32, trt.TrtPrecisionMode.FP16,
+          trt.TrtPrecisionMode.INT8]
+    else:
+      self._precision_modes = [
+          trt.TrtPrecisionMode.FP32, trt.TrtPrecisionMode.FP16]
+
     self._analyzer = analyzer
 
   def _write_analysis_result(self, df: result_analyzer.DataFrame,
@@ -147,7 +181,7 @@ class SampleRunner(object):
       test_results = manager.run(inputs)
 
       # Analyzes the latency and numerical results.
-      analysis_result_df, _ = self._analyzer.analysis(test_results)
+      analysis_result_df, _, acc_hist = self._analyzer.analysis(test_results)
 
       # Outputs the analysis results
       model_name = os.path.split(manager.model_config.saved_model_dir)[-1]
@@ -158,16 +192,16 @@ class SampleRunner(object):
       with gfile.Open(
           os.path.join(test_dir, "default_tensorrt_params.txt"), "w") as f:
         f.write(repr(default_trt_converter_params))
+      with gfile.Open(os.path.join(test_dir, "accuracy_histograms.txt"),
+                      "w") as f:
+        [f.write(h) for h in acc_hist]
       self._write_analysis_result(analysis_result_df, test_dir)
 
   def run_trt_precision_tests(self) -> None:
     """Runs tests for all TensorRT precisions."""
 
     def trt_converter_params_updater(params: trt.TrtConversionParams):
-      for precision_mode in [
-          trt.TrtPrecisionMode.FP32, trt.TrtPrecisionMode.FP16,
-          trt.TrtPrecisionMode.INT8
-      ]:
+      for precision_mode in self._precision_modes:
         yield params._replace(
             precision_mode=precision_mode,
             use_calibration=(precision_mode == trt.TrtPrecisionMode.INT8))
@@ -196,22 +230,45 @@ def main(argv):
     logging.info("Running in TF1 mode. Eager execution is disabled.")
     framework_ops.disable_eager_execution()
 
+  if FLAGS.use_int8:
+    logging.info("Will try converting with INT8 precision.")
+  else:
+    logging.info("Will not try converting with INT8 precision.")
+
   if FLAGS.gpu_memory_limit_mb:
     set_up_gpu_memory_limit(FLAGS.gpu_memory_limit_mb)
+
+  tol = namedtuple("tol", "perf acc")
+  tolerances = {
+      trt.TrtPrecisionMode.FP32:
+          tol(perf=float(FLAGS.fp32_speedup_tolerance),
+              acc=float(FLAGS.fp32_abs_tolerance)),
+      trt.TrtPrecisionMode.FP16:
+          tol(perf=float(FLAGS.fp16_speedup_tolerance),
+              acc=float(FLAGS.fp16_abs_tolerance)),
+      trt.TrtPrecisionMode.INT8:
+          tol(perf=float(FLAGS.int8_speedup_tolerance),
+              acc=float(FLAGS.int8_abs_tolerance)),
+  }
 
   analyzer = result_analyzer.ResultAnalyzer(
       use_cpu_latency_baseline=FLAGS.latency_baseline == "CPU",
       use_cpu_numerics_baseline=FLAGS.numerics_baseline == "CPU",
-      checkers=[
-          functools.partial(
+      perf_checkers={
+          precision: functools.partial(
               result_analyzer.check_column,
               name="speedup",
-              fn=lambda x: x > FLAGS.speedup_tolerance),
-          functools.partial(
+              fn=lambda x: x > tol.perf)
+          for precision, tol in tolerances.items()
+      },
+      acc_checkers={
+          precision: functools.partial(
               result_analyzer.check_column,
-              name="rel_diff_mean",
-              fn=lambda x: all(v < FLAGS.diff_tolerance for v in x.values()))
-      ])
+              name="abs_diff_mean",
+              fn=lambda x: all(v < tol.acc for v in x.values()))
+          for precision, tol in tolerances.items()
+      })
+
   runner = SampleRunner(
       saved_model_dir=FLAGS.saved_model_dir,
       saved_model_tags=FLAGS.saved_model_tags,
@@ -220,6 +277,7 @@ def main(argv):
       output_dir=FLAGS.output_dir,
       output_format=FLAGS.output_format,
       use_tf2=FLAGS.use_tf2,
+      use_int8=FLAGS.use_int8,
       analyzer=analyzer)
 
   runner.run_all_tests()

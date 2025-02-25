@@ -14,10 +14,6 @@
 # ==============================================================================
 """Various classes representing distributed values."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import copy
 import weakref
 
@@ -26,16 +22,13 @@ from tensorflow.python.distribute import tpu_util
 from tensorflow.python.distribute import values_util
 from tensorflow.python.eager import context
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor_conversion_registry
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.ops import variables as variables_lib
 
 
 # pylint: disable=protected-access
-
-
-class _DummyResourceDeleter(object):
-  pass
 
 
 class DistributedVariable(resource_variable_ops.BaseResourceVariable):
@@ -53,7 +46,10 @@ class DistributedVariable(resource_variable_ops.BaseResourceVariable):
 
   def __init__(self, variables, *, enable_packed_handle=False):
     if enable_packed_handle and not ops.executing_eagerly_outside_functions():
-      raise ValueError("packed handle is only supported in eager")
+      raise ValueError(
+          "Argument `enable_packed_handle` is true, but packed handle is only "
+          "supported in eager mode. Please make sure eager execution is "
+          "enabled.")
     self._variables = variables
     if enable_packed_handle:
       self._packed_handle = ops.pack_eager_tensors(
@@ -61,7 +57,7 @@ class DistributedVariable(resource_variable_ops.BaseResourceVariable):
     else:
       self._packed_handle = None
     for v in variables:
-      v._distributed_container = weakref.ref(self)  # pylint: disable=protected-access
+      v.handle._distributed_container = weakref.ref(self)  # pylint: disable=protected-access
     self._device_to_handle = {v.device: v.handle for v in variables}
     self._primary_handle = variables[0].handle
     with ops.init_scope(), \
@@ -91,7 +87,6 @@ class DistributedVariable(resource_variable_ops.BaseResourceVariable):
           initializer_op=initializer,
           is_initialized_op=None,
           cached_value=None,
-          handle_deleter=_DummyResourceDeleter(),
           caching_device=None,
           is_variables=True)
 
@@ -110,8 +105,14 @@ class DistributedVariable(resource_variable_ops.BaseResourceVariable):
       else:
         handles = [self._packed_handle]
         is_packed = True
-      return tpu_context.get_replicated_var_handle(self._unique_id, handles,
-                                                   is_mirrored, is_packed)
+      common_name = self._handle_name
+      # BaseResourceVariable appends ":0" to the handle name, which makes it not
+      # a valid root scope name.
+      if ":" in common_name:
+        common_name = common_name.split(":")[0]
+      return tpu_context.get_replicated_var_handle(common_name, self._unique_id,
+                                                   handles, is_mirrored,
+                                                   is_packed)
     if self._packed_handle is not None and not context.executing_eagerly():
       return self._packed_handle
     device = device_util.canonicalize(device_util.current())
@@ -221,7 +222,7 @@ class DistributedVariable(resource_variable_ops.BaseResourceVariable):
       return super().gather_nd(indices, name)
 
   def to_proto(self, export_scope=None):
-    del self  # Not implemented
+    del self
     raise TypeError("DistributedVariable doesn't support to_proto")
 
   @staticmethod
@@ -263,4 +264,5 @@ def _tensor_conversion(var, dtype=None, name=None, as_ref=False):
       var.read_value(), dtype=dtype, name=name, as_ref=as_ref)
 
 
-ops.register_tensor_conversion_function(DistributedVariable, _tensor_conversion)
+tensor_conversion_registry.register_tensor_conversion_function(
+    DistributedVariable, _tensor_conversion)

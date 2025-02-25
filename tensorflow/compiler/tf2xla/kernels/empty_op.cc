@@ -15,15 +15,20 @@ limitations under the License.
 
 // XLA-specific Empty Op.
 
+#include <cstdint>
+#include <vector>
+
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 
 namespace tensorflow {
 namespace {
@@ -46,7 +51,7 @@ class EmptyOp : public XlaOpKernel {
         errors::InvalidArgument("shape must be a vector of int32, got shape ",
                                 shape_shape.DebugString()));
 
-    std::vector<int64> shape;
+    std::vector<int64_t> shape;
     OP_REQUIRES_OK(ctx, ctx->ConstantInputAsIntVector("shape", &shape));
 
     auto default_value = xla::Zero(ctx->builder(), type_);

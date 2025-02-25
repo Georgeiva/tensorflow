@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_GRAPPLER_DEVICES_H_
 #define TENSORFLOW_CORE_GRAPPLER_DEVICES_H_
 
+#include <cstdint>
 #include <functional>
 #include <utility>
 
@@ -34,7 +35,7 @@ int GetNumAvailableGPUs(
 
 // Maximum amount of gpu memory available per gpu. gpu_id must be in the range
 // [0, num_available_gpu)
-int64 AvailableGPUMemory(int gpu_id);
+int64_t AvailableGPUMemory(int gpu_id);
 
 // Get the number of logical CPU cores (aka hyperthreads) available.
 int GetNumAvailableLogicalCPUCores();

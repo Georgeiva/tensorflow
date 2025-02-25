@@ -25,7 +25,7 @@ namespace {
 
 TEST(LoadTest, TestDiskSavedModelLoad) {
   absl::StatusOr<TFPackage> result = TFPackage::Load("test");
-  ASSERT_FALSE(result.status().ok());
+  EXPECT_FALSE(result.status().ok());
 }
 
 }  // namespace

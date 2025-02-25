@@ -75,29 +75,25 @@ class GrpcWorkerCache : public WorkerCachePartial {
     }
   }
 
-  Status GetEagerClientCache(
+  absl::Status GetEagerClientCache(
       std::unique_ptr<eager::EagerClientCache>* eager_client_cache) override {
     eager_client_cache->reset(eager::NewGrpcEagerClientCache(channel_cache_));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status GetCoordinationClientCache(std::unique_ptr<CoordinationClientCache>*
-                                        coordination_client_cache) override {
-#if defined(PLATFORM_GOOGLE)
+  absl::Status GetCoordinationClientCache(
+      std::unique_ptr<CoordinationClientCache>* coordination_client_cache)
+      override {
     coordination_client_cache->reset(
         NewGrpcCoordinationClientCache(channel_cache_));
-    return Status::OK();
-#else
-    return errors::Unimplemented(
-        "Coordination service in open source is not yet implemented.");
-#endif
+    return absl::OkStatus();
   }
 
   void SetLogging(bool v) override { logger_.SetLogging(v); }
 
   void ClearLogs() override { logger_.ClearLogs(); }
 
-  bool RetrieveLogs(int64 step_id, StepStats* ss) override {
+  bool RetrieveLogs(int64_t step_id, StepStats* ss) override {
     return logger_.RetrieveLogs(step_id, ss);
   }
 
@@ -158,13 +154,13 @@ GrpcWorkerEnv::GrpcWorkerCacheThread::~GrpcWorkerCacheThread() {
 
 GrpcWorkerEnv* CreateGrpcWorkerEnv() {
   int num_cpus = port::NumSchedulableCPUs();
-  int64 num_completion_queues;
-  Status status = ReadInt64FromEnvVar("TF_GRPC_WORKER_CACHE_QUEUES", 64,
-                                      &num_completion_queues);
+  int64_t num_completion_queues;
+  absl::Status status = ReadInt64FromEnvVar("TF_GRPC_WORKER_CACHE_QUEUES", 64,
+                                            &num_completion_queues);
   if (!status.ok()) {
     LOG(ERROR) << "Error parsing TF_GRPC_WORKER_CACHE_QUEUES: " << status;
   }
-  int64 num_threads;
+  int64_t num_threads;
   status = ReadInt64FromEnvVar("TF_GRPC_WORKER_CACHE_THREADS", num_cpus,
                                &num_threads);
   if (!status.ok()) {
