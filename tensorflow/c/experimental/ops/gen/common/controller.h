@@ -15,6 +15,8 @@ limitations under the License.
 #ifndef TENSORFLOW_C_EXPERIMENTAL_OPS_GEN_COMMON_CONTROLLER_H_
 #define TENSORFLOW_C_EXPERIMENTAL_OPS_GEN_COMMON_CONTROLLER_H_
 
+#include <vector>
+
 #include "tensorflow/c/experimental/ops/gen/common/path_config.h"
 #include "tensorflow/c/experimental/ops/gen/common/source_code.h"
 #include "tensorflow/c/experimental/ops/gen/model/op_spec.h"
@@ -28,21 +30,21 @@ namespace generator {
 
 class Controller {
  public:
-  explicit Controller(PathConfig controller_config, Env* env = Env::Default());
+  explicit Controller(PathConfig path_config, Env* env = Env::Default());
   virtual ~Controller();
-  const void WriteFile(const string& file_path, const SourceCode& code);
+  const void WriteFile(const string& file_path, const SourceCode& code) const;
+  const std::vector<OpSpec>& GetModelOps() const;
 
- protected:
+ private:
+  void InitializeOpApi();
+  void BuildModel();
+
   // Data model: Ops to generate
   std::vector<OpSpec> operators_;
 
   // Configuration
   Env* env_;
-  PathConfig controller_config_;
-
- private:
-  void InitializeOpApi();
-  void BuildModel();
+  PathConfig path_config_;
 
   // Initialized TensorFlow Op/API definitions
   OpList op_list_;

@@ -2,9 +2,11 @@
 # OVIC Benchmarker Java API.
 
 load("@build_bazel_rules_android//android:rules.bzl", "android_library")
+load("@rules_java//java:defs.bzl", "java_binary", "java_library", "java_test")
 load("//tensorflow/java:build_defs.bzl", "JAVACOPTS")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:public"],
     licenses = ["notice"],
 )
@@ -20,8 +22,7 @@ java_test(
     ],
     javacopts = JAVACOPTS,
     tags = [
-        "no_mac",
-        "no_oss",  # TODO(b/122888913): libtensorflowlite_test_jni broke on mac.
+        "no_oss",
     ],
     test_class = "org.tensorflow.ovic.OvicClassifierTest",
     visibility = ["//visibility:public"],
@@ -71,9 +72,9 @@ java_library(
     tags = ["no_oss"],
     deps = [
         "//tensorflow/lite/java:libtensorflowlite_jni.so",
-        "//tensorflow/lite/java:tensorflowlite_java",
+        "//tensorflow/lite/java:tensorflowlite_javalib",
         "//tensorflow/lite/java/src/main/native",
-        "//tensorflow/lite/java/src/testhelper/java/org/tensorflow/lite:testhelper",
+        "//tensorflow/lite/java/src/testhelper/java/org/tensorflow/lite:testhelper_javalib",
     ],
 )
 
@@ -88,8 +89,7 @@ java_test(
     ],
     javacopts = JAVACOPTS,
     tags = [
-        "no_mac",
-        "no_oss",  # TODO(b/122888913): libtensorflowlite_test_jni broke on mac.
+        "no_oss",
     ],
     test_class = "org.tensorflow.ovic.OvicDetectorTest",
     visibility = ["//visibility:public"],
@@ -125,8 +125,8 @@ java_library(
     javacopts = JAVACOPTS,
     deps = [
         "//tensorflow/lite/java:libtensorflowlite_jni.so",
-        "//tensorflow/lite/java:tensorflowlite_java",
+        "//tensorflow/lite/java:tensorflowlite_javalib",
         "//tensorflow/lite/java/src/main/native",
-        "//tensorflow/lite/java/src/testhelper/java/org/tensorflow/lite:testhelper",
+        "//tensorflow/lite/java/src/testhelper/java/org/tensorflow/lite:testhelper_javalib",
     ],
 )

@@ -16,16 +16,26 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2XLA_XLA_OP_KERNEL_H_
 #define TENSORFLOW_COMPILER_TF2XLA_XLA_OP_KERNEL_H_
 
+#include "absl/base/attributes.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_context.h"
 #include "tensorflow/compiler/tf2xla/xla_expression.h"
 #include "tensorflow/compiler/tf2xla/xla_resource.h"
-#include "tensorflow/compiler/xla/client/value_inference.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "xla/hlo/builder/value_inference.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/literal.h"
+#include "xla/shape.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
 
@@ -69,6 +79,8 @@ class XlaOpKernelContext {
   // Returns the XLA XlaBuilder containing the output of compilation.
   xla::XlaBuilder* builder() const;
 
+  xla::ValueInference& value_inference();
+
   // Inputs
 
   // Returns the number of inputs to the operator.
@@ -110,8 +122,8 @@ class XlaOpKernelContext {
   xla::XlaOp Input(absl::string_view name);
 
   // Returns the xla input shape for a given index.
-  StatusOr<xla::Shape> InputXlaShape(int index);
-  StatusOr<xla::Shape> InputXlaShape(absl::string_view name);
+  absl::StatusOr<xla::Shape> InputXlaShape(int index);
+  absl::StatusOr<xla::Shape> InputXlaShape(absl::string_view name);
 
   // Returns true if all inputs are the same shape, otherwise sets the
   // status to a non-OK value and returns false.
@@ -121,12 +133,25 @@ class XlaOpKernelContext {
   // Returns the named list-valued immutable input in "list", as
   // defined in the OpDef.  If the named output is not list-valued,
   // returns a one-element list.
-  Status InputList(absl::string_view name, std::vector<xla::XlaOp>* handles,
-                   std::vector<TensorShape>* shapes);
+  absl::Status InputList(absl::string_view name,
+                         std::vector<xla::XlaOp>* handles,
+                         std::vector<TensorShape>* shapes);
   // Evaluates input and returns their dynamism vector in a vector of
   // predicates.
-  Status ResolveInputDynamismIntoPredVector(int index, std::vector<bool>* out);
-  Status ResolveInputDynamismIntoPred(int index, bool* out);
+  absl::Status ResolveInputDynamismIntoPredVector(int index,
+                                                  std::vector<bool>* out);
+  absl::Status ResolveInputDynamismIntoPred(int index, bool* out);
+  absl::Status ResolveInputDynamismIntoPredVector(absl::string_view name,
+                                                  std::vector<bool>* out);
+  absl::Status ResolveInputDynamismIntoPred(absl::string_view name, bool* out);
+
+  absl::Status ResolveInputDynamism(int index, xla::Literal* dynamism_literal);
+  absl::Status ResolveInputDynamism(absl::string_view name,
+                                    xla::Literal* dynamism_literal);
+
+  absl::Status ResolveInputDynamismReshaped(int index,
+                                            absl::Span<const int64_t> new_dims,
+                                            xla::Literal* dynamism_literal);
   // Helper methods for constant inputs.
 
   // Evaluates input `index` and stores it in `*constant_literal`. If the
@@ -134,65 +159,75 @@ class XlaOpKernelContext {
   // parameters, returns a non-OK status. This function can also be used to
   // infer constant input upper or lower bounds, by changing the `mode`
   // parameter.
-  Status ConstantInput(
+  absl::Status ConstantInput(
       int index, xla::Literal* constant_literal,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
-  Status ConstantInput(
+  absl::Status ConstantInput(
       absl::string_view name, xla::Literal* constant_literal,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
 
   // Converts a constant scalar int32 or int64 tensor into an int64.
-  Status ConstantInputAsIntScalar(
-      int index, int64* out,
+  absl::Status ConstantInputAsIntScalar(
+      int index, int64_t* out,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
-  Status ConstantInputAsIntScalar(
-      absl::string_view name, int64* out,
+  absl::Status ConstantInputAsIntScalar(
+      absl::string_view name, int64_t* out,
+      xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
+
+  absl::StatusOr<int64_t> ConstantInputAsIntScalar(
+      absl::string_view name,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
 
   // Converts a constant scalar float32 or float64 tensor into a float64.
-  Status ConstantInputAsFloatScalar(
+  absl::Status ConstantInputAsFloatScalar(
       int index, double* out,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
 
   // Converts a constant 1D int32 or int64 tensor into a vector of int64s.
-  Status ConstantInputAsIntVector(
-      int index, std::vector<int64>* out,
+  absl::Status ConstantInputAsIntVector(
+      int index, std::vector<int64_t>* out,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
-  Status ConstantInputAsIntVector(
-      absl::string_view name, std::vector<int64>* out,
+  absl::Status ConstantInputAsIntVector(
+      absl::string_view name, std::vector<int64_t>* out,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
 
   // Reshapes and converts a constant int32 or int64 tensor into a vector of
   // int64s.
-  Status ConstantInputReshapedToIntVector(
-      int index, std::vector<int64>* out,
+  absl::Status ConstantInputReshapedToIntVector(
+      int index, std::vector<int64_t>* out,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
-  Status ConstantInputReshapedToIntVector(
-      absl::string_view name, std::vector<int64>* out,
+  absl::Status ConstantInputReshapedToIntVector(
+      absl::string_view name, std::vector<int64_t>* out,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
 
   // Converts a constant int32 or int64 Tensor into an xla int64 Literal.
-  Status ConstantInputAsInt64Literal(
+  absl::Status ConstantInputAsInt64Literal(
       int index, xla::Literal* out,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
-  Status ConstantInputAsInt64Literal(
+  absl::Status ConstantInputAsInt64Literal(
       absl::string_view name, xla::Literal* out,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
 
   // Converts a constant 1D int32 or int64 tensor into a TensorShape.
-  Status ConstantInputAsShape(
+  absl::Status ConstantInputAsShape(
       int index, TensorShape* shape,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
 
   // Converts a constant 1D int32 or int64 tensor, or a scalar with value -1
   // into a PartialTensorShape.
-  Status ConstantInputAsPartialShape(int index, PartialTensorShape* shape);
+  absl::Status ConstantInputAsPartialShape(int index,
+                                           PartialTensorShape* shape);
 
   // Returns the named list-valued immutable input in "list", as
   // defined in the OpDef.  If the named output is not list-valued,
   // returns a one-element list.
-  Status ConstantInputList(
+  absl::Status ConstantInputList(
       absl::string_view name, std::vector<xla::Literal>* outputs,
+      xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
+
+  // Returns the Tensor representation of the constant input.
+  absl::StatusOr<Tensor> ConstantInputTensor(
+      int index,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
 
   // Returns an XlaExpression describing the value of 'index'.
@@ -228,21 +263,21 @@ class XlaOpKernelContext {
   void SetTensorListOutput(int index, const xla::XlaOp& handle);
 
   // Status handling.
-  void SetStatus(const Status& status) { context_->SetStatus(status); }
-  Status status() { return context_->status(); }
+  void SetStatus(const absl::Status& status) { context_->SetStatus(status); }
+  absl::Status status() { return context_->status(); }
 
   // Variables
 
   // Sets `*resource` to the resource associated with input `index`.
-  Status GetResourceInput(int index, XlaResource** resource);
+  absl::Status GetResourceInput(int index, XlaResource** resource);
 
   // Sets output `index` to be a reference to resource `resource`.
   void SetResourceOutput(int index, XlaResource* resource);
 
   // Sets `*type` and `*shape` to the current type and shape of a variable's
   // value.
-  Status GetVariableTypeAndShape(int index, DataType* type,
-                                 TensorShape* shape) const;
+  absl::Status GetVariableTypeAndShape(int index, DataType* type,
+                                       TensorShape* shape) const;
 
   // When dynamic_dimension_is_minus_one is set, querying a dynamic dimension
   // returns "-1", this is useful when the underlying ops expect explicit
@@ -255,33 +290,34 @@ class XlaOpKernelContext {
     return dynamic_dimension_is_minus_one_;
   }
 
-  bool is_dynamic_dimension(int64 dim_size) { return dim_size == -1; }
+  bool is_dynamic_dimension(int64_t dim_size) { return dim_size == -1; }
 
   // Reads the current value of the resource variable referred to by input
   // `index`. If `shape` is not nullptr, sets `*shape` to the shape of the
   // variable. Returns an error if the variable has not been initialized, or if
   // its type does not match `type`.
-  Status ReadVariableInput(int index, DataType type, TensorShape* shape,
-                           xla::XlaOp* value);
+  absl::Status ReadVariableInput(int index, DataType type, TensorShape* shape,
+                                 xla::XlaOp* value);
   // Reads the current value of the resource variable referred to by input
   // `name`.
-  Status ReadVariableInput(absl::string_view name, DataType type,
-                           TensorShape* shape, xla::XlaOp* value);
+  absl::Status ReadVariableInput(absl::string_view name, DataType type,
+                                 TensorShape* shape, xla::XlaOp* value);
 
   // Assigns the value `handle` to the variable referenced by input
   // `input_index`. The variable must be of `type`. Returns an error if the
   // variable has been initialized with a different type or with a
   // different shape.
-  Status AssignVariable(int input_index, DataType type, xla::XlaOp handle);
+  absl::Status AssignVariable(int input_index, DataType type,
+                              xla::XlaOp handle);
   // Assigns the value `handle` to the variable referenced by input `name`.
-  Status AssignVariable(absl::string_view name, DataType type,
-                        xla::XlaOp handle);
+  absl::Status AssignVariable(absl::string_view name, DataType type,
+                              xla::XlaOp handle);
 
   // Helper routines for the OP_REQUIRES macros
-  void CtxFailure(const Status& s);
-  void CtxFailureWithWarning(const Status& s);
-  void CtxFailure(const char* file, int line, const Status& s);
-  void CtxFailureWithWarning(const char* file, int line, const Status& s);
+  void CtxFailure(const absl::Status& s);
+  void CtxFailureWithWarning(const absl::Status& s);
+  void CtxFailure(const char* file, int line, const absl::Status& s);
+  void CtxFailureWithWarning(const char* file, int line, const absl::Status& s);
 
   // If this kernel invocation is within a function execution,
   // call_frame() returns the call frame for the function call.
@@ -317,6 +353,11 @@ class XlaOpKernelContext {
   // separate specialization of the computation for each DataType.
   const xla::XlaComputation* GetOrCreateAdd(const DataType type);
 
+  // Gets an XLA lambda to compute LogAddExp. This is cached in the
+  // XlaContext since it may be used by multiple Ops. There is a
+  // separate specialization of the computation for each DataType.
+  const xla::XlaComputation* GetOrCreateLogAddExp(const DataType type);
+
   // Gets an XLA lambda to compute Mul. This is cached in the
   // XlaContext since it may be used by multiple Ops. There is a
   // separate specialization of the computation for each DataType.
@@ -329,19 +370,19 @@ class XlaOpKernelContext {
  private:
   // Returns the tensor of input `name`.
   const Tensor& GetInputTensorByName(absl::string_view name);
-
   // Evaluates input `index`, reshapes it to `new_shape` if new_shape !=
   // InputShape(index), and stores it in `*constant_literal`. If the input
   // cannot be evaluated, e.g., because it depends on unbound parameters,
   // returns a non-Ok status. If InputShape(index).num_elements() !=
   // new_shape.num_elements(), returns an error status.
-  Status ConstantInputReshaped(
-      int index, absl::Span<const int64> new_dims,
+  absl::Status ConstantInputReshaped(
+      int index, absl::Span<const int64_t> new_dims,
       xla::Literal* constant_literal,
       xla::ValueInferenceMode mode = xla::ValueInferenceMode::kValue);
 
   OpKernelContext* const context_;
   bool dynamic_dimension_is_minus_one_;
+  xla::ValueInference value_inference_;
 };
 
 }  // namespace tensorflow

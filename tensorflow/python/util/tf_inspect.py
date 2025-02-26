@@ -13,15 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 """TFDecorator-aware replacements for the inspect module."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import functools
 import inspect as _inspect
-
-import six
 
 from tensorflow.python.util import tf_decorator
 
@@ -39,7 +33,18 @@ def signature(obj, *, follow_wrapped=True):
 Parameter = _inspect.Parameter
 Signature = _inspect.Signature
 
-ArgSpec = _inspect.ArgSpec
+if hasattr(_inspect, 'ArgSpec'):
+  ArgSpec = _inspect.ArgSpec
+else:
+  ArgSpec = collections.namedtuple(
+      'ArgSpec',
+      [
+          'args',
+          'varargs',
+          'keywords',
+          'defaults',
+      ],
+  )
 
 
 if hasattr(_inspect, 'FullArgSpec'):
@@ -83,11 +88,20 @@ if hasattr(_inspect, 'getfullargspec'):
       from FullArgSpec.
     """
     fullargspecs = getfullargspec(target)
+
+    defaults = fullargspecs.defaults or ()
+    if fullargspecs.kwonlydefaults:
+      defaults += tuple(fullargspecs.kwonlydefaults.values())
+
+    if not defaults:
+      defaults = None
+
     argspecs = ArgSpec(
-        args=fullargspecs.args,
+        args=fullargspecs.args + fullargspecs.kwonlyargs,
         varargs=fullargspecs.varargs,
         keywords=fullargspecs.varkw,
-        defaults=fullargspecs.defaults)
+        defaults=defaults,
+    )
     return argspecs
 else:
   _getargspec = _inspect.getargspec
@@ -219,13 +233,13 @@ def _get_argspec_for_partial(obj):
     all_defaults[-len(defaults):] = defaults
 
   # Fill in default values provided by partial function in all_defaults.
-  for kw, default in six.iteritems(partial_keywords):
+  for kw, default in iter(partial_keywords.items()):
     if kw in args:
       idx = args.index(kw)
       all_defaults[idx] = default
     elif not keywords:
-      raise ValueError('Function does not have **kwargs parameter, but '
-                       'contains an unknown partial keyword.')
+      raise ValueError(f'{obj} does not have a **kwargs parameter, but '
+                       f'contains an unknown partial keyword {kw}.')
 
   # Find first argument with default value set.
   first_default = next(
@@ -242,9 +256,8 @@ def _get_argspec_for_partial(obj):
   ]
 
   if invalid_default_values:
-    raise ValueError('Some arguments %s do not have default value, but they '
-                     'are positioned after those with default values. This can '
-                     'not be expressed with ArgSpec.' % invalid_default_values)
+    raise ValueError(f'{obj} has some keyword-only arguments, which are not'
+                     f' supported: {invalid_default_values}.')
 
   return ArgSpec(args, varargs, keywords, tuple(all_defaults[first_default:]))
 
@@ -408,16 +421,38 @@ def ismethod(object):  # pylint: disable=redefined-builtin
 
 def isanytargetmethod(object):  # pylint: disable=redefined-builtin
   # pylint: disable=g-doc-args,g-doc-return-or-yield
-  """Checks all the decorated targets along the chain of decorators.
+  """Checks if `object` or a TF Decorator wrapped target contains self or cls.
 
-  Returns True if any of the decorated targets in the chain is a method.
+  This function could be used along with `tf_inspect.getfullargspec` to
+  determine if the first argument of `object` argspec is self or cls. If the
+  first argument is self or cls, it needs to be excluded from argspec when we
+  compare the argspec to the input arguments and, if provided, the tf.function
+  input_signature.
+
+  Like `tf_inspect.getfullargspec` and python `inspect.getfullargspec`, it
+  does not unwrap python decorators.
+
+  Args:
+    obj: An method, function, or functool.partial, possibly decorated by
+    TFDecorator.
+
+  Returns:
+    A bool indicates if `object` or any target along the chain of TF decorators
+    is a method.
   """
-  decorators, _ = tf_decorator.unwrap(object)
+  decorators, target = tf_decorator.unwrap(object)
   for decorator in decorators:
     if _inspect.ismethod(decorator.decorated_target):
       return True
 
-  return False
+  # TODO(b/194845243): Implement the long term solution with inspect.signature.
+  # A functools.partial object is not a function or method. But if the wrapped
+  # func is a method, the argspec will contain self/cls.
+  while isinstance(target, functools.partial):
+    target = target.func
+
+  # `target` is a method or an instance with __call__
+  return callable(target) and not _inspect.isfunction(target)
 
 
 def ismodule(object):  # pylint: disable=redefined-builtin

@@ -92,7 +92,7 @@ class TensorResponseTest : public ::testing::Test {
     DummyDevice cpu_device(Env::Default());
     response.InitAlloc(&cpu_device, AllocatorAttributes());
     for (int i = 0; i < 2; i++) {  // Twice so we exercise reuse of "response"
-      Status s = response.ParseFrom(&source);
+      absl::Status s = response.ParseFrom(&source);
       EXPECT_TRUE(s.ok());
 
       const RecvTensorResponse& meta = response.metadata();
@@ -112,7 +112,7 @@ class TensorResponseTest : public ::testing::Test {
     LOG(ERROR) << "DT: " << static_cast<int>(dt);
     for (int elems = 0; elems <= 10000; elems++) {
       if (elems < 100 || (elems % 1000 == 0)) {
-        Tensor a(dt, TensorShape({1, static_cast<int64>(v.size())}));
+        Tensor a(dt, TensorShape({1, static_cast<int64_t>(v.size())}));
         test::FillValues<T>(&a, v);
         Validate(a, (elems == 0), true);
       }
@@ -120,11 +120,11 @@ class TensorResponseTest : public ::testing::Test {
     }
   }
   void DoTestForStrings(DataType dt) {
-    gtl::InlinedVector<tstring, 4> v;
+    absl::InlinedVector<tstring, 4UL> v;
     LOG(ERROR) << "DT: string";
     for (int elems = 0; elems <= 10000; elems++) {
       if (elems < 100 || (elems % 1000 == 0)) {
-        Tensor a(dt, TensorShape({1, static_cast<int64>(v.size())}));
+        Tensor a(dt, TensorShape({1, static_cast<int64_t>(v.size())}));
         test::FillValues<tstring>(&a, v);
         Validate(a, (elems == 0), true);
       }
@@ -143,7 +143,7 @@ TEST_F(TensorResponseTest, Simple) {
   DoTest<int8>(DT_INT8);
   DoTest<complex64>(DT_COMPLEX64);
   DoTest<complex128>(DT_COMPLEX128);
-  DoTest<int64>(DT_INT64);
+  DoTest<int64_t>(DT_INT64);
   DoTest<bool>(DT_BOOL);
   DoTest<qint8>(DT_QINT8);
   DoTest<quint8>(DT_QUINT8);
@@ -161,7 +161,7 @@ string MakeFloatTensorTestCase(int num_elems) {
   for (int i = 0; i < num_elems; i++) {
     v[i] = i % 10;
   }
-  Tensor src(DT_INT8, TensorShape({1, static_cast<int64>(v.size())}));
+  Tensor src(DT_INT8, TensorShape({1, static_cast<int64_t>(v.size())}));
   test::FillValues<int8>(&src, v);
 
   RecvTensorResponse proto;
@@ -183,7 +183,7 @@ static void BM_TensorResponse(::testing::benchmark::State& state) {
     TensorResponse response;
     response.InitAlloc(&cpu_device, AllocatorAttributes());
     StringSource source(&encoded, -1);
-    Status s = response.ParseFrom(&source);
+    absl::Status s = response.ParseFrom(&source);
     bytes = response.tensor().TotalBytes();
   }
   state.SetLabel(strings::StrCat("Bytes: ", bytes));

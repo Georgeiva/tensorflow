@@ -27,39 +27,65 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb_text.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
-#include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/lib/strings/proto_serialization.h"
 #include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/platform/fingerprint.h"
+#include "tensorflow/core/util/overflow.h"
 
 namespace tensorflow {
+
+namespace attr_value_util_internal {
+// Return the size of the tensor represented by this TensorProto. If shape is
+// not fully defined return -1.
+int64_t TensorByteSize(const TensorProto& t) {
+  // num_elements returns -1 if shape is not fully defined.
+  auto result = PartialTensorShape::BuildPartialTensorShape(t.tensor_shape());
+  if (!result.ok()) {
+    VLOG(1) << "Error encounted while computing computing tensor byte size: "
+            << result.status();
+    return -1;
+  }
+  int64_t num_elems = result.value().num_elements();
+  if (num_elems < 0) {
+    return -1;
+  }
+
+  int64_t tensor_byte_size =
+      MultiplyWithoutOverflow(num_elems, DataTypeSize(t.dtype()));
+  if (tensor_byte_size < 0) {
+    VLOG(1)
+        << "Overflow encountered when computing tensor byte size, multiplying "
+        << num_elems << " with " << DataTypeSize(t.dtype());
+    return -1;
+  }
+  return tensor_byte_size;
+}
+}  // namespace attr_value_util_internal
+
 namespace {
 
-// Do not construct large tensors to compute their hash or compare for equality.
+// Do not construct large tensors to compute their hash, compare for equality,
+// or construct long DebugString.
 constexpr int kMaxAttrValueTensorByteSize = 32 * 1024 * 1024;  // 32mb
 
 // Limit nesting of tensors to 100 deep to prevent memory overflow.
 constexpr int kMaxTensorNestDepth = 100;
 
-// Return the size of the tensor represented by this TensorProto. If shape is
-// not fully defined return -1.
-int64 TensorByteSize(const TensorProto& t) {
-  // num_elements returns -1 if shape is not fully defined.
-  int64 num_elems = TensorShape(t.tensor_shape()).num_elements();
-  return num_elems < 0 ? -1 : num_elems * DataTypeSize(t.dtype());
-}
-
 // Compute TensorProto hash by creating a Tensor, serializing it as tensor
-// content, and computing a hash of it's string representation. This is unsafe
-// operation, because large tensors can be represented as TensorProto, but can't
-// be serialized to tensor content.
+// content, and computing a hash of it's string representation. If it's failed
+// to serialize, compute hash based on TensorProto string representation.
+// This approach may result different hash codes with identical Tensors if they
+// are defined with different TensorProto representations.
 uint64 TensorProtoHash(const TensorProto& tp) {
   Tensor tensor(tp.dtype());
   bool success = tensor.FromProto(tp);
-  DCHECK(success);
-  TensorProto p;
-  tensor.AsProtoTensorContent(&p);
-  return DeterministicProtoHash64(p);
+  if (success) {
+    TensorProto p;
+    tensor.AsProtoTensorContent(&p);
+    return DeterministicProtoHash64(p);
+  } else {
+    return DeterministicProtoHash64(tp);
+  }
 }
 
 // Do not create large tensors in memory, compute hash based on TensorProto
@@ -67,7 +93,8 @@ uint64 TensorProtoHash(const TensorProto& tp) {
 // different hash code if they are defined with different TensorProto
 // representations.
 uint64 FastTensorProtoHash(const TensorProto& tp) {
-  if (TensorByteSize(tp) > kMaxAttrValueTensorByteSize) {
+  if (attr_value_util_internal::TensorByteSize(tp) >
+      kMaxAttrValueTensorByteSize) {
     return DeterministicProtoHash64(tp);
   } else {
     return TensorProtoHash(tp);
@@ -80,15 +107,17 @@ bool AreTensorProtosEqual(const TensorProto& lhs, const TensorProto& rhs,
   // conversion to an actual Tensor if we can quickly rule out equality
   // by comparing the Tensor size since different sized Tensors are definitely
   // different.
-  const int64 lhs_tensor_bytes = TensorByteSize(lhs);
-  const int64 rhs_tensor_bytes = TensorByteSize(rhs);
+  const int64_t lhs_tensor_bytes =
+      attr_value_util_internal::TensorByteSize(lhs);
+  const int64_t rhs_tensor_bytes =
+      attr_value_util_internal::TensorByteSize(rhs);
   if (lhs_tensor_bytes != rhs_tensor_bytes) {
     return false;
   }
 
   // If the TensorProto representation expands into a much bigger Tensor,
   // we have a fast-path that first compares the protos.
-  const int64 lhs_proto_bytes = lhs.ByteSizeLong();
+  const int64_t lhs_proto_bytes = lhs.ByteSizeLong();
   const bool large_expansion =
       (lhs_proto_bytes < 512 && lhs_tensor_bytes > 4096);
 
@@ -157,8 +186,8 @@ string SummarizeString(const string& str) {
   // If the string is long, replace the middle with ellipses.
   constexpr int kMaxStringSummarySize = 80;
   if (escaped.size() >= kMaxStringSummarySize) {
-    StringPiece prefix(escaped);
-    StringPiece suffix = prefix;
+    absl::string_view prefix(escaped);
+    absl::string_view suffix = prefix;
     prefix.remove_suffix(escaped.size() - 10);
     suffix.remove_prefix(escaped.size() - 10);
     return strings::StrCat("\"", prefix, "...", suffix, "\"");
@@ -169,7 +198,16 @@ string SummarizeString(const string& str) {
 
 string SummarizeTensor(const TensorProto& tensor_proto) {
   Tensor t;
-  if (!t.FromProto(tensor_proto)) {
+  int64_t tensor_byte_size =
+      attr_value_util_internal::TensorByteSize(tensor_proto);
+  if (tensor_byte_size > kMaxAttrValueTensorByteSize ||
+      tensor_byte_size == -1  // Unknown shape
+  ) {
+    // Do not load large or unknown-shape Tensor to compute detailed
+    // DebugString()
+    return strings::StrCat("<TensorProto: ", tensor_proto.ShortDebugString(),
+                           ">");
+  } else if (!t.FromProto(tensor_proto)) {
     return strings::StrCat(
         "<Invalid TensorProto: ", tensor_proto.ShortDebugString(), ">");
   }
@@ -288,12 +326,19 @@ string SummarizeAttrValue(const AttrValue& attr_value) {
           pieces.push_back(SummarizeFunc(attr_value.list().func(i)));
         }
       }
-      constexpr int kMaxListSummarySize = 50;
+      constexpr int kMaxListSummarySize = 30;
       if (pieces.size() >= kMaxListSummarySize) {
-        pieces.erase(pieces.begin() + 5, pieces.begin() + (pieces.size() - 6));
+        // The message is exposed to users, so create a separate fingerprint
+        // ID in the case of long lists.
+        uint64_t fingerprint =
+            Fingerprint64(absl::StrJoin(pieces.begin(), pieces.end(), ","));
+        pieces.erase(pieces.begin() + 5, pieces.end() - 6);
         pieces[5] = "...";
+        return strings::StrCat("[", absl::StrJoin(pieces, ", "),
+                               "]{attr_hash=", fingerprint, "}");
+      } else {
+        return strings::StrCat("[", absl::StrJoin(pieces, ", "), "]");
       }
-      return strings::StrCat("[", absl::StrJoin(pieces, ", "), "]");
     }
     case AttrValue::kFunc: {
       return SummarizeFunc(attr_value.func());
@@ -306,7 +351,8 @@ string SummarizeAttrValue(const AttrValue& attr_value) {
   return "<Unknown AttrValue type>";  // Prevent missing return warning
 }
 
-Status AttrValueHasType(const AttrValue& attr_value, StringPiece type) {
+absl::Status AttrValueHasType(const AttrValue& attr_value,
+                              absl::string_view type) {
   int num_set = 0;
 
 #define VALIDATE_FIELD(name, type_string, oneof_case)                         \
@@ -401,10 +447,11 @@ Status AttrValueHasType(const AttrValue& attr_value, StringPiece type) {
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-bool ParseAttrValue(StringPiece type, StringPiece text, AttrValue* out) {
+bool ParseAttrValue(absl::string_view type, absl::string_view text,
+                    AttrValue* out) {
   // Parse type.
   string field_name;
   bool is_list = absl::ConsumePrefix(&type, "list(");
@@ -438,7 +485,7 @@ bool ParseAttrValue(StringPiece type, StringPiece text, AttrValue* out) {
   if (is_list) {
     // TextFormat parser considers "i: 7" to be the same as "i: [7]",
     // but we only want to allow list values with [].
-    StringPiece cleaned = text;
+    absl::string_view cleaned = text;
     str_util::RemoveLeadingWhitespace(&cleaned);
     str_util::RemoveTrailingWhitespace(&cleaned);
     if (cleaned.size() < 2 || cleaned[0] != '[' ||
@@ -485,10 +532,10 @@ void SetAttrValue(const AttrValue& value, AttrValue* out) { *out = value; }
   DEFINE_SET_ATTR_VALUE_LIST(gtl::ArraySlice<ARG_TYPE>, FIELD)
 
 DEFINE_SET_ATTR_VALUE_ONE(const string&, s)
-DEFINE_SET_ATTR_VALUE_LIST(gtl::ArraySlice<string>, s)
+DEFINE_SET_ATTR_VALUE_LIST(absl::Span<const string>, s)
 DEFINE_SET_ATTR_VALUE_BOTH(const char*, s)
-DEFINE_SET_ATTR_VALUE_BOTH(int64, i)
-DEFINE_SET_ATTR_VALUE_BOTH(int32, i)
+DEFINE_SET_ATTR_VALUE_BOTH(int64_t, i)
+DEFINE_SET_ATTR_VALUE_BOTH(int32_t, i)
 DEFINE_SET_ATTR_VALUE_BOTH(float, f)
 DEFINE_SET_ATTR_VALUE_BOTH(double, f)
 DEFINE_SET_ATTR_VALUE_BOTH(bool, b)
@@ -500,18 +547,19 @@ void SetAttrValue(const tstring& value, AttrValue* out) {
   out->set_s(value.data(), value.size());
 }
 
-void SetAttrValue(gtl::ArraySlice<tstring> value, AttrValue* out) {
+void SetAttrValue(absl::Span<const tstring> value, AttrValue* out) {
   out->mutable_list()->Clear();
   for (const auto& v : value) {
     out->mutable_list()->add_s(v.data(), v.size());
   }
 }
 
-void SetAttrValue(StringPiece value, AttrValue* out) {
+void SetAttrValue(absl::string_view value, AttrValue* out) {
   out->set_s(value.data(), value.size());
 }
 
-void SetAttrValue(const gtl::ArraySlice<StringPiece> value, AttrValue* out) {
+void SetAttrValue(const absl::Span<const absl::string_view> value,
+                  AttrValue* out) {
   out->mutable_list()->Clear();  // Create list() even if value empty.
   for (const auto& v : value) {
     out->mutable_list()->add_s(v.data(), v.size());
@@ -537,21 +585,21 @@ void SetAttrValue(const PartialTensorShape& value, AttrValue* out) {
   value.AsProto(out->mutable_shape());
 }
 
-void SetAttrValue(const gtl::ArraySlice<TensorShape> value, AttrValue* out) {
+void SetAttrValue(const absl::Span<const TensorShape> value, AttrValue* out) {
   out->mutable_list()->Clear();  // Create list() even if value empty.
   for (const auto& v : value) {
     v.AsProto(out->mutable_list()->add_shape());
   }
 }
 
-void SetAttrValue(gtl::ArraySlice<TensorShapeProto> value, AttrValue* out) {
+void SetAttrValue(absl::Span<const TensorShapeProto> value, AttrValue* out) {
   out->mutable_list()->Clear();  // Create list() even if value empty.
   for (const auto& v : value) {
     *out->mutable_list()->add_shape() = v;
   }
 }
 
-void SetAttrValue(const gtl::ArraySlice<PartialTensorShape> value,
+void SetAttrValue(const absl::Span<const PartialTensorShape> value,
                   AttrValue* out) {
   out->mutable_list()->Clear();  // Create list() even if value empty.
   for (const auto& v : value) {
@@ -567,7 +615,7 @@ void SetAttrValue(const Tensor& value, AttrValue* out) {
   }
 }
 
-void SetAttrValue(const gtl::ArraySlice<Tensor> value, AttrValue* out) {
+void SetAttrValue(const absl::Span<const Tensor> value, AttrValue* out) {
   out->mutable_list()->Clear();  // Create list() even if value empty.
   for (const auto& v : value) {
     if (v.NumElements() > 1) {
@@ -582,7 +630,7 @@ void SetAttrValue(const TensorProto& value, AttrValue* out) {
   *out->mutable_tensor() = value;
 }
 
-void SetAttrValue(const gtl::ArraySlice<TensorProto> value, AttrValue* out) {
+void SetAttrValue(const absl::Span<const TensorProto> value, AttrValue* out) {
   out->mutable_list()->Clear();  // Create list() even if value empty.
   for (const auto& v : value) {
     *out->mutable_list()->add_tensor() = v;
@@ -593,7 +641,7 @@ void SetAttrValue(const NameAttrList& value, AttrValue* out) {
   *out->mutable_func() = value;
 }
 
-void SetAttrValue(gtl::ArraySlice<NameAttrList> value, AttrValue* out) {
+void SetAttrValue(absl::Span<const NameAttrList> value, AttrValue* out) {
   out->mutable_list()->Clear();  // Create list() even if value empty.
   for (const auto& v : value) {
     *out->mutable_list()->add_func() = v;

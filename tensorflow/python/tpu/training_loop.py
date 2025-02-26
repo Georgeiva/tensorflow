@@ -15,16 +15,13 @@
 
 """Library for constructing a training loop, suitable for TPUs."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from typing import Any, Callable, Iterable, List, Optional, Union
 
 from tensorflow.python.compiler.xla import xla
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import while_loop as while_loop_tf
 from tensorflow.python.tpu import tensor_tracer
 from tensorflow.python.tpu import tpu_feed
 from tensorflow.python.tpu import tpu_function
@@ -73,32 +70,28 @@ def while_loop(condition: Callable[..., Any],
   if body_arg_error is not None:
     if infeed_queue is None:
       raise TypeError(
-          "Supplied loop body function cannot be called with the specified "
-          "inputs. You specified %d inputs: %s, but the loop body needs %s" % (
-              input_arity, str([i.name for i in inputs]), body_arg_error))
+          f"Supplied loop body function cannot be called with the specified "
+          f"inputs. You specified {input_arity} inputs: {[i.name for i in inputs]}, but the loop body needs {body_arg_error}"
+      )
     else:
       raise TypeError(
-          "Supplied loop body function cannot be called with the specified "
-          "inputs. You specified %d inputs: %s and %d additional inputs from "
-          "infeed, but the computation needs %s" % (input_arity, str(
-              [i.name for i in inputs]), infeed_queue.number_of_tuple_elements,
-                                                    body_arg_error))
+          f"Supplied loop body function cannot be called with the specified "
+          f"inputs. You specified {input_arity} inputs: {[i.name for i in inputs]} and {infeed_queue.number_of_tuple_elements} additional inputs from "
+          f"infeed, but the computation needs {body_arg_error}")
   condition_arg_error = xla.check_function_argument_count(
       condition, input_arity, None)
   if condition_arg_error is not None:
     if infeed_queue is None:
       raise TypeError(
-          "Supplied loop condition function cannot be called with the "
-          "specified inputs. You specified %d inputs: %s, but the loop "
-          "condition needs %s" % (input_arity, str([i.name for i in inputs]),
-                                  condition_arg_error))
+          f"Supplied loop condition function cannot be called with the "
+          f"specified inputs. You specified {input_arity} inputs: {[i.name for i in inputs]}, but the loop "
+          f"condition needs {condition_arg_error}")
     else:
       raise TypeError(
-          "Supplied loop condition function cannot be called with the "
-          "specified inputs. You specified %d inputs: %s, but the loop "
-          "condition needs %s. Note that infeed is not passed to the loop "
-          "condition." % (input_arity, str([i.name for i in inputs]),
-                          condition_arg_error))
+          f"Supplied loop condition function cannot be called with the "
+          f"specified inputs. You specified {input_arity} inputs: {[i.name for i in inputs]}, but the loop "
+          f"condition needs {condition_arg_error}. Note that infeed is not passed to the loop condition."
+      )
 
   def condition_wrapper(*inputs):
     # Discards the dummy output added for arity-0 loops.
@@ -182,7 +175,7 @@ def while_loop(condition: Callable[..., Any],
   # control dependencies from any side-effecting operations.
   if input_arity == 0:
     inputs = [array_ops.constant(0)]
-  return control_flow_ops.while_loop(
+  return while_loop_tf.while_loop(
       condition_wrapper, body_wrapper, inputs, name="", parallel_iterations=1)
 
 

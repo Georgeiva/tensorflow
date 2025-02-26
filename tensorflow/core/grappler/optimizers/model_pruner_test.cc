@@ -353,7 +353,7 @@ TEST_F(ModelPrunerTest, PruningSkipsRefOutputs) {
   ASSERT_EQ(actual_tensors.size(), 1);
   auto expected_tensors = EvaluateNodes(item.graph, fetch, {{"a", a_t}});
   ASSERT_EQ(expected_tensors.size(), 1);
-  test::ExpectTensorEqual<int64>(actual_tensors[0], expected_tensors[0]);
+  test::ExpectTensorEqual<int64_t>(actual_tensors[0], expected_tensors[0]);
 }
 
 // TODO(rmlarsen): Reenable this test when the issues with
@@ -565,7 +565,7 @@ TEST_F(ModelPrunerTest, PruneConstantsWithoutInputsAndOutputs) {
   item.fetch = {"id1"};
   ModelPruner pruner;
   GraphDef output;
-  Status status = pruner.Optimize(nullptr, item, &output);
+  absl::Status status = pruner.Optimize(nullptr, item, &output);
   TF_ASSERT_OK(status);
 
   GraphDef expected;

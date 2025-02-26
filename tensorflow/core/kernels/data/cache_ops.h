@@ -41,7 +41,7 @@ class MemoryCache {
   void Reset();
 
   // Returns the element at the given index.
-  const std::vector<Tensor>& at(int64 index);
+  const std::vector<Tensor>& at(int64_t index);
 
   // Returns the size of the cache.
   size_t size();
@@ -78,11 +78,10 @@ class AnonymousMemoryCacheHandleOp
 
  private:
   string name() override;
-  Status CreateResource(OpKernelContext* ctx,
-                        std::unique_ptr<FunctionLibraryDefinition> flib_def,
-                        std::unique_ptr<ProcessFunctionLibraryRuntime> pflr,
-                        FunctionLibraryRuntime* lib,
-                        MemoryCacheManager** manager) override;
+  absl::Status CreateResource(
+      OpKernelContext* ctx, std::unique_ptr<FunctionLibraryDefinition> flib_def,
+      std::unique_ptr<ProcessFunctionLibraryRuntime> pflr,
+      FunctionLibraryRuntime* lib, MemoryCacheManager** manager) override;
 };
 
 // Deletes an instance of cache resource.

@@ -16,6 +16,7 @@ limitations under the License.
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tensorflow/core/data/root_dataset.h"
@@ -52,15 +53,15 @@ class DatasetIterator
 
   ~DatasetIterator() override {}
 
-  Status Init(OpKernelContext* ctx) {
+  absl::Status Init(OpKernelContext* ctx) {
     data::IteratorContext::Params params(ctx);
-    function_handle_cache_ = absl::make_unique<FunctionHandleCache>(params.flr);
+    function_handle_cache_ = std::make_unique<FunctionHandleCache>(params.flr);
     params.function_handle_cache = function_handle_cache_.get();
     params.resource_mgr = &resource_mgr_;
     cancellation_manager_ =
-        absl::make_unique<CancellationManager>(ctx->cancellation_manager());
+        std::make_unique<CancellationManager>(ctx->cancellation_manager());
     params.cancellation_manager = cancellation_manager_.get();
-    iterator_ctx_ = absl::make_unique<data::IteratorContext>(std::move(params));
+    iterator_ctx_ = std::make_unique<data::IteratorContext>(std::move(params));
 
     DatasetBase* finalized_dataset;
     TF_RETURN_IF_ERROR(
@@ -69,7 +70,7 @@ class DatasetIterator
         iterator_ctx_.get(), nullptr, "LookupTable", &iterator_));
     core::ScopedUnref unref(finalized_dataset);
     Next();
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   void Next() override {
@@ -87,10 +88,10 @@ class DatasetIterator
 
   const Tensor& values() const override { return tensors_[1]; }
 
-  Status status() const override { return status_; }
+  absl::Status status() const override { return status_; }
 
-  int64 total_size() const override {
-    int64 size = dataset_->Cardinality();
+  int64_t total_size() const override {
+    int64_t size = dataset_->Cardinality();
     if (size < 0) {
       return 0;
     }
@@ -105,20 +106,21 @@ class DatasetIterator
   std::unique_ptr<CancellationManager> cancellation_manager_;
   std::unique_ptr<data::IteratorBase> iterator_;
   std::vector<Tensor> tensors_;
-  Status status_;
+  absl::Status status_;
 };
 
 std::unique_ptr<InitializerSerializer> MakeDatasetInitializerSerializer(
     OpKernelContext* ctx, data::DatasetBase* dataset) {
   dataset->Ref();
   auto unref_dataset = [dataset] { dataset->Unref(); };
-  return absl::make_unique<InitializerSerializer>(
-      [dataset, resource_manager = ctx->resource_manager()](
+  return std::make_unique<InitializerSerializer>(
+      [dataset, resource_manager = ctx->resource_manager(),
+       device_name = ctx->device()->attributes().name()](
           GraphDefBuilder* builder, Node* table, Node** out) {
         data::DatasetBase::DatasetGraphDefBuilder db(builder);
         data::SerializationContext::Params params;
-        params.serialize_data_tensors = true;
         params.resource_mgr = resource_manager;
+        params.device_name = device_name;
         data::SerializationContext serialization_ctx(params);
         Node* dataset_node;
         TF_RETURN_IF_ERROR(
@@ -130,7 +132,7 @@ std::unique_ptr<InitializerSerializer> MakeDatasetInitializerSerializer(
               "Failed to create InitializeTableFromDataset op: ",
               builder->opts().StatusToString());
         }
-        return Status::OK();
+        return absl::OkStatus();
       },
       /*cleanup=*/std::move(unref_dataset));
 }
@@ -168,7 +170,7 @@ void InitializeTableFromDataset(OpKernelContext* ctx,
                                       dataset_shapes[1].DebugString()));
   DatasetIterator iter(dataset);
   OP_REQUIRES_OK(ctx, iter.Init(ctx));
-  Status s =
+  absl::Status s =
       table->Initialize(iter, MakeDatasetInitializerSerializer(ctx, dataset));
   if (errors::IsFailedPrecondition(s) && table->is_initialized()) {
     LOG(INFO) << "Table already initialized from dataset.";
@@ -197,7 +199,8 @@ class InitializeTableFromDatasetOp : public AsyncOpKernel {
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(InitializeTableFromDatasetOp);
+  InitializeTableFromDatasetOp(const InitializeTableFromDatasetOp&) = delete;
+  void operator=(const InitializeTableFromDatasetOp&) = delete;
 
   data::BackgroundWorker background_worker_;
 };

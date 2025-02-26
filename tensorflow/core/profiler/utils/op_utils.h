@@ -17,13 +17,24 @@ limitations under the License.
 #define TENSORFLOW_CORE_PROFILER_UTILS_OP_UTILS_H_
 
 #include "absl/strings/string_view.h"
+#include "xla/tsl/profiler/utils/timespan.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/profiler/protobuf/op_metrics.pb.h"
+#include "tensorflow/core/profiler/utils/hlo_module_map.h"
 #include "tensorflow/core/profiler/utils/op_metrics_db_utils.h"
 
 namespace tensorflow {
 namespace profiler {
+
+// Annotate the op_metrics with the metadata from the instr_wrapper.
+void EnterOpMetadata(OpMetrics* op_metrics,
+                     const HloInstructionWrapper* instr_wrapper);
+void EnterOpMetadataFromHloModuleMap(OpMetrics* op_metrics,
+                                     const HloModuleMap& hlo_module_map);
+
+void AddFusionChildrenToOpMetricsFromHloInstruction(
+    OpMetrics* op_metrics, const HloInstructionWrapper* instr_wrapper);
 
 class HostOpMetricsDbBuilder : public OpMetricsDbBuilder {
  public:
@@ -43,8 +54,11 @@ class HostOpMetricsDbBuilder : public OpMetricsDbBuilder {
 
   // Updates total_host_infeed_enq_duration_ps_ and
   // total_host_infeed_enq_duration_ps_.
-  void UpdateHostInfeedEnqInfo(uint64 duration_ps,
-                               uint64 start_timestamp_ps_diff);
+  void EnterHostInfeedEnqueue(tsl::profiler::Timespan host_infeed_enqueue);
+
+ private:
+  // The tsl::profiler::Timespan of the last InfeedEnqueue op on this thread.
+  tsl::profiler::Timespan last_host_infeed_enqueue_;
 };
 
 class DeviceOpMetricsDbBuilder : public OpMetricsDbBuilder {
@@ -69,10 +83,21 @@ class DeviceOpMetricsDbBuilder : public OpMetricsDbBuilder {
   //                               type and memory space.
   void EnterOp(uint64 program_id, absl::string_view name,
                absl::string_view category, absl::string_view provenance,
-               bool is_eager, uint64 occurrences, uint64 time_ps,
-               uint64 children_time_ps, int64 flops, int64 bytes_accessed,
+               absl::string_view deduplicated_name, bool is_eager,
+               uint64 occurrences, uint64 time_ps, uint64 children_time_ps,
+               int64_t flops, int64_t bytes_accessed,
                const protobuf::RepeatedPtrField<OpMetrics::MemoryAccessed>&
-                   memory_accessed_breakdown = {});
+                   memory_accessed_breakdown = {},
+               int64_t model_flops = 0);
+
+  void EnterOpMetadata(uint64 program_id, absl::string_view program_name,
+                       absl::string_view category, absl::string_view provenance,
+                       absl::string_view deduplicated_name, bool is_eager,
+                       absl::string_view long_name = "");
+
+  void EnterOpMetadataFromHloModuleMap(uint64 program_id,
+                                       absl::string_view op_name,
+                                       const HloModuleMap& hlo_module_map);
 };
 
 }  // namespace profiler

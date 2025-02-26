@@ -99,7 +99,7 @@ Node* Identity(Graph* g, Node* input, int index = 0);
 Node* Binary(Graph* g, const string& func, Node* in0, Node* in1);
 
 // Adds a function "func" node in "g" taking inputs "ins".
-Node* Multi(Graph* g, const string& func, gtl::ArraySlice<Node*> ins);
+Node* Multi(Graph* g, const string& func, absl::Span<Node* const> ins);
 
 // Adds a binary add node in "g" doing in0 + in1.
 Node* Add(Graph* g, Node* in0, Node* in1);
@@ -160,7 +160,7 @@ Node* Merge(Graph* g, Node* in0, Node* in1);
 
 // Adds a Merge node in "g". The first input is "in0", the remaining
 // inputs are only given by their names in remaining_in.
-Node* Merge(Graph* g, Node* in0, gtl::ArraySlice<string> remaining_in);
+Node* Merge(Graph* g, Node* in0, absl::Span<const string> remaining_in);
 
 // Adds a NextIteration node in "g", which makes its input available
 // to the next iteration.
@@ -189,12 +189,12 @@ Node* GetSessionTensor(Graph* g, Node* in);
 // Adds a Concat node in "g". The first input is "concat_dim", the
 // dimension to concatenate on, and the tensors to concatenate are
 // given in "tensors".
-Node* Concat(Graph* g, Node* concat_dim, gtl::ArraySlice<Node*> tensors);
+Node* Concat(Graph* g, Node* concat_dim, absl::Span<Node* const> tensors);
 
 // Adds a ConcatV2 node in "g". The last input is "concat_dim", the
 // dimension to concatenate on, and the tensors to concatenate are
 // given in "tensors".
-Node* ConcatV2(Graph* g, gtl::ArraySlice<Node*> tensors, Node* concat_dim);
+Node* ConcatV2(Graph* g, absl::Span<Node* const> tensors, Node* concat_dim);
 
 // Add a Relu node in "g".
 Node* Relu(Graph* g, Node* in);
@@ -218,10 +218,10 @@ Node* DiagPart(Graph* g, Node* in, DataType type);
 Node* CheckNumerics(Graph* g, Node* in, const string& message);
 
 // Add an _Arg node in "g".
-Node* Arg(Graph* g, int64 index, DataType type);
+Node* Arg(Graph* g, int64_t index, DataType type);
 
 // Add a _Retval node in "g".
-Node* Retval(Graph* g, int64 index, Node* in);
+Node* Retval(Graph* g, int64_t index, Node* in, int64_t in_index = 0);
 
 }  // end namespace graph
 }  // end namespace test

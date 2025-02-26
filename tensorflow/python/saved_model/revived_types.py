@@ -14,12 +14,11 @@
 # ==============================================================================
 """Handles types registrations for tf.saved_model.load."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+import operator
 
 from tensorflow.core.framework import versions_pb2
 from tensorflow.core.protobuf import saved_object_graph_pb2
+from tensorflow.python.trackable import data_structures
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -129,14 +128,9 @@ def register_revived_type(identifier, predicate, versions):
     registration.identifier = identifier
     if registration.version in version_numbers:
       raise AssertionError(
-          "Got multiple registrations with version {} for type {}".format(
-              registration.version, identifier))
+          f"Got multiple registrations with version {registration.version} for "
+          f"type {identifier}.")
     version_numbers.add(registration.version)
-  # TODO(kathywu): Remove the "optimizer" special case here after the Keras
-  # repo optimizer registration has been submitted.
-  if identifier in _REVIVED_TYPE_REGISTRY and identifier != "optimizer":
-    raise AssertionError(
-        "Duplicate registrations for type {}".format(identifier))
 
   _REVIVED_TYPE_REGISTRY[identifier] = (predicate, versions)
   _TYPE_IDENTIFIERS.append(identifier)
@@ -201,3 +195,55 @@ def get_setter(proto):
       if type_registration.should_load(proto):
         return type_registration.setter
   return None
+
+
+register_revived_type(
+    "trackable_dict_wrapper",
+    # pylint: disable=protected-access
+    lambda obj: isinstance(obj, data_structures._DictWrapper),
+    versions=[
+        VersionedTypeRegistration(
+            # Standard dependencies are enough to reconstruct the trackable
+            # items in dictionaries, so we don't need to save any extra
+            # information.
+            # pylint: disable=protected-access
+            object_factory=lambda proto: data_structures._DictWrapper({}),
+            version=1,
+            min_producer_version=1,
+            min_consumer_version=1,
+            setter=operator.setitem,
+        )
+    ],
+)
+
+
+register_revived_type(
+    "trackable_list_wrapper",
+    lambda obj: isinstance(obj, data_structures.ListWrapper),
+    versions=[
+        VersionedTypeRegistration(
+            object_factory=lambda proto: data_structures.ListWrapper([]),
+            version=1,
+            min_producer_version=1,
+            min_consumer_version=1,
+            setter=data_structures.set_list_item,
+        )
+    ],
+)
+
+
+# Revive tuples as lists so we can append any dependencies during loading.
+register_revived_type(
+    "trackable_tuple_wrapper",
+    # pylint: disable=protected-access
+    lambda obj: isinstance(obj, data_structures._TupleWrapper),
+    versions=[
+        VersionedTypeRegistration(
+            object_factory=lambda proto: data_structures.ListWrapper([]),
+            version=1,
+            min_producer_version=1,
+            min_consumer_version=1,
+            setter=data_structures.set_tuple_item,
+        )
+    ],
+)

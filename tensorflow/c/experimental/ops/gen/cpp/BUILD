@@ -4,6 +4,7 @@ load(
 )
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:private"],
     licenses = ["notice"],
 )
@@ -19,6 +20,7 @@ cc_library(
     deps = [
         "//tensorflow/c/experimental/ops/gen/common",
         "//tensorflow/c/experimental/ops/gen/cpp/renderers",
+        "//tensorflow/c/experimental/ops/gen/cpp/views",
         "//tensorflow/c/experimental/ops/gen/model",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
@@ -32,17 +34,20 @@ cc_library(
 )
 
 tf_cc_test(
-    name = "cpp_controller_test",
+    name = "cpp_generator_test",
     size = "small",
-    srcs = ["cpp_controller_test.cc"],
+    srcs = ["cpp_generator_test.cc"],
     data = ["//tensorflow/c/experimental/ops/gen/cpp/golden"],
     deps = [
         ":cpp",
+        "//tensorflow/c/experimental/ops/gen/common",
+        "//tensorflow/c/experimental/ops/gen/cpp/renderers",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
+        "@local_xla//xla/tsl/platform:status",
     ],
 )

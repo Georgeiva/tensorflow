@@ -16,8 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CC_FRAMEWORK_OPS_H_
 #define TENSORFLOW_CC_FRAMEWORK_OPS_H_
 
+#include <string>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/graph/graph.h"
@@ -40,16 +45,16 @@ class Operation {
   explicit Operation(Node* n);
 
   int32 num_inputs() const { return node_->num_inputs(); }
-  DataType input_type(int32 o) const { return node_->input_type(o); }
-  Output input(int32 i) const;
+  DataType input_type(int32_t o) const { return node_->input_type(o); }
+  Output input(int32_t i) const;
 
   int32 num_outputs() const { return node_->num_outputs(); }
-  DataType output_type(int32 o) const { return node_->output_type(o); }
-  Output output(int32 i) const;
+  DataType output_type(int32_t o) const { return node_->output_type(o); }
+  Output output(int32_t i) const;
 
   Node* node() const { return node_; }
 
-  uint64 hash(int32 index) const;
+  uint64 hash(int32_t index) const;
 
   bool operator==(const Operation& other) const { return node_ == other.node_; }
 
@@ -66,8 +71,8 @@ class Output {
  public:
   Output() = default;
   explicit Output(Node* n) : op_(n) {}
-  Output(Node* n, int32 index) : op_(n), index_(index) {}
-  Output(const Operation& op, int32 index) : op_(op), index_(index) {}
+  Output(Node* n, int32_t index) : op_(n), index_(index) {}
+  Output(const Operation& op, int32_t index) : op_(op), index_(index) {}
 
   Operation op() const { return op_; }
   Node* node() const { return op().node(); }
@@ -126,7 +131,7 @@ class Input {
     Initializer(const T& v, const TensorShape& shape) {
       typedef typename RealType<T>::type RealT;
       Tensor t(DataTypeToEnum<RealT>::v(), shape);
-      for (int64 i = 0; i < t.NumElements(); ++i) {
+      for (int64_t i = 0; i < t.NumElements(); ++i) {
         t.flat<RealT>()(i) = RealT(v);
       }
       tensor = t;
@@ -152,10 +157,10 @@ class Input {
     Initializer(const std::initializer_list<T>& v, const TensorShape& shape) {
       typedef typename RealType<T>::type RealT;
       Tensor t(DataTypeToEnum<RealT>::v(), shape);
-      if (t.NumElements() != static_cast<int64>(v.size())) {
-        status = errors::InvalidArgument(
+      if (t.NumElements() != static_cast<int64_t>(v.size())) {
+        status = absl::InvalidArgumentError(absl::StrCat(
             "Cannot construct a tensor with ", t.NumElements(),
-            " from an initializer list with ", v.size(), " elements");
+            " from an initializer list with ", v.size(), " elements"));
         return;
       }
       std::copy_n(v.begin(), v.size(), t.flat<RealT>().data());
@@ -191,7 +196,7 @@ class Input {
       return tensor_proto;
     }
 
-    Status status;
+    absl::Status status;
     Tensor tensor;
   };
 
@@ -216,8 +221,7 @@ class Input {
         tensor_(init.tensor) {}
 
   Input(const Tensor& t)  // NOLINT(runtime/explicit)
-      : status_(Status::OK()),
-        tensor_(t) {}
+      : status_(absl::OkStatus()), tensor_(t) {}
 
   Input(const std::initializer_list<Initializer>&
             init) {  // NOLINT(runtime/explicit)
@@ -232,18 +236,18 @@ class Input {
 
   /// Constructor specifying a node name, index and datatype. This should only
   /// be used for specifying a backward edge, needed by control flow.
-  Input(const std::string& name, int32 i, DataType dt)
+  Input(const std::string& name, int32_t i, DataType dt)
       : node_name_(name), index_(i), data_type_(dt) {}
 
   Node* node() const { return output_.node(); }
   std::string node_name() const { return node_name_; }
   int32 index() const { return node_name_.empty() ? output_.index() : index_; }
   DataType data_type() const { return data_type_; }
-  Status status() const { return status_; }
+  absl::Status status() const { return status_; }
   const Tensor& tensor() const { return tensor_; }
 
  private:
-  Status status_;
+  absl::Status status_;
   Output output_ = Output(Operation(nullptr), 0);
   Tensor tensor_;
   const std::string node_name_ = "";
@@ -270,8 +274,7 @@ class InputList {
       const std::initializer_list<Input>& inputs)  // NOLINT(runtime/explicit)
       : inputs_(inputs.begin(), inputs.end()) {}
 
-  InputList(const tensorflow::gtl::ArraySlice<Input>&
-                inputs)  // NOLINT(runtime/explicit)
+  InputList(const absl::Span<const Input>& inputs)  // NOLINT(runtime/explicit)
       : inputs_(inputs.begin(), inputs.end()) {}
 
   InputList(

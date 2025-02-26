@@ -14,10 +14,6 @@
 # ======================================
 """Library of Cloud TPU helper functions for data loading."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from typing import Callable, Optional, Text, Union
 
 from tensorflow.python.data.experimental.ops import interleave_ops
@@ -28,6 +24,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import function
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import functional_ops
+from tensorflow.python.types import data as data_types
 
 
 def _TextLineDataset(filename: Text) -> dataset_ops.Dataset:
@@ -111,12 +108,15 @@ def StreamingFilesDataset(
 
   if isinstance(filetype, str):
     if filetype not in _FILETYPE_MAP:
-      raise ValueError('Unexpected filetype: %s' % filetype)
+      raise ValueError(
+          f'Unexpected filetype. Received: {filetype}. Expected one of '
+          f'{list(_FILETYPE_MAP.keys())}')
     reader_fn = _FILETYPE_MAP[filetype]
   elif callable(filetype):
     reader_fn = filetype
   else:
-    raise ValueError('filetype should be a string or a callable')
+    raise ValueError(f'Argument `filetype` should be a string or a callable. '
+                     f'Received: {filetype} of type {type(filetype)}.')
 
   file_reader_job = file_reader_job or 'coordinator'
 
@@ -138,10 +138,12 @@ def StreamingFilesDataset(
   with ops.device(file_reader_device):
     if isinstance(files, str):
       source_dataset = dataset_ops.Dataset.list_files(files)
-    elif isinstance(files, dataset_ops.DatasetV2):
+    elif isinstance(files, data_types.DatasetV2):
       source_dataset = files
     else:
-      raise ValueError('files was not a string or a dataset: %s' % files)
+      raise ValueError(
+          'Argument `files` should be a string or a `tf.data.Dataset` '
+          f'instance. Received: {files}')
 
     if filename_shuffle_buffer_size:
       source_dataset = source_dataset.shuffle(
@@ -176,7 +178,8 @@ def StreamingFilesDataset(
     elif isinstance(source_dataset_output_types, (list, tuple)):
       output_types = source_dataset_output_types
     else:
-      raise ValueError('source dataset has invalid output types')
+      raise ValueError('Source dataset has invalid output types. Only '
+                       'list/tuples or TensorFlow tensor types are accepted.')
     remote_calls = functional_ops.remote_call(
         args=[source_handle],
         Tout=output_types,

@@ -13,8 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/cc/framework/scope.h"
 #include "tensorflow/cc/ops/array_ops.h"
-#include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/fuzzing/fuzz_session.h"
 
 namespace tensorflow {
@@ -35,7 +38,7 @@ class FuzzCheckNumerics : public FuzzSession {
     const float* float_data = reinterpret_cast<const float*>(data);
 
     Tensor input_tensor(tensorflow::DT_FLOAT,
-                        TensorShape({static_cast<int64>(num_floats)}));
+                        TensorShape({static_cast<int64_t>(num_floats)}));
     auto flat_tensor = input_tensor.flat<float>();
     for (size_t i = 0; i < num_floats; i++) {
       flat_tensor(i) = float_data[i];

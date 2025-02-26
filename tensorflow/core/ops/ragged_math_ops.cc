@@ -22,7 +22,7 @@ using shape_inference::DimensionHandle;
 using shape_inference::InferenceContext;
 using shape_inference::ShapeHandle;
 
-Status RaggedRangeShapeFn(InferenceContext* c);
+absl::Status RaggedRangeShapeFn(InferenceContext* c);
 
 //==============================================================================
 // Registered Ops
@@ -42,7 +42,7 @@ REGISTER_OP("RaggedRange")
 // Shape Functions
 //==============================================================================
 
-Status RaggedRangeShapeFn(InferenceContext* c) {
+absl::Status RaggedRangeShapeFn(InferenceContext* c) {
   // Check that all inputs (starts, limits, and deltas) have rank 0 or 1.
   ShapeHandle starts = c->input(0);
   ShapeHandle limits = c->input(1);
@@ -64,7 +64,7 @@ Status RaggedRangeShapeFn(InferenceContext* c) {
   }
 
   // If any input shape is known, then calculate `rt_nested_splits` shape.
-  int64 rt_nested_splits_dim = InferenceContext::kUnknownDim;
+  int64_t rt_nested_splits_dim = InferenceContext::kUnknownDim;
   if (c->ValueKnown(dim)) {
     rt_nested_splits_dim = c->Value(dim) + 1;
   } else if (c->Rank(starts) == 0 && c->Rank(limits) == 0 &&
@@ -75,7 +75,7 @@ Status RaggedRangeShapeFn(InferenceContext* c) {
 
   // `rt_dense_values` is rank 1, but size can't be calculated statically.
   c->set_output(1, c->UnknownShapeOfRank(1));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

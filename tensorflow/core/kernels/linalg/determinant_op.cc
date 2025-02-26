@@ -19,11 +19,11 @@ limitations under the License.
 
 #if GOOGLE_CUDA
 #define EIGEN_USE_GPU
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/kernels/linalg/determinant_op.h"
 #endif
 
-#include "third_party/eigen3/Eigen/LU"
+#include "Eigen/LU"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/numeric_types.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -35,7 +35,7 @@ limitations under the License.
 
 #if GOOGLE_CUDA
 #include "tensorflow/core/kernels/fill_functor.h"
-#include "tensorflow/core/util/cuda_solvers.h"
+#include "tensorflow/core/util/gpu_solvers.h"
 #endif
 
 namespace tensorflow {
@@ -64,12 +64,7 @@ static typename Eigen::NumTraits<Scalar>::Real SLogDet(
     auto diag = LU.diagonal().array().eval();
     auto abs_diag = diag.cwiseAbs().eval();
     log_abs_det += abs_diag.log().sum();
-    *sign *= (diag / abs_diag).prod();
-  }
-  if (!Eigen::numext::isfinite(log_abs_det)) {
-    *sign = 0;
-    log_abs_det =
-        log_abs_det > 0 ? -std::log(RealScalar(0)) : std::log(RealScalar(0));
+    *sign *= diag.array().sign().prod();
   }
   return log_abs_det;
 }
@@ -133,7 +128,7 @@ class DeterminantOpGpu : public AsyncOpKernel {
   void ComputeAsync(OpKernelContext* context, DoneCallback done) final {
     const Tensor& input = context->input(0);
     const int ndims = input.dims();
-    const int64 n = input.dim_size(ndims - 1);
+    const int64_t n = input.dim_size(ndims - 1);
     // Validate inputs.
     OP_REQUIRES_ASYNC(
         context, ndims >= 2,
@@ -164,8 +159,7 @@ class DeterminantOpGpu : public AsyncOpKernel {
       return;
     }
 
-    // TODO(rmlarsen): Convert to absl::make_unique when available.
-    std::unique_ptr<CudaSolver> solver(new CudaSolver(context));
+    auto solver = std::make_unique<GpuSolver>(context);
 
     // Reuse the input buffer or make a copy for the factorization step,
     // depending on whether this ops owns it exclusively.
@@ -180,7 +174,7 @@ class DeterminantOpGpu : public AsyncOpKernel {
                input.NumElements() * sizeof(Scalar));
     }
     auto input_copy_reshaped = input_copy.template flat_inner_dims<Scalar, 3>();
-    const int64 batch_size = input_copy_reshaped.dimension(0);
+    const int64_t batch_size = input_copy_reshaped.dimension(0);
 
     // Allocate pivots on the device.
     Tensor pivots;
@@ -259,8 +253,8 @@ class DeterminantOpGpu : public AsyncOpKernel {
       }
       done();
     };
-    CudaSolver::CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_info,
-                                                    std::move(info_checker));
+    GpuSolver::CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_info,
+                                                   std::move(info_checker));
   }
 };
 
@@ -273,7 +267,7 @@ class LogDeterminantOpGpu : public AsyncOpKernel {
   void ComputeAsync(OpKernelContext* context, DoneCallback done) final {
     const Tensor& input = context->input(0);
     const int ndims = input.dims();
-    const int64 n = input.dim_size(ndims - 1);
+    const int64_t n = input.dim_size(ndims - 1);
     // Validate inputs.
     OP_REQUIRES_ASYNC(
         context, ndims >= 2,
@@ -309,8 +303,7 @@ class LogDeterminantOpGpu : public AsyncOpKernel {
       return;
     }
 
-    // TODO(rmlarsen): Convert to absl::make_unique when available.
-    std::unique_ptr<CudaSolver> solver(new CudaSolver(context));
+    auto solver = std::make_unique<GpuSolver>(context);
 
     // Reuse the input buffer or make a copy for the factorization step,
     // depending on whether this ops owns it exclusively.
@@ -325,7 +318,7 @@ class LogDeterminantOpGpu : public AsyncOpKernel {
                input.NumElements() * sizeof(Scalar));
     }
     auto input_copy_reshaped = input_copy.template flat_inner_dims<Scalar, 3>();
-    const int64 batch_size = input_copy_reshaped.dimension(0);
+    const int64_t batch_size = input_copy_reshaped.dimension(0);
 
     // Allocate pivots on the device.
     Tensor pivots;
@@ -406,8 +399,8 @@ class LogDeterminantOpGpu : public AsyncOpKernel {
       }
       done();
     };
-    CudaSolver::CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_info,
-                                                    std::move(info_checker));
+    GpuSolver::CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_info,
+                                                   std::move(info_checker));
   }
 };
 

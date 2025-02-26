@@ -40,11 +40,45 @@ extern llvm::cl::opt<bool> emit_quant_adaptor_ops;
 extern llvm::cl::opt<std::string> quant_stats_file_name;
 extern llvm::cl::opt<bool> convert_tf_while_to_tfl_while;
 extern llvm::cl::opt<std::string> select_user_tf_ops;
+extern llvm::cl::opt<bool> allow_all_select_tf_ops;
 extern llvm::cl::opt<bool> unfold_batchmatmul;
+extern llvm::cl::opt<bool> unfold_large_splat_constant;
+extern llvm::cl::opt<bool> guarantee_all_funcs_one_use;
+extern llvm::cl::opt<bool> enable_dynamic_update_slice;
+extern llvm::cl::opt<bool> preserve_assert_op;
+extern llvm::cl::opt<bool> legalize_custom_tensor_list_ops;
+extern llvm::cl::opt<bool> reduce_type_precision;
 
 // Import saved model.
 extern llvm::cl::opt<bool> import_saved_model_object_graph;
 extern llvm::cl::opt<bool> import_saved_model_signature_defs;
 extern llvm::cl::opt<std::string> saved_model_tags;
 extern llvm::cl::opt<std::string> saved_model_exported_names;
+
+// Import HLO.
+enum HloImportType { proto, hlotxt, mlir_text };
+
+extern llvm::cl::opt<bool> import_hlo;
+extern llvm::cl::opt<HloImportType> hlo_import_type;
+
+// enable_hlo_to_tf_conversion and disable_hlo_to_tfl_conversion are used to
+// control the HLO to TF and HLO to TFLite conversion while debugging an
+// input_mlir. The default value of enable_hlo_to_tf_conversion is false, and
+// the default value of disable_hlo_to_tfl_conversion is true.
+extern llvm::cl::opt<bool> enable_hlo_to_tf_conversion;
+extern llvm::cl::opt<bool> disable_hlo_to_tfl_conversion;
+
+// quantization related flags
+extern llvm::cl::opt<bool> post_training_quantization;
+
+// TF to stablehlo pass flags
+extern llvm::cl::opt<bool> enable_stablehlo_conversion;
+
+// Whether to enable the attempt to directly lower composites into tflite ops or
+// not.
+extern llvm::cl::opt<bool> enable_composite_direct_lowering;
+
+// The source model type
+extern llvm::cl::opt<std::string> model_origin_framework;
+
 #endif  // TENSORFLOW_COMPILER_MLIR_LITE_TF_TFL_TRANSLATE_CL_H_

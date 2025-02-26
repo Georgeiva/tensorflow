@@ -15,15 +15,18 @@ limitations under the License.
 
 #include "tensorflow/c/experimental/saved_model/core/tensor_spec.h"
 
+#include <cstdint>
 #include <initializer_list>
+#include <utility>
 
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/protobuf/struct.pb.h"
 
 namespace tensorflow {
 
 TensorSpec::TensorSpec()
-    : shape_(std::initializer_list<int64>()), dtype_(DT_FLOAT) {}
+    : shape_(std::initializer_list<int64_t>()), dtype_(DT_FLOAT) {}
 
 TensorSpec::TensorSpec(PartialTensorShape shape, DataType dtype)
     : shape_(std::move(shape)), dtype_(dtype) {}

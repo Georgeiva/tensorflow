@@ -194,8 +194,7 @@ class BasicBatchScheduler : public BatchScheduler<TaskType> {
     //
     // The goal is to smooth out batch sizes under low request rates, and thus
     // avoid latency spikes.
-    int64 batch_timeout_micros = 0;
-
+    int64_t batch_timeout_micros = 0;
 
     // The maximum allowable number of enqueued (accepted by Schedule() but
     // not yet being processed on a batch thread) tasks in terms of batches.
@@ -240,9 +239,10 @@ class BasicBatchScheduler : public BatchScheduler<TaskType> {
     // NOTE:
     // Instantiations of `TaskType` may vary, so it's up to caller to define
     // how (e.g., which members to access) to split input tasks.
-    std::function<Status(std::unique_ptr<TaskType>* input_task,
-                         int first_output_task_size, int input_batch_size_limit,
-                         std::vector<std::unique_ptr<TaskType>>* output_tasks)>
+    std::function<absl::Status(
+        std::unique_ptr<TaskType>* input_task, int first_output_task_size,
+        int input_batch_size_limit,
+        std::vector<std::unique_ptr<TaskType>>* output_tasks)>
         split_input_task_func;
 
     // The maximum size of each enqueued batch (i.e., in `batches_`).
@@ -264,14 +264,15 @@ class BasicBatchScheduler : public BatchScheduler<TaskType> {
     // The environment to use.
     Env* env = Env::Default();
   };
-  static Status Create(const Options& options,
-                       std::function<void(std::unique_ptr<Batch<TaskType>>)>
-                           process_batch_callback,
-                       std::unique_ptr<BasicBatchScheduler>* scheduler);
+  static absl::Status Create(
+      const Options& options,
+      std::function<void(std::unique_ptr<Batch<TaskType>>)>
+          process_batch_callback,
+      std::unique_ptr<BasicBatchScheduler>* scheduler);
 
   ~BasicBatchScheduler() override = default;
 
-  Status Schedule(std::unique_ptr<TaskType>* task) override;
+  absl::Status Schedule(std::unique_ptr<TaskType>* task) override;
   size_t NumEnqueuedTasks() const override;
   size_t SchedulingCapacity() const override;
 
@@ -287,14 +288,15 @@ class BasicBatchScheduler : public BatchScheduler<TaskType> {
   // single queue.
   std::unique_ptr<BatchScheduler<TaskType>> shared_scheduler_queue_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(BasicBatchScheduler);
+  BasicBatchScheduler(const BasicBatchScheduler&) = delete;
+  void operator=(const BasicBatchScheduler&) = delete;
 };
 
 //////////
 // Implementation details follow. API users need not read.
 
 template <typename TaskType>
-Status BasicBatchScheduler<TaskType>::Create(
+absl::Status BasicBatchScheduler<TaskType>::Create(
     const Options& options,
     std::function<void(std::unique_ptr<Batch<TaskType>>)>
         process_batch_callback,
@@ -334,11 +336,11 @@ Status BasicBatchScheduler<TaskType>::Create(
 
   scheduler->reset(
       new BasicBatchScheduler<TaskType>(std::move(shared_scheduler_queue)));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 template <typename TaskType>
-Status BasicBatchScheduler<TaskType>::Schedule(
+absl::Status BasicBatchScheduler<TaskType>::Schedule(
     std::unique_ptr<TaskType>* task) {
   return shared_scheduler_queue_->Schedule(task);
 }

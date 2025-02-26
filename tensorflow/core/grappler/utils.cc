@@ -15,27 +15,42 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/utils.h"
 
-#include <iterator>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
-#include <queue>
+#include <set>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
+#include "Eigen/Core"  // from @eigen_archive
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/function.h"
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/graph/tensor_id.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
-#include "tensorflow/core/lib/strings/numbers.h"
-#include "tensorflow/core/lib/strings/scanner.h"
-#include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/notification.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/threadpool.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/device_name_utils.h"
+#include "tsl/platform/errors.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -73,21 +88,6 @@ bool IsShapeConsumer(const NodeDef& node) {
 
 }  // namespace
 
-namespace internal {
-// Specialized template class method GetNodeDefFromGraph.
-template <>
-NodeDef* NodeMapInternal<GraphDef, NodeDef>::GetNodeDefFromGraph(
-    GraphDef* graph, int64 i) const {
-  return graph->mutable_node(i);
-}
-
-template <>
-const NodeDef*
-NodeMapInternal<const GraphDef, const NodeDef>::GetNodeDefFromGraph(
-    const GraphDef* graph, int64 i) const {
-  return &graph->node(i);
-}
-}  // namespace internal
 string TensorIdToString(const TensorId& tensor_id) {
   return tensor_id.index() == 0 ? string(tensor_id.node())
                                 : tensor_id.ToString();
@@ -104,7 +104,7 @@ bool IsSameInput(const string& name1, const string& name2) {
   return tensor1 == tensor2;
 }
 
-bool IsControlInput(const string& name) {
+bool IsControlInput(absl::string_view name) {
   return !name.empty() && name[0] == '^';
 }
 
@@ -124,7 +124,7 @@ string AddPrefixToNodeName(const string& name, const string& prefix) {
   return AddPrefixToNodeName(name, prefix, "/");
 }
 
-bool ExecuteWithTimeout(std::function<void()> fn, const int64 timeout_in_ms,
+bool ExecuteWithTimeout(std::function<void()> fn, const int64_t timeout_in_ms,
                         thread::ThreadPool* const thread_pool) {
   if (timeout_in_ms <= 0) {
     fn();
@@ -439,7 +439,7 @@ void EraseNodesFromGraph(const std::set<string>& nodes_to_delete,
     }                                                                        \
     break
 
-Status SetTensorValue(DataType dtype, int value, Tensor* tensor) {
+absl::Status SetTensorValue(DataType dtype, int value, Tensor* tensor) {
   // TODO(rmlarsen): Support more general shapes.
   // TODO(lyandy): Change `value` to be int64 once int64 -> qint32 is supported.
   if (tensor->NumElements() != 1) {
@@ -469,27 +469,28 @@ Status SetTensorValue(DataType dtype, int value, Tensor* tensor) {
       return errors::InvalidArgument("Unsupported type ",
                                      DataTypeString(dtype));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #undef HANDLE_CASE
 
-Status CheckAttrExists(const NodeDef& node, const string& key) {
+absl::Status CheckAttrExists(const NodeDef& node, const string& key) {
   if (!HasNodeAttr(node, key)) {
     return errors::InvalidArgument("Node '", node.name(), "' lacks '", key,
                                    "' attr: ", node.ShortDebugString());
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status CheckAttrsExist(const NodeDef& node, absl::Span<const string> keys) {
+absl::Status CheckAttrsExist(const NodeDef& node,
+                             absl::Span<const string> keys) {
   for (const string& key : keys) {
     TF_RETURN_IF_ERROR(CheckAttrExists(node, key));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status IsKernelRegisteredForNode(
+absl::Status IsKernelRegisteredForNode(
     absl::string_view node_name, bool has_experimental_debug_info,
     const NodeDef_ExperimentalDebugInfo& experimental_debug_info,
     absl::string_view node_op, absl::string_view node_device,
@@ -504,7 +505,7 @@ Status IsKernelRegisteredForNode(
                        node_op, node_device, node_attrs, nullptr, nullptr);
 }
 
-Status IsKernelRegisteredForNode(const NodeDef& node) {
+absl::Status IsKernelRegisteredForNode(const NodeDef& node) {
   return IsKernelRegisteredForNode(node.name(),
                                    node.has_experimental_debug_info(),
                                    node.experimental_debug_info(), node.op(),

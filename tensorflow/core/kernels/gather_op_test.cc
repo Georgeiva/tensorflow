@@ -101,6 +101,19 @@ TEST_F(GatherOpTest, Simple_TwoD32_Axis0) {
   test::ExpectTensorEqual<float>(expected, *GetOutput(0));
 }
 
+TEST_F(GatherOpTest, InvalidInputShape_TwoD32) {
+  MakeOp(DT_FLOAT, DT_INT32);
+
+  // Feed invalid input shape and run
+  AddInput<float>(TensorShape({0, 3}), [](int) -> float { return 0.f; });
+  AddInputFromArray<int32>(TensorShape({4}), {0, 4, 0, 2});
+  AddInputFromArray<int32>(TensorShape({}), {0});
+  auto s = RunOpKernel();
+  EXPECT_TRUE(
+      absl::StrContains(s.ToString(), "indices[0] = 0 is not in [0, 0)"))
+      << s;
+}
+
 TEST_F(GatherOpTest, Simple_TwoD32_Axis1) {
   MakeOp(DT_FLOAT, DT_INT32);
 
@@ -138,8 +151,8 @@ TEST_F(GatherOpTest, Simple_TwoD64) {
   // Feed and run
   AddInputFromArray<float>(TensorShape({5, 3}),
                            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14});
-  AddInputFromArray<int64>(TensorShape({4}), {0, 4, 0, 2});
-  AddInputFromArray<int64>(TensorShape({}), {0});
+  AddInputFromArray<int64_t>(TensorShape({4}), {0, 4, 0, 2});
+  AddInputFromArray<int64_t>(TensorShape({}), {0});
   TF_ASSERT_OK(RunOpKernel());
 
   // Check the output.
@@ -171,7 +184,7 @@ TEST_F(GatherOpTest, Error_IndexOutOfRange) {
                            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14});
   AddInputFromArray<int32>(TensorShape({4}), {0, 4, 99, 2});
   AddInputFromArray<int32>(TensorShape({}), {0});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_TRUE(
       absl::StrContains(s.ToString(), "indices[2] = 99 is not in [0, 5)"))
       << s;
@@ -185,7 +198,7 @@ TEST_F(GatherOpTest, Error_BatchDimsOutOfRange) {
                            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14});
   AddInputFromArray<int32>(TensorShape({4}), {0, 4, 99, 2});
   AddInputFromArray<int32>(TensorShape({}), {0});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_TRUE(absl::StrContains(
       s.ToString(), "Expected batch_dims in the range [-1, 1], but got 10"))
       << s;
@@ -222,30 +235,31 @@ static Graph* Gather(int dim) {
   return g;
 }
 
-#define BM_GATHER(DEVICE, INDEX)                                               \
-  static void BM_##DEVICE##_gather_##INDEX(                                    \
-      ::testing::benchmark::State& state) {                                    \
-    const int dim = state.range(0);                                            \
-    test::Benchmark(#DEVICE, Gather<INDEX>(dim), /*old_benchmark_api=*/false)  \
-        .Run(state);                                                           \
-    const int64 tot = static_cast<int64>(state.iterations()) * kLookups * dim; \
-    state.SetItemsProcessed(tot);                                              \
-    state.SetBytesProcessed(tot * sizeof(float));                              \
-  }                                                                            \
-  BENCHMARK(BM_##DEVICE##_gather_##INDEX)                                      \
-      ->UseRealTime()                                                          \
-      ->Arg(1)                                                                 \
-      ->Arg(10)                                                                \
-      ->Arg(20)                                                                \
-      ->Arg(64)                                                                \
-      ->Arg(100)                                                               \
-      ->Arg(200)                                                               \
+#define BM_GATHER(DEVICE, INDEX)                                              \
+  static void BM_##DEVICE##_gather_##INDEX(                                   \
+      ::testing::benchmark::State& state) {                                   \
+    const int dim = state.range(0);                                           \
+    test::Benchmark(#DEVICE, Gather<INDEX>(dim), /*old_benchmark_api=*/false) \
+        .Run(state);                                                          \
+    const int64_t tot =                                                       \
+        static_cast<int64_t>(state.iterations()) * kLookups * dim;            \
+    state.SetItemsProcessed(tot);                                             \
+    state.SetBytesProcessed(tot * sizeof(float));                             \
+  }                                                                           \
+  BENCHMARK(BM_##DEVICE##_gather_##INDEX)                                     \
+      ->UseRealTime()                                                         \
+      ->Arg(1)                                                                \
+      ->Arg(10)                                                               \
+      ->Arg(20)                                                               \
+      ->Arg(64)                                                               \
+      ->Arg(100)                                                              \
+      ->Arg(200)                                                              \
       ->Arg(1000)
 
 BM_GATHER(cpu, int32);
 BM_GATHER(gpu, int32);
-BM_GATHER(cpu, int64);
-BM_GATHER(gpu, int64);
+BM_GATHER(cpu, int64_t);
+BM_GATHER(gpu, int64_t);
 
 }  // namespace
 }  // namespace tensorflow
