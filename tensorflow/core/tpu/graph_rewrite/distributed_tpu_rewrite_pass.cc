@@ -17,47 +17,89 @@ limitations under the License.
 
 #include "tensorflow/core/tpu/graph_rewrite/distributed_tpu_rewrite_pass.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <memory>
+#include <optional>
 #include <queue>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
+#include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "tensorflow/compiler/jit/encapsulate_util.h"
+#include "tensorflow/compiler/jit/shape_inference.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/xla_sharding_util.h"
 #include "tensorflow/compiler/tf2xla/resource_operation_table.h"
 #include "tensorflow/compiler/tf2xla/sharding_util.h"
 #include "tensorflow/compiler/tf2xla/side_effect_util.h"
 #include "tensorflow/compiler/tf2xla/tf2xla_util.h"
-#include "tensorflow/compiler/xla/array3d.h"
-#include "tensorflow/compiler/xla/array4d.h"
-#include "tensorflow/compiler/xla/client/sharding_builder.h"
-#include "tensorflow/compiler/xla/service/computation_placer.h"
-#include "tensorflow/compiler/xla/xla.pb.h"
-#include "tensorflow/core/common_runtime/function.h"
+#include "tensorflow/compiler/tf2xla/type_util.h"
+#include "xla/array2d.h"
+#include "xla/array4d.h"
+#include "xla/hlo/builder/sharding_builder.h"
+#include "xla/service/computation_placer.h"
+#include "xla/shape_util.h"
+#include "xla/status_macros.h"
+#include "xla/stream_executor/tpu/c_api_decl.h"
+#include "xla/stream_executor/tpu/tpu_api.h"
+#include "xla/stream_executor/tpu/tpu_ops_c_api.h"
+#include "xla/stream_executor/tpu/tpu_topology.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
+#include "xla/tsl/platform/statusor.h"
+#include "xla/xla.pb.h"
+#include "xla/xla_data.pb.h"
+#include "tensorflow/core/common_runtime/device_propagation.h"
+#include "tensorflow/core/common_runtime/function_def_utils.h"
+#include "tensorflow/core/common_runtime/function_utils.h"
 #include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/common_runtime/lower_function_call_op.h"
 #include "tensorflow/core/common_runtime/lower_functional_ops.h"
 #include "tensorflow/core/common_runtime/lower_if_op.h"
 #include "tensorflow/core/common_runtime/lower_while_op.h"
 #include "tensorflow/core/common_runtime/optimization_registry.h"
+#include "tensorflow/core/common_runtime/process_function_library_runtime.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/graph_to_functiondef.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/node_def_util.h"
-#include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.pb.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/framework/versions.pb.h"
-#include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/lib/gtl/cleanup.h"
+#include "tensorflow/core/graph/graph_node_util.h"
+#include "tensorflow/core/lib/math/math_util.h"
 #include "tensorflow/core/lib/strings/proto_serialization.h"
 #include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/platform/fingerprint.h"
+#include "tensorflow/core/platform/error_payloads.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/protobuf/config.pb.h"
+#include "tensorflow/core/protobuf/core_platform_payloads.pb.h"
 #include "tensorflow/core/protobuf/tpu/compile_metadata.pb.h"
-#include "tensorflow/core/protobuf/tpu/dynamic_padding.pb.h"
 #include "tensorflow/core/protobuf/tpu/topology.pb.h"
 #include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/tpu/graph_rewrite/cond_builder.h"
@@ -65,13 +107,10 @@ limitations under the License.
 #include "tensorflow/core/tpu/graph_rewrite/distributed_tpu_rewrite_pass_internal.h"
 #include "tensorflow/core/tpu/graph_rewrite/host_training_loop_optimization_util.h"
 #include "tensorflow/core/tpu/graph_rewrite/incomplete_nodedef_builder.h"
-#include "tensorflow/core/tpu/tpu_compile_interface.h"
 #include "tensorflow/core/tpu/tpu_defs.h"
 #include "tensorflow/core/tpu/tpu_fingerprint_utils.h"
-#include "tensorflow/core/tpu/tpu_ops_c_api.h"
 #include "tensorflow/core/util/device_name_utils.h"
 #include "tensorflow/core/util/dump_graph.h"
-#include "tensorflow/stream_executor/tpu/tpu_platform_interface.h"
 
 namespace tensorflow {
 
@@ -90,7 +129,10 @@ static constexpr int kTPUMaxTopologySize = 4096;
 const char kShardingAttribute[] = "_XlaSharding";
 
 const char kTPUPartitionedInput[] = "TPUPartitionedInput";
+const char kTPUPartitionedInputV2[] = "TPUPartitionedInputV2";
+
 const char kTPUPartitionedOutput[] = "TPUPartitionedOutput";
+const char kTPUPartitionedOutputV2[] = "TPUPartitionedOutputV2";
 
 const char kVarHandleOp[] = "VarHandleOp";
 
@@ -110,7 +152,7 @@ struct NodeAndPort {
 class IntrusiveHeapLink {
  public:
   using size_type = size_t;
-  static constexpr size_type kNotMember = -1;
+  static constexpr size_type kNotMember = std::numeric_limits<size_type>::max();
 
   IntrusiveHeapLink() = default;
 
@@ -293,18 +335,28 @@ class IntrusiveHeap {
   Rep rep_;
 };
 
-string CoreDeviceLabel(int core) {
-  return strings::StrCat("/device:", DEVICE_TPU_REPLICATED_CORE, ":", core);
+bool _IsTPUPartitionedInput(const Node* node) {
+  return (node->type_string() == kTPUPartitionedInput) ||
+         (node->type_string() == kTPUPartitionedInputV2);
+}
+
+bool _IsTPUPartitionedOutput(const Node* node) {
+  return (node->type_string() == kTPUPartitionedOutput) ||
+         (node->type_string() == kTPUPartitionedOutputV2);
+}
+
+std::string CoreDeviceLabel(int core) {
+  return absl::StrCat("/device:", DEVICE_TPU_REPLICATED_CORE, ":", core);
 }
 
 // Creates a unique node name with a particular prefix.
-string UniqueNodeName(const StringPiece prefix, Graph* graph) {
-  return graph->NewName(strings::StrCat(prefix, "/_", internal::GetNodeId()));
+std::string UniqueNodeName(absl::string_view prefix, Graph* graph) {
+  return graph->NewName(absl::StrCat(prefix, "/_", internal::GetNodeId()));
 }
 
-Status SetNodeDeviceForTPUCommunication(DeviceNameUtils::ParsedName device,
-                                        const string& target_device_type,
-                                        Node* node) {
+absl::Status SetNodeDeviceForTPUCommunication(
+    DeviceNameUtils::ParsedName device, const std::string& target_device_type,
+    Node* node) {
   TF_RET_CHECK(device.has_type && device.type == DEVICE_TPU_NODE);
   TF_RET_CHECK(device.has_id);
   TF_RET_CHECK(HasNodeAttr(node->def(), kXlaHasHostTransferAttrName));
@@ -318,36 +370,39 @@ Status SetNodeDeviceForTPUCommunication(DeviceNameUtils::ParsedName device,
   device.id = 0;
 
   node->set_assigned_device_name(DeviceNameUtils::ParsedNameToString(device));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Iterate over the nodes in the original graph and find all the TPUReplicate
 // nodes, and all the nodes that are part of outside_compilation clusters.
-Status FindTaggedNodes(
+absl::Status FindTaggedNodes(
     Graph* graph, std::vector<Node*>* replicate_nodes,
-    std::map<string, DistributedTPURewritePass::OutsideCompilationNodeMap>*
+    std::map<std::string, DistributedTPURewritePass::OutsideCompilationNodeMap>*
         outside_compilation_nodes,
-    std::map<string, std::vector<Node*>>* head_tail_outside_compilation_nodes) {
+    std::map<std::string, std::vector<Node*>>*
+        head_tail_outside_compilation_nodes) {
   for (Node* node : graph->op_nodes()) {
     if (node->type_string() == "_TPUReplicate") {
       replicate_nodes->push_back(node);
       const AttrValue* cluster_attr = node->attrs().Find(kTPUReplicateAttr);
       if (cluster_attr == nullptr) {
-        return errors::Internal("TPUReplicate node ", node->name(), " has no ",
-                                kTPUReplicateAttr, " attr.");
+        return absl::InternalError(absl::StrCat("TPUReplicate node ",
+                                                node->name(), " has no ",
+                                                kTPUReplicateAttr, " attr."));
       } else {
-        const string& cluster = cluster_attr->s();
+        const std::string& cluster = cluster_attr->s();
         if (cluster.empty()) {
-          return errors::Internal("Attr ", kTPUReplicateAttr, " on node ",
-                                  node->name(), " has no string value.");
+          return absl::InternalError(absl::StrCat("Attr ", kTPUReplicateAttr,
+                                                  " on node ", node->name(),
+                                                  " has no string value."));
         }
         if (outside_compilation_nodes->find(cluster) !=
             outside_compilation_nodes->end()) {
-          return errors::Internal(
+          return absl::InternalError(absl::StrCat(
               "TPUReplicate node ", node->name(), " has ", kTPUReplicateAttr,
               " attr value '", cluster,
               "' which is a duplicate of another TPUReplicate node in the "
-              "graph.");
+              "graph."));
         }
         (*outside_compilation_nodes)[cluster] =
             DistributedTPURewritePass::OutsideCompilationNodeMap();
@@ -362,31 +417,33 @@ Status FindTaggedNodes(
           node->attrs().Find(kOutsideCompilationAttr);
       if (cluster_attr == nullptr) {
         if (outside_compilation_attr != nullptr) {
-          return errors::Internal("Node ", node->name(), " has ",
-                                  kOutsideCompilationAttr, " attr but no ",
-                                  kTPUReplicateAttr, " attr.");
+          return absl::InternalError(absl::StrCat(
+              "Node ", node->name(), " has ", kOutsideCompilationAttr,
+              " attr but no ", kTPUReplicateAttr, " attr."));
         }
       } else {
-        const string& cluster = cluster_attr->s();
+        const std::string& cluster = cluster_attr->s();
         if (cluster.empty()) {
-          return errors::Internal("Attr ", kTPUReplicateAttr, " on node ",
-                                  node->name(), " has no string value.");
+          return absl::InternalError(absl::StrCat("Attr ", kTPUReplicateAttr,
+                                                  " on node ", node->name(),
+                                                  " has no string value."));
         }
         const auto iter = outside_compilation_nodes->find(cluster);
         if (iter == outside_compilation_nodes->end()) {
-          return errors::Internal(
+          return absl::InternalError(absl::StrCat(
               "Attr ", kTPUReplicateAttr, " on node ", node->name(),
-              " does not correspond to a TPUReplicate node.");
+              " does not correspond to a TPUReplicate node."));
         }
         if (outside_compilation_attr == nullptr) {
-          return errors::Internal("Node ", node->name(), " has ",
-                                  kTPUReplicateAttr, " attr but no ",
-                                  kOutsideCompilationAttr, " attr.");
+          return absl::InternalError(
+              absl::StrCat("Node ", node->name(), " has ", kTPUReplicateAttr,
+                           " attr but no ", kOutsideCompilationAttr, " attr."));
         }
-        const string& oc_cluster = outside_compilation_attr->s();
+        const std::string& oc_cluster = outside_compilation_attr->s();
         if (oc_cluster.empty()) {
-          return errors::Internal("Attr ", kOutsideCompilationAttr, " on node ",
-                                  node->name(), " has no string value.");
+          return absl::InternalError(
+              absl::StrCat("Attr ", kOutsideCompilationAttr, " on node ",
+                           node->name(), " has no string value."));
         }
 
         // Outside compilation cluster at head and tail of TPU computation has
@@ -410,7 +467,7 @@ Status FindTaggedNodes(
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Helper class to spread TPU computation arguments and return values
@@ -425,12 +482,12 @@ class TensorDevicePlacer {
   // return values to a set of num_devices devices, where the types and
   // the inferred shapes of the inputs (arguments or return values) are
   // passed in types and shapes.
-  TensorDevicePlacer(int64 num_devices, const DataTypeVector& types,
+  TensorDevicePlacer(int64_t num_devices, const DataTypeVector& types,
                      const std::vector<InferredShape>& shapes)
       : index_nodes_(num_devices), sizes_(types.size()) {
-    int64 total_size = 0;
-    int64 num_defined = 0;
-    for (int64 i = 0; i < types.size(); ++i) {
+    int64_t total_size = 0;
+    int64_t num_defined = 0;
+    for (int64_t i = 0; i < types.size(); ++i) {
       sizes_[i] = GetInferredShapeSize(shapes[i], types[i]);
       if (sizes_[i] >= 0) {
         total_size += sizes_[i];
@@ -440,22 +497,26 @@ class TensorDevicePlacer {
     // If a shape is undefined, select a size for it which is the average
     // of the defined shapes. If no shapes are defined, assign 1 so that we
     // get round-robin behavior.
-    int64 undefined_shape_size =
+    int64_t undefined_shape_size =
         (num_defined > 0) ? total_size / num_defined : 1;
-    for (int64 i = 0; i < sizes_.size(); ++i) {
+    for (int64_t i = 0; i < sizes_.size(); ++i) {
       if (sizes_[i] < 0) {
         sizes_[i] = undefined_shape_size;
       }
     }
 
-    for (int64 i = 0; i < num_devices; ++i) {
+    for (int64_t i = 0; i < num_devices; ++i) {
       heap_.Push(&index_nodes_[i]);
     }
   }
 
   // Reports that the argument/return-value at index has been assigned
   // by the user to a given device.
-  void ReportDeviceAssigned(int64 device, int64 index) {
+  void ReportDeviceAssigned(int64_t device, int64_t index) {
+    if (device >= index_nodes_.size()) {
+      LOG(FATAL) << "Sharding assignment is out of bounds. "  // Crash OK
+                    "Check that the number of nodes is properly set.";
+    }
     DeviceNode* node = &index_nodes_.at(device);
     node->size += sizes_.at(index);
     heap_.Adjust(node);
@@ -463,9 +524,9 @@ class TensorDevicePlacer {
 
   // Retrieves the device at which the argument/return-value at index
   // should be assigned to.
-  int64 RetrieveAssignment(int64 index) {
+  int64_t RetrieveAssignment(int64_t index) {
     DeviceNode* node = heap_.top();
-    int64 device = node - index_nodes_.data();
+    int64_t device = node - index_nodes_.data();
     node->size += sizes_.at(index);
     heap_.Adjust(node);
     return device;
@@ -482,11 +543,11 @@ class TensorDevicePlacer {
     };
 
     IntrusiveHeapLink heap;
-    int64 size = 0;
+    int64_t size = 0;
   };
 
-  static int64 GetInferredShapeSize(const InferredShape& ishape,
-                                    DataType dtype) {
+  static int64_t GetInferredShapeSize(const InferredShape& ishape,
+                                      DataType dtype) {
     return ishape.shape.IsFullyDefined()
                ? ishape.shape.num_elements() * DataTypeSize(dtype)
                : -1;
@@ -494,21 +555,21 @@ class TensorDevicePlacer {
 
   std::vector<DeviceNode> index_nodes_;
   IntrusiveHeap<DeviceNode, typename DeviceNode::Compare> heap_;
-  std::vector<int64> sizes_;
+  std::vector<int64_t> sizes_;
 };
 
-Status ValidateCoreNumber(int64 core, int64 num_cores_per_replica) {
+absl::Status ValidateCoreNumber(int64_t core, int64_t num_cores_per_replica) {
   if (core < 0 || core >= num_cores_per_replica) {
-    return tensorflow::errors::InvalidArgument("Invalid core ID: ", core,
-                                               ". The valid core IDs are [0..",
-                                               num_cores_per_replica, ")");
+    return absl::InvalidArgumentError(
+        absl::StrCat("Invalid core ID: ", core, ". The valid core IDs are [0..",
+                     num_cores_per_replica, ")"));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status FindHostComputeKeyPlaceholderNodes(
+absl::Status FindHostComputeKeyPlaceholderNodes(
     const Graph* graph, const std::vector<Node*>& replicate_nodes,
-    std::unordered_map<string, Node*>* host_compute_key_placeholder_map) {
+    std::unordered_map<std::string, Node*>* host_compute_key_placeholder_map) {
   host_compute_key_placeholder_map->clear();
   for (const auto node : replicate_nodes) {
     (*host_compute_key_placeholder_map)[node->name()] = nullptr;
@@ -516,34 +577,35 @@ Status FindHostComputeKeyPlaceholderNodes(
 
   for (Node* node : graph->op_nodes()) {
     if (node->type_string() == "Placeholder" &&
-        str_util::EndsWith(node->name(), "_key_placeholder")) {
+        absl::EndsWith(node->name(), "_key_placeholder")) {
       const AttrValue* call_node_attr =
           node->attrs().Find("_host_compute_call_node");
       if (call_node_attr != nullptr) {
         auto iter = host_compute_key_placeholder_map->find(call_node_attr->s());
         if (iter == host_compute_key_placeholder_map->end()) {
-          return errors::InvalidArgument(
+          return absl::InvalidArgumentError(absl::StrCat(
               "Node ", node->name(), " has _host_compute_call_node attribute '",
-              call_node_attr->s(), "' that doesn't correspond to a call node");
+              call_node_attr->s(), "' that doesn't correspond to a call node"));
         }
         if (iter->second != nullptr) {
-          return errors::InvalidArgument(
-              "Key placeholder node ", iter->second->name(), " for call node ",
-              call_node_attr->s(), " previously found as ",
-              iter->second->name());
+          return absl::InvalidArgumentError(
+              absl::StrCat("Key placeholder node ", iter->second->name(),
+                           " for call node ", call_node_attr->s(),
+                           " previously found as ", iter->second->name()));
         }
         iter->second = node;
       }
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status ReplaceCompilationResultNodeWithIdentity(Graph* graph, Node** node) {
+absl::Status ReplaceCompilationResultNodeWithIdentity(Graph* graph,
+                                                      Node** node) {
   Node* old_node = *node;
   // We want to replace the node with an identity node with the same name.
-  const string& node_name = old_node->name();
+  const std::string& node_name = old_node->name();
 
   // Create identity node.
   TF_ASSIGN_OR_RETURN(
@@ -572,12 +634,13 @@ Status ReplaceCompilationResultNodeWithIdentity(Graph* graph, Node** node) {
   graph->RemoveNode(old_node);
 
   *node = id_node;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status GetStepMarkerLocation(const Node& replicate_node,
-                             xla::DebugOptions::StepMarkerLocation* location) {
-  string step_marker_location_attr;
+absl::Status GetStepMarkerLocation(
+    const Node& replicate_node,
+    xla::DebugOptions::StepMarkerLocation* location) {
+  std::string step_marker_location_attr;
   TF_RETURN_IF_ERROR(GetNodeAttr(replicate_node.attrs(), "step_marker_location",
                                  &step_marker_location_attr));
   if (step_marker_location_attr.empty()) {
@@ -585,45 +648,23 @@ Status GetStepMarkerLocation(const Node& replicate_node,
   } else {
     if (!xla::DebugOptions::StepMarkerLocation_Parse(step_marker_location_attr,
                                                      location)) {
-      return errors::InvalidArgument("Malformed step_marker_location: ",
-                                     step_marker_location_attr);
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Malformed step_marker_location: ", step_marker_location_attr));
     }
   }
-  return Status::OK();
-}
-
-// Extracts a map of dimension and number of splits for tiled input from xla
-// sharding attribute.
-Status GetDimensionIndicesAndNumSplitsFromSharding(
-    const xla::OpSharding& sharding, std::map<int, int>* split_dimension_map) {
-  int64 tensor_tile_rank = sharding.tile_assignment_dimensions_size();
-  if (sharding.replicate_on_last_tile_dim()) {
-    tensor_tile_rank--;
-  }
-  for (int dim_index = 0; dim_index < tensor_tile_rank; dim_index++) {
-    if (sharding.tile_assignment_dimensions(dim_index) > 1) {
-      split_dimension_map->emplace(
-          dim_index, sharding.tile_assignment_dimensions(dim_index));
-    }
-  }
-
-  if (split_dimension_map->empty()) {
-    return errors::InvalidArgument("Arg has unnecessary tiled sharding: ",
-                                   sharding.DebugString());
-  }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Updates contents of the function with `function_name` in function library
 // definition `flib_def` to `new_graph`. This is required when graph
 // transformation happens inside a function call body.
-Status UpdateFunctionLibDefinition(const Graph& new_graph,
-                                   const std::string& function_name,
-                                   FunctionLibraryDefinition* flib_def) {
+absl::Status UpdateFunctionLibDefinition(const Graph& new_graph,
+                                         const std::string& function_name,
+                                         FunctionLibraryDefinition* flib_def) {
   FunctionDef graph_fdef;
   TF_RETURN_IF_ERROR(GraphToFunctionDef(new_graph, function_name, &graph_fdef));
   TF_RETURN_IF_ERROR(flib_def->ReplaceFunction(function_name, graph_fdef));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 struct NodeOut {
@@ -641,6 +682,19 @@ struct ShardedInputIndex {
   }
 };
 
+struct ShardedPerHostInputIndex {
+  std::string host_device;
+  int argument_index;
+  bool operator<(const ShardedPerHostInputIndex& rhs) const {
+    return std::tie(host_device, argument_index) <
+           std::tie(rhs.host_device, rhs.argument_index);
+  }
+  bool operator==(const ShardedPerHostInputIndex& rhs) const {
+    return (argument_index == rhs.argument_index) &&
+           (host_device == rhs.host_device);
+  }
+};
+
 struct ShardedInputInfo {
   // Split node that would be connected to tiled input Node.
   Node* split_node;
@@ -652,12 +706,12 @@ struct ShardedInputInfo {
 
 // Adds pad node after split node to graph for uneven sharding tiled inputs.
 // |graph| owns the returned Node* instance.
-xla::StatusOr<Node*> CreatePadNode(const int padding, const int num_dims,
-                                   const int split_dim, DataType dtype,
-                                   Node* control_predecessor, Node* split_node,
-                                   const int split_index, Graph* graph) {
+absl::StatusOr<Node*> CreatePadNode(const int padding, const int num_dims,
+                                    const int split_dim, DataType dtype,
+                                    Node* control_predecessor, Node* split_node,
+                                    const int split_index, Graph* graph) {
   // Add paddings node.
-  Status s;
+  absl::Status s;
   NodeDef paddings_def;
   paddings_def.set_name(
       graph->NewName(absl::StrCat(split_node->name(), "/paddings")));
@@ -677,8 +731,7 @@ xla::StatusOr<Node*> CreatePadNode(const int padding, const int num_dims,
   TensorShape sizes_shape({num_dims, 2});
   sizes_shape.AsProto(sizes_tensor_proto.mutable_tensor_shape());
   AddNodeAttr("value", sizes_tensor_proto, &paddings_def);
-  Node* paddings_node = graph->AddNode(paddings_def, &s);
-  TF_RETURN_IF_ERROR(s);
+  TF_ASSIGN_OR_RETURN(Node * paddings_node, graph->AddNode(paddings_def));
 
   // Add Pad node.
   NodeDef pad_def;
@@ -690,9 +743,8 @@ xla::StatusOr<Node*> CreatePadNode(const int padding, const int num_dims,
   AddNodeAttr("Tpaddings", DT_INT32, &pad_def);
   pad_def.add_input(absl::StrCat(split_node->name(), ":", split_index));
   pad_def.add_input(absl::StrCat(paddings_node->name(), ":0"));
-  Node* pad_node = graph->AddNode(pad_def, &s);
+  TF_ASSIGN_OR_RETURN(Node * pad_node, graph->AddNode(pad_def));
   pad_node->set_assigned_device_name(split_node->assigned_device_name());
-  TF_RETURN_IF_ERROR(s);
   // Add edges for pad node.
   graph->AddEdge(split_node, split_index, pad_node, 0);
   graph->AddEdge(paddings_node, 0, pad_node, 1);
@@ -702,12 +754,12 @@ xla::StatusOr<Node*> CreatePadNode(const int padding, const int num_dims,
 
 // Adds split node and split dimension node to graph for sharding tiled inputs.
 // |graph| owns the returned Node* instance.
-xla::StatusOr<Node*> CreateSplitNode(const int num_splits, const int dim,
-                                     const int num_dims, const int64 padding,
-                                     const int orig_src_output, DataType dtype,
-                                     absl::string_view name_prefix,
-                                     Node* control_predecessor, Node* orig_src,
-                                     Graph* graph) {
+absl::StatusOr<Node*> CreateSplitNode(const int num_splits, const int dim,
+                                      const int num_dims, const int64_t padding,
+                                      const int orig_src_output, DataType dtype,
+                                      absl::string_view name_prefix,
+                                      Node* control_predecessor, Node* orig_src,
+                                      Graph* graph) {
   const std::string input_assigned_device = orig_src->assigned_device_name();
   Node* to_split_node = orig_src;
   int to_split_index = orig_src_output;
@@ -733,9 +785,7 @@ xla::StatusOr<Node*> CreateSplitNode(const int num_splits, const int dim,
   TensorShape shape({});
   shape.AsProto(tensor_proto.mutable_tensor_shape());
   AddNodeAttr("value", tensor_proto, &split_dim_def);
-  Status s;
-  Node* split_dim_node = graph->AddNode(split_dim_def, &s);
-  TF_RETURN_IF_ERROR(s);
+  TF_ASSIGN_OR_RETURN(Node * split_dim_node, graph->AddNode(split_dim_def));
   // Add a split node.
   NodeDef split_def;
   split_def.set_name(graph->NewName(absl::StrCat(name_prefix, "/split")));
@@ -745,16 +795,15 @@ xla::StatusOr<Node*> CreateSplitNode(const int num_splits, const int dim,
   AddNodeAttr("T", dtype, &split_def);
   split_def.add_input(absl::StrCat(split_dim_node->name(), ":0"));
   split_def.add_input(absl::StrCat(to_split_node->name(), ":", to_split_index));
-  Node* split_node = graph->AddNode(split_def, &s);
-  TF_RETURN_IF_ERROR(s);
+  TF_ASSIGN_OR_RETURN(Node * split_node, graph->AddNode(split_def));
 
   split_node->set_assigned_device_name(input_assigned_device);
 
   // If colocate the newly created split op to source node of input to TPU
   // computation.
   split_node->AddAttr(kColocationAttrName,
-                      std::vector<string>{absl::StrCat(kColocationGroupPrefix,
-                                                       orig_src->name())});
+                      std::vector<std::string>{absl::StrCat(
+                          kColocationGroupPrefix, orig_src->name())});
 
   graph->AddEdge(split_dim_node, 0, split_node, 0);
   graph->AddEdge(to_split_node, to_split_index, split_node, 1);
@@ -767,21 +816,21 @@ xla::StatusOr<Node*> CreateSplitNode(const int num_splits, const int dim,
   return split_node;
 }
 
-int64 GetPadding(const int split_dim, const int num_splits,
-                 const PartialTensorShape& partial_tensor_shape) {
+int64_t GetPadding(const int split_dim, const int num_splits,
+                   const PartialTensorShape& partial_tensor_shape) {
   // If dim dimension is not defined, no uneven sharding support.
   if (partial_tensor_shape.dim_size(split_dim) <= 0) {
     return 0;
   }
-  int64 per_split_size = tensorflow::MathUtil::CeilOfRatio<int64>(
+  int64_t per_split_size = tensorflow::MathUtil::CeilOfRatio<int64_t>(
       partial_tensor_shape.dim_size(split_dim), num_splits);
-  int64 total_padding =
+  int64_t total_padding =
       per_split_size * num_splits - partial_tensor_shape.dim_size(split_dim);
   return total_padding;
 }
 
 // Creates a set of splits nodes that shards tiled input node in graph.
-xla::StatusOr<ShardedInputInfo> CreateOrGetSplitNodesForInputSharding(
+absl::StatusOr<ShardedInputInfo> CreateOrGetSplitNodesForInputSharding(
     const xla::OpSharding& sharding, int orig_arg_num, DataType dtype,
     const PartialTensorShape& partial_tensor_shape, int replica_id,
     int orig_src_output, Node* orig_src, Node* control_predecessor,
@@ -795,9 +844,8 @@ xla::StatusOr<ShardedInputInfo> CreateOrGetSplitNodesForInputSharding(
   }
   // Maps input dimension and number of splits with which the
   // dimension sharded.
-  std::map<int, int> split_dimension_map;
-  TF_RETURN_IF_ERROR(GetDimensionIndicesAndNumSplitsFromSharding(
-      sharding, &split_dimension_map));
+  TF_ASSIGN_OR_RETURN(auto split_dimension_map,
+                      GetDimensionIndicesAndNumSplitsFromSharding(sharding));
   TF_RET_CHECK(!split_dimension_map.empty())
       << "Unnecessary sharding attribute found.";
 
@@ -869,7 +917,7 @@ xla::StatusOr<ShardedInputInfo> CreateOrGetSplitNodesForInputSharding(
   // row major order.
   std::vector<NodeOut> sharded_inputs_list(
       sharding.tile_assignment_devices_size());
-  int64 next_core_tile_index = 0;
+  int64_t next_core_tile_index = 0;
   while (!split_nodes_for_dimension.empty()) {
     Node* split_node = split_nodes_for_dimension.front();
     split_nodes_for_dimension.pop();
@@ -877,11 +925,12 @@ xla::StatusOr<ShardedInputInfo> CreateOrGetSplitNodesForInputSharding(
     TF_RETURN_IF_ERROR(
         GetNodeAttr(split_node->def(), "num_split", &num_splits));
     for (int out_index = 0; out_index < num_splits; ++out_index) {
-      int64 repeat_count = sharding.replicate_on_last_tile_dim()
-                               ? *sharding.tile_assignment_dimensions().rbegin()
-                               : 1;
-      for (int64 i = 0; i < repeat_count; ++i) {
-        int64 next_core =
+      int64_t repeat_count =
+          sharding.replicate_on_last_tile_dim()
+              ? *sharding.tile_assignment_dimensions().rbegin()
+              : 1;
+      for (int64_t i = 0; i < repeat_count; ++i) {
+        int64_t next_core =
             sharding.tile_assignment_devices(next_core_tile_index++);
         sharded_inputs_list[next_core] = NodeOut{split_node, out_index};
       }
@@ -894,12 +943,217 @@ xla::StatusOr<ShardedInputInfo> CreateOrGetSplitNodesForInputSharding(
   return sharded_input_info;
 }
 
+// Creates a xla split node to shard an input, and adds that new node to a
+// Graph.
+absl::StatusOr<Node*> CreateXlaSplitOp(
+    absl::string_view node_name, const bool is_resource, const NodeOut& input,
+    const PartialTensorShape& partial_tensor_shape,
+    const std::vector<Node*>& control_inputs,
+    const std::vector<Node*>& control_outputs, const DataType dtype,
+    const int num_shards, const xla::OpSharding& sharding, Graph* graph) {
+  const std::string& input_assigned_device = input.node->assigned_device_name();
+  NodeDef xla_split_def;
+  xla_split_def.set_name(graph->NewName(node_name));
+  xla_split_def.set_op(is_resource ? "ReadVariableXlaSplitND" : "XlaSplitND");
+  xla_split_def.set_device(input_assigned_device);
+  AddNodeAttr("T", dtype, &xla_split_def);
+  AddNodeAttr("N", num_shards, &xla_split_def);
+  const std::vector<int64_t> num_splits(
+      sharding.tile_assignment_dimensions().begin(),
+      sharding.replicate_on_last_tile_dim()
+          ? std::prev(sharding.tile_assignment_dimensions().end())
+          : sharding.tile_assignment_dimensions().end());
+  AddNodeAttr("num_splits", num_splits, &xla_split_def);
+  const int rank = sharding.replicate_on_last_tile_dim()
+                       ? sharding.tile_assignment_dimensions_size() - 1
+                       : sharding.tile_assignment_dimensions_size();
+  std::vector<int32_t> paddings;
+  paddings.reserve(rank);
+  for (int dim = 0; dim < rank; ++dim) {
+    paddings.push_back(GetPadding(dim, sharding.tile_assignment_dimensions(dim),
+                                  partial_tensor_shape));
+  }
+  AddNodeAttr("paddings", paddings, &xla_split_def);
+
+  if (!is_resource) {
+    AddNodeAttr("_tpu_avoid_constant_fold", "not_used", &xla_split_def);
+    AddNodeAttr(kColocationAttrName,
+                std::vector<std::string>{
+                    absl::StrCat(kColocationGroupPrefix, input.node->name())},
+                &xla_split_def);
+  }
+
+  TF_ASSIGN_OR_RETURN(Node * xla_split, graph->AddNode(xla_split_def));
+  if (is_resource) {
+    xla_split->set_requested_device(input.node->requested_device());
+  }
+  xla_split->set_assigned_device_name(input_assigned_device);
+  graph->AddEdge(input.node, input.index, xla_split, 0);
+  for (Node* control_input : control_inputs) {
+    graph->AddControlEdge(control_input, xla_split);
+  }
+  for (Node* control_output : control_outputs) {
+    graph->AddControlEdge(xla_split, control_output);
+  }
+  return xla_split;
+}
+
+// Creates a sharded tensor list for all input shards of an input with sharding.
+absl::StatusOr<std::vector<NodeOut>> ShardInputWithXlaSplitOp(
+    absl::string_view node_name, const bool is_resource, const NodeOut& input,
+    const PartialTensorShape& partial_tensor_shape,
+    const std::vector<Node*>& control_inputs,
+    const std::vector<Node*>& control_outputs, const DataType dtype,
+    const xla::OpSharding& sharding, Graph* graph) {
+  const int repeat = sharding.replicate_on_last_tile_dim()
+                         ? *sharding.tile_assignment_dimensions().rbegin()
+                         : 1;
+  const int num_shards = sharding.tile_assignment_devices_size() / repeat;
+
+  TF_ASSIGN_OR_RETURN(
+      Node * xla_split,
+      CreateXlaSplitOp(node_name, is_resource, input, partial_tensor_shape,
+                       control_inputs, control_outputs, dtype, num_shards,
+                       sharding, graph));
+
+  std::vector<NodeOut> sharded_inputs_list(
+      sharding.tile_assignment_devices_size());
+
+  for (int i = 0; i < num_shards; ++i) {
+    for (int j = 0; j < repeat; ++j) {
+      const int index = i * repeat + j;
+      const int core = sharding.tile_assignment_devices(index);
+      sharded_inputs_list[core] = {xla_split, i};
+    }
+  }
+
+  return sharded_inputs_list;
+}
+
+// Creates an XlaSplitND op to shard a per-replica arg.
+absl::StatusOr<ShardedInputInfo> CreateOrGetXlaSplitNodeForShardedPerReplicaArg(
+    const xla::OpSharding& sharding, const int replica_id,
+    const int orig_arg_num, DataType dtype,
+    const PartialTensorShape& partial_tensor_shape, Node* orig_src,
+    const int orig_src_output, Graph* graph,
+    std::map<ShardedInputIndex, ShardedInputInfo>*
+        arg_index_to_sharded_input_map) {
+  ShardedInputIndex input_index{replica_id, orig_arg_num};
+  auto iter = arg_index_to_sharded_input_map->find(input_index);
+  if (iter != arg_index_to_sharded_input_map->end()) {
+    return iter->second;
+  }
+
+  TF_ASSIGN_OR_RETURN(
+      std::vector<NodeOut> sharded_inputs_list,
+      ShardInputWithXlaSplitOp(
+          absl::StrCat(orig_src->name(), "/replica_", replica_id, "_split"),
+          /*is_resource=*/false, /*input=*/{orig_src, orig_src_output},
+          partial_tensor_shape, /*control_inputs=*/{}, /*control_outputs=*/{},
+          dtype, sharding, graph));
+
+  ShardedInputInfo sharded_input_info{nullptr, std::move(sharded_inputs_list)};
+  (*arg_index_to_sharded_input_map)[input_index] = sharded_input_info;
+  return sharded_input_info;
+}
+
+// Creates an XlaSplitND op to shard a distributed arg.
+absl::StatusOr<ShardedInputInfo> CreateOrGetXlaSplitNodeForDistributedArg(
+    const xla::OpSharding& sharding, const int num_replicas,
+    const int replica_id, const int orig_arg_num, DataType dtype,
+    const PartialTensorShape& partial_tensor_shape, Node* orig_src,
+    const int orig_src_output, Graph* graph,
+    std::map<ShardedInputIndex, ShardedInputInfo>*
+        arg_index_to_sharded_input_map) {
+  ShardedInputIndex input_index{replica_id, orig_arg_num};
+  auto iter = arg_index_to_sharded_input_map->find(input_index);
+  if (iter != arg_index_to_sharded_input_map->end()) {
+    return iter->second;
+  }
+
+  TF_ASSIGN_OR_RETURN(
+      std::vector<NodeOut> sharded_inputs_list,
+      ShardInputWithXlaSplitOp(
+          absl::StrCat(orig_src->name(), "/distributed_split"),
+          /*is_resource=*/false, /*input=*/{orig_src, orig_src_output},
+          partial_tensor_shape, /*control_inputs=*/{}, /*control_outputs=*/{},
+          dtype, sharding, graph));
+
+  ShardedInputInfo sharded_input_info{nullptr, std::move(sharded_inputs_list)};
+  for (int replica = 0; replica < num_replicas; ++replica) {
+    (*arg_index_to_sharded_input_map)[{replica, orig_arg_num}] =
+        sharded_input_info;
+  }
+  return sharded_input_info;
+}
+
+// Creates an ReadVariableXlaSplitND op to shard a variable arg.
+absl::StatusOr<ShardedInputInfo> CreateOrGetXlaSplitNodeForVariableArg(
+    const xla::OpSharding& sharding, const int num_replicas,
+    const int replica_id, const int orig_arg_num, DataType dtype,
+    const PartialTensorShape& partial_tensor_shape, Node* orig_src,
+    const int orig_src_output, Graph* graph,
+    std::vector<Node*>* to_be_removed_nodes,
+    std::map<ShardedInputIndex, ShardedInputInfo>*
+        arg_index_to_sharded_input_map) {
+  ShardedInputIndex input_index{replica_id, orig_arg_num};
+  auto iter = arg_index_to_sharded_input_map->find(input_index);
+  if (iter != arg_index_to_sharded_input_map->end()) {
+    return iter->second;
+  }
+
+  DCHECK_EQ(orig_src->type_string(), "ReadVariableOp");
+  std::vector<Node*> control_outputs;
+  std::vector<const Edge*> edges_to_remove;
+  for (const Edge* edge : orig_src->out_edges()) {
+    if (edge->IsControlEdge()) {
+      control_outputs.push_back(edge->dst());
+    }
+    edges_to_remove.push_back(edge);
+  }
+
+  to_be_removed_nodes->push_back(orig_src);
+
+  const Edge* resource = nullptr;
+  TF_RETURN_IF_ERROR(orig_src->input_edge(0, &resource));
+
+  std::vector<Node*> control_inputs;
+  for (const Edge* edge : orig_src->in_edges()) {
+    if (edge->IsControlEdge()) {
+      control_inputs.push_back(edge->src());
+    }
+  }
+
+  TF_ASSIGN_OR_RETURN(
+      std::vector<NodeOut> sharded_inputs_list,
+      ShardInputWithXlaSplitOp(
+          absl::StrCat(resource->src()->name(), "/read_variable_split"),
+          /*is_resource=*/true,
+          /*input=*/{resource->src(), resource->src_output()},
+          partial_tensor_shape, control_inputs, control_outputs, dtype,
+          sharding, graph));
+
+  for (const Edge* edge : edges_to_remove) {
+    graph->RemoveControlEdge(edge);
+  }
+
+  DCHECK(orig_src->out_edges().empty());
+
+  ShardedInputInfo sharded_input_info{nullptr, std::move(sharded_inputs_list)};
+  for (int replica = 0; replica < num_replicas; ++replica) {
+    ShardedInputIndex idx{replica, orig_arg_num};
+    // Refrain from overwriting, if dummy inputs were already placed instead.
+    arg_index_to_sharded_input_map->insert({idx, sharded_input_info});
+  }
+  return sharded_input_info;
+}
+
 // Creates a concat node to be used for aggregating sharded retvals across
 // logical cores.
-xla::StatusOr<Node*> CreateConcatNode(int dim, int num_splits, DataType dtype,
-                                      absl::string_view name_prefix,
-                                      const std::vector<NodeOut>& inputs,
-                                      Graph* graph, absl::string_view device) {
+absl::StatusOr<Node*> CreateConcatNode(int dim, int num_splits, DataType dtype,
+                                       absl::string_view name_prefix,
+                                       const std::vector<NodeOut>& inputs,
+                                       Graph* graph, absl::string_view device) {
   // Add a Concat dim node.
   NodeDef concat_dim_def;
   concat_dim_def.set_name(
@@ -913,9 +1167,7 @@ xla::StatusOr<Node*> CreateConcatNode(int dim, int num_splits, DataType dtype,
   TensorShape shape({});
   shape.AsProto(tensor_proto.mutable_tensor_shape());
   AddNodeAttr("value", tensor_proto, &concat_dim_def);
-  Status s;
-  Node* concat_dim_node = graph->AddNode(concat_dim_def, &s);
-  TF_RETURN_IF_ERROR(s);
+  TF_ASSIGN_OR_RETURN(Node * concat_dim_node, graph->AddNode(concat_dim_def));
 
   // Add a Concat node.
   NodeDef concat_def;
@@ -928,8 +1180,7 @@ xla::StatusOr<Node*> CreateConcatNode(int dim, int num_splits, DataType dtype,
   for (const auto& i : inputs) {
     concat_def.add_input(absl::StrCat(i.node->name(), ":", i.index));
   }
-  Node* concat_node = graph->AddNode(concat_def, &s);
-  TF_RETURN_IF_ERROR(s);
+  TF_ASSIGN_OR_RETURN(Node * concat_node, graph->AddNode(concat_def));
 
   graph->AddEdge(concat_dim_node, 0, concat_node, 0);
 
@@ -944,12 +1195,12 @@ xla::StatusOr<Node*> CreateConcatNode(int dim, int num_splits, DataType dtype,
 }
 
 // Adds slice node after concat node to graph for uneven sharding tiled inputs.
-xla::StatusOr<Node*> CreateSliceNode(DataType dtype,
-                                     const PartialTensorShape& shape,
-                                     Node* concat_node,
-                                     const int concat_out_index, Graph* graph,
-                                     absl::string_view device) {
-  Status s;
+absl::StatusOr<Node*> CreateSliceNode(DataType dtype,
+                                      const PartialTensorShape& shape,
+                                      Node* concat_node,
+                                      const int concat_out_index, Graph* graph,
+                                      absl::string_view device) {
+  absl::Status s;
   // Add begin node for concat.
   NodeDef begin_def;
   begin_def.set_name(
@@ -965,8 +1216,7 @@ xla::StatusOr<Node*> CreateSliceNode(DataType dtype,
   TensorShape begin_shape({shape.dims()});
   begin_shape.AsProto(begin_tensor_proto.mutable_tensor_shape());
   AddNodeAttr("value", begin_tensor_proto, &begin_def);
-  Node* begin_node = graph->AddNode(begin_def, &s);
-  TF_RETURN_IF_ERROR(s);
+  TF_ASSIGN_OR_RETURN(Node * begin_node, graph->AddNode(begin_def));
 
   // Add size node.
   NodeDef size_def;
@@ -983,8 +1233,7 @@ xla::StatusOr<Node*> CreateSliceNode(DataType dtype,
   TensorShape sizes_shape({shape.dims()});
   sizes_shape.AsProto(sizes_tensor_proto.mutable_tensor_shape());
   AddNodeAttr("value", sizes_tensor_proto, &size_def);
-  Node* size_node = graph->AddNode(size_def, &s);
-  TF_RETURN_IF_ERROR(s);
+  TF_ASSIGN_OR_RETURN(Node * size_node, graph->AddNode(size_def));
 
   // Add Slice node.
   NodeDef slice_def;
@@ -997,8 +1246,7 @@ xla::StatusOr<Node*> CreateSliceNode(DataType dtype,
   slice_def.add_input(absl::StrCat(concat_node->name(), ":", concat_out_index));
   slice_def.add_input(absl::StrCat(begin_node->name(), ":0"));
   slice_def.add_input(absl::StrCat(size_node->name(), ":0"));
-  Node* slice_node = graph->AddNode(slice_def, &s);
-  TF_RETURN_IF_ERROR(s);
+  TF_ASSIGN_OR_RETURN(Node * slice_node, graph->AddNode(slice_def));
   // Add edges for slice node.
   graph->AddEdge(concat_node, concat_out_index, slice_node, 0);
   graph->AddEdge(begin_node, 0, slice_node, 1);
@@ -1009,14 +1257,13 @@ xla::StatusOr<Node*> CreateSliceNode(DataType dtype,
 // Creates a set of Concat nodes that aggregates sharded outputs from TPUExecute
 // nodes into a single output. Sharded outputs are concatenated along row major
 // order. That is, tiled output along 0th dimension will be concatenated last.
-xla::StatusOr<Node*> CreateConcatNodesForRetval(
+absl::StatusOr<Node*> CreateConcatNodesForRetval(
     const xla::OpSharding& sharding, DataType dtype,
     const PartialTensorShape& inferred_shape, int replica_id,
     const std::vector<NodeOut>& orig_inputs, Graph* graph,
     absl::string_view device) {
-  std::map<int, int> split_dimension_map;
-  TF_RETURN_IF_ERROR(GetDimensionIndicesAndNumSplitsFromSharding(
-      sharding, &split_dimension_map));
+  TF_ASSIGN_OR_RETURN(auto split_dimension_map,
+                      GetDimensionIndicesAndNumSplitsFromSharding(sharding));
   std::vector<NodeOut> inputs_to_sharded_retval = orig_inputs;
   bool has_paddings = false;
 
@@ -1042,7 +1289,7 @@ xla::StatusOr<Node*> CreateConcatNodesForRetval(
               dim, num_splits, dtype,
               absl::StrCat("sharded_output/replica_", replica_id, "_dim_", dim),
               inputs, graph, device));
-      int64 paddings = GetPadding(dim, num_splits, inferred_shape);
+      int64_t paddings = GetPadding(dim, num_splits, inferred_shape);
       has_paddings |= paddings > 0;
       new_concat_nodes.emplace_back(NodeOut{concat_node, 0});
     }
@@ -1060,11 +1307,48 @@ xla::StatusOr<Node*> CreateConcatNodesForRetval(
   return inputs_to_sharded_retval.at(0).node;
 }
 
+absl::StatusOr<Node*> CreateXlaConcatNode(
+    const xla::OpSharding& sharding, const int replica_id, DataType dtype,
+    const PartialTensorShape& partial_tensor_shape,
+    const std::vector<NodeOut>& orig_inputs, absl::string_view device,
+    Graph* graph) {
+  NodeDef xla_concat_def;
+  xla_concat_def.set_name(graph->NewName(
+      absl::StrCat("sharded_output/replica_", replica_id, "_concat")));
+  xla_concat_def.set_op("XlaConcatND");
+  xla_concat_def.set_device(std::string(device));
+  AddNodeAttr("T", dtype, &xla_concat_def);
+  AddNodeAttr("N", static_cast<int64_t>(orig_inputs.size()), &xla_concat_def);
+  const std::vector<int64_t> num_concats(
+      sharding.tile_assignment_dimensions().begin(),
+      sharding.replicate_on_last_tile_dim()
+          ? std::prev(sharding.tile_assignment_dimensions().end())
+          : sharding.tile_assignment_dimensions().end());
+  AddNodeAttr("num_concats", num_concats, &xla_concat_def);
+  const int rank = sharding.replicate_on_last_tile_dim()
+                       ? sharding.tile_assignment_dimensions_size() - 1
+                       : sharding.tile_assignment_dimensions_size();
+  std::vector<int32_t> paddings;
+  paddings.reserve(rank);
+  for (int dim = 0; dim < rank; ++dim) {
+    paddings.push_back(GetPadding(dim, sharding.tile_assignment_dimensions(dim),
+                                  partial_tensor_shape));
+  }
+  AddNodeAttr("paddings", paddings, &xla_concat_def);
+
+  TF_ASSIGN_OR_RETURN(Node * xla_concat, graph->AddNode(xla_concat_def));
+  for (int i = 0, e = orig_inputs.size(); i < e; ++i) {
+    const NodeOut& input = orig_inputs[i];
+    graph->AddEdge(input.node, input.index, xla_concat, i);
+  }
+  return xla_concat;
+}
+
 // Set the padding ops the same devices as the original inputs. If the original
 // inputs are on TPUs, the padding ops will be placed on TPUs and XLA on demand
 // mode will be triggered, so we don't need to copy the data back to the host
 // to do the padding.
-Status SetPaddingNodesDevices(Graph* graph) {
+absl::Status SetPaddingNodesDevices(Graph* graph) {
   for (Node* n : graph->op_nodes()) {
     bool tpu_padding_attr;
     if (n->type_string() == "Pad" &&
@@ -1073,8 +1357,9 @@ Status SetPaddingNodesDevices(Graph* graph) {
       Node* unpadded_input;
       TF_RETURN_IF_ERROR(n->input_node(0, &unpadded_input));
 
-      const string& requested_device = unpadded_input->requested_device();
-      const string& assigned_device = unpadded_input->assigned_device_name();
+      const std::string& requested_device = unpadded_input->requested_device();
+      const std::string& assigned_device =
+          unpadded_input->assigned_device_name();
       if (!requested_device.empty() || !assigned_device.empty()) {
         // The output nodes of the original unpadded inputs include the padded
         // inputs and real shapes of inputs, we assign those to the same device
@@ -1098,73 +1383,24 @@ Status SetPaddingNodesDevices(Graph* graph) {
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-const string& AssignedOrRequestedDevice(const Node* node) {
-  if (!node->assigned_device_name().empty()) {
-    return node->assigned_device_name();
-  }
-  return node->requested_device();
-}
-
-bool IsTpuDevice(const string& device_string) {
+bool IsTpuDevice(absl::string_view device_string) {
   DeviceNameUtils::ParsedName device;
   return DeviceNameUtils::ParseFullName(device_string, &device) &&
          device.type == DEVICE_TPU_NODE;
 }
 
-// Returns a set of device ops can be placed on TPU. There is no strict rule of
-// thumb to decide which ops should be in the list, but empirically they are
-// mostly dummy ops like Identity-like ops or control flow related ops. However
-// people can add also add other ops like Pad to allow data stay on TPU.
-const absl::flat_hash_set<std::string>& PlaceOnTPUOpList() {
+bool CanAcceptTPUDevicePropagation(const Node& node) {
+  // A set of device ops can be placed on TPU. There is no strict rule of
+  // thumb to decide which ops should be in the list, but empirically they are
+  // mostly dummy ops like Identity-like ops or control flow related ops.
+  // However one can add also add other ops like Pad to allow data stay on TPU.
   static const auto place_on_tpu_ops = new absl::flat_hash_set<std::string>(
       {"Identity", "IdentityN", "Enter", "Exit", "Switch", "Merge",
        "NextIteration", "Shape", "_Retval"});
-  return *place_on_tpu_ops;
-}
-
-// If an op satisfies the following conditions, it will be placed on the same
-// TPU device as its inputs:
-//   (1) The op can be placed on TPU (in the PlaceOnTPUOpList)
-//   (2) The op itself has no requested or assigned devices.
-//   (3) All the data inputs of this op are placed on the same device on TPUs.
-//       There are exceptions like the NextIterations input of Switch node can
-//       be placed on CPU as it is just a boolean.
-//
-// Returns true if the node device has been changed, otherwise returns false.
-bool PlaceOpsOnTPU(Node* node) {
-  if (!AssignedOrRequestedDevice(node).empty() ||
-      !PlaceOnTPUOpList().contains(node->type_string())) {
-    return false;
-  }
-  string src_tpu_device = "";
-  Node* src_node;
-  for (const Edge* e : node->in_edges()) {
-    if (e->IsControlEdge()) {
-      continue;
-    }
-    Node* src = e->src();
-    const string& src_device = AssignedOrRequestedDevice(src);
-
-    // Make exceptions that we don't force the some inputs to place on TPUs.
-    if (node->IsSwitch() && src->IsLoopCond()) {
-      continue;
-    }
-
-    if (!IsTpuDevice(src_device) ||
-        (!src_tpu_device.empty() && src_device != src_tpu_device)) {
-      return false;
-    }
-    if (src_tpu_device.empty()) {
-      src_tpu_device = src_device;
-      src_node = src;
-    }
-  }
-  node->set_assigned_device_name(src_node->assigned_device_name());
-  node->set_requested_device(src_node->requested_device());
-  return true;
+  return place_on_tpu_ops->contains(node.type_string());
 }
 
 xla::OpMetadata CreateOpMetadataFromNode(const Node& node) {
@@ -1185,12 +1421,12 @@ struct NodeAndSharding {
 
 // Validate sharding configuration derived from XlaSharding attribute.
 // Infer the core id from the OpSharding, if necessary.
-Status ParseAndValidateSharding(const NodeAndSharding& node_and_sharding,
-                                const int num_cores_per_replica,
-                                int64* inferred_core_id,
-                                absl::optional<NodeAndSharding>* result) {
+absl::Status ParseAndValidateSharding(const NodeAndSharding& node_and_sharding,
+                                      const int num_cores_per_replica,
+                                      int64_t* inferred_core_id,
+                                      std::optional<NodeAndSharding>* result) {
   if (node_and_sharding.sharding.type() == xla::OpSharding::MAXIMAL) {
-    int64 core_annotation =
+    int64_t core_annotation =
         node_and_sharding.sharding.tile_assignment_devices(0);
     TF_RETURN_IF_ERROR(
         ValidateCoreNumber(core_annotation, num_cores_per_replica));
@@ -1200,7 +1436,8 @@ Status ParseAndValidateSharding(const NodeAndSharding& node_and_sharding,
     }
   } else {
     if (node_and_sharding.sharding.type() == xla::OpSharding::OTHER) {
-      for (int64 core : node_and_sharding.sharding.tile_assignment_devices()) {
+      for (int64_t core :
+           node_and_sharding.sharding.tile_assignment_devices()) {
         TF_RETURN_IF_ERROR(ValidateCoreNumber(core, num_cores_per_replica));
       }
     }
@@ -1231,7 +1468,7 @@ Status ParseAndValidateSharding(const NodeAndSharding& node_and_sharding,
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // As XlaSharding node may be followed by Cast op or an Identity op,
@@ -1250,16 +1487,16 @@ void FindNodesMaybeContainingShardingInfo(const Node& input_node,
 // XlaSharding configuration may be derived from
 //   a) Connected Identity op node.
 //   b) Connected Cast op node.
-xla::StatusOr<absl::optional<NodeAndSharding>>
+absl::StatusOr<std::optional<NodeAndSharding>>
 ParseInputShardingFromAdjacentNode(const int num_cores_per_replica,
                                    const Node& node) {
   // If |node| has `device` attribute or is a XlaSharding op,
   // return the parsed OpSharding.
-  TF_ASSIGN_OR_RETURN(absl::optional<xla::OpSharding> sharding,
+  TF_ASSIGN_OR_RETURN(std::optional<xla::OpSharding> sharding,
                       ParseShardingFromDevice(node, num_cores_per_replica,
                                               /*add_metadata=*/true));
   if (sharding.has_value()) {
-    return absl::optional<NodeAndSharding>(NodeAndSharding(&node, *sharding));
+    return std::optional<NodeAndSharding>(NodeAndSharding(&node, *sharding));
   }
 
   // XlaShardingOp may be followed by an identity or followed by identity
@@ -1272,15 +1509,15 @@ ParseInputShardingFromAdjacentNode(const int num_cores_per_replica,
     if (maybe_node_with_sharding_info->type_string() != "XlaSharding") continue;
 
     TF_ASSIGN_OR_RETURN(
-        absl::optional<xla::OpSharding> sharding_config,
+        std::optional<xla::OpSharding> sharding_config,
         ParseShardingFromDevice(*maybe_node_with_sharding_info,
                                 num_cores_per_replica, /*add_metadata=*/true));
     if (sharding_config.has_value()) {
-      return absl::optional<NodeAndSharding>(
+      return std::optional<NodeAndSharding>(
           NodeAndSharding(maybe_node_with_sharding_info, *sharding_config));
     }
   }
-  return absl::optional<NodeAndSharding>();
+  return std::optional<NodeAndSharding>();
 }
 
 // Walk the graph from an argument node to find OpSharding configuration
@@ -1288,10 +1525,10 @@ ParseInputShardingFromAdjacentNode(const int num_cores_per_replica,
 //  1) Parsing XlaSharding attribute from neighboring node.
 //  2) If argument node is a resource, then by parsing adjacent nodes
 //     of the connected ReadVariable op.
-Status ParseAndValidateShardingFromNeighbors(
+absl::Status ParseAndValidateShardingFromNeighbors(
     const int num_cores_per_replica, const std::string& arg_node_name,
-    const Node& neighbor_node, int64* inferred_core_id, bool* is_fast_mem,
-    absl::optional<NodeAndSharding>* result) {
+    const Node& neighbor_node, int64_t* inferred_core_id, bool* is_fast_mem,
+    std::optional<NodeAndSharding>* result) {
   if (neighbor_node.attrs().Find(TPU_FAST_MEM_ATTR) != nullptr) {
     *is_fast_mem = true;
     VLOG(2) << "place " << neighbor_node.name() << " on fast memory because "
@@ -1301,12 +1538,12 @@ Status ParseAndValidateShardingFromNeighbors(
   // XlaSharding information may be encoded on node directly connected to the
   // argument node.
   TF_ASSIGN_OR_RETURN(
-      absl::optional<NodeAndSharding> node_and_sharding,
+      std::optional<NodeAndSharding> node_and_sharding,
       ParseInputShardingFromAdjacentNode(num_cores_per_replica, neighbor_node));
   if (node_and_sharding.has_value()) {
     TF_RETURN_IF_ERROR(ParseAndValidateSharding(
         *node_and_sharding, num_cores_per_replica, inferred_core_id, result));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // When we use variable in TPU computation, we always have a
@@ -1323,17 +1560,17 @@ Status ParseAndValidateShardingFromNeighbors(
       }
 
       TF_ASSIGN_OR_RETURN(
-          absl::optional<NodeAndSharding> node_and_sharding,
+          std::optional<NodeAndSharding> node_and_sharding,
           ParseInputShardingFromAdjacentNode(num_cores_per_replica, *e->dst()));
       if (node_and_sharding.has_value()) {
         TF_RETURN_IF_ERROR(ParseAndValidateSharding(*node_and_sharding,
                                                     num_cores_per_replica,
                                                     inferred_core_id, result));
-        return Status::OK();
+        return absl::OkStatus();
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -1347,9 +1584,9 @@ Status ParseAndValidateShardingFromNeighbors(
 //   num_tpus_per_task: the number of TPUs in each task. Verifies that all tasks
 //     have the same number of TPU devices.
 //   tpu_devices: the TPU devices, indexed by [task][device].
-static Status GetTPUDeviceNames(
-    const string& replication_spec_string, const DeviceSet& device_set,
-    string* tpu_compilation_device, int* num_tpus_per_task,
+static absl::Status GetTPUDeviceNames(
+    const std::string& replication_spec_string, const DeviceSet& device_set,
+    std::string* tpu_compilation_device, int* num_tpus_per_task,
     std::vector<std::vector<Device*>>* tpu_devices) {
   // TODO(b/110910013) GetSystemDevice parses the spec and returns the name of
   // the tpu_system device, which we replace by the cpu device. We do this
@@ -1369,35 +1606,37 @@ static Status GetTPUDeviceNames(
   TF_RETURN_IF_ERROR(DistributedTPURewriteHelpers::GetTPUDevices(
       replication_spec, device_set, num_tpus_per_task, tpu_devices));
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Parses the topology attribute of TPUReplicate, and populates *topology with
 // a physical mesh coordinate to (task, device) mapping.
-static Status ParseTopologyAttr(const string& topology_attr,
-                                const tpu::TpuTopologyExternal& tpu_topology,
-                                int num_tasks, int num_tpus_per_task,
-                                xla::Array4D<std::pair<int, int>>* topology) {
+static absl::Status ParseTopologyAttr(
+    const std::string& topology_attr,
+    const tpu::TpuTopologyExternal& tpu_topology, int num_tasks,
+    int num_tpus_per_task, xla::Array4D<std::pair<int, int>>* topology) {
   static_assert(4 == kTPUTopologyRank, "Assumes the topology rank is 4");
   tpu::TopologyProto proto;
   proto.ParseFromString(topology_attr);
   if (proto.mesh_shape_size() != kTPUTopologyRank) {
-    return errors::InvalidArgument("TPU topology must be rank ",
-                                   kTPUTopologyRank);
+    return absl::InvalidArgumentError(
+        absl::StrCat("TPU topology must be rank ", kTPUTopologyRank));
   }
   if (proto.num_tasks() != num_tasks) {
-    return errors::InvalidArgument("Mismatched number of TPU tasks");
+    return absl::InvalidArgumentError(
+        absl::StrCat("Mismatched number of TPU tasks (", proto.num_tasks(),
+                     " != ", num_tasks, ")"));
   }
   if (proto.num_tpu_devices_per_task() != num_tpus_per_task) {
-    return errors::InvalidArgument("Mismatched number of TPUs per task (",
-                                   proto.num_tpu_devices_per_task(),
-                                   " != ", num_tpus_per_task, ").");
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Mismatched number of TPUs per task (",
+        proto.num_tpu_devices_per_task(), " != ", num_tpus_per_task, ")."));
   }
   if (proto.device_coordinates_size() !=
       num_tasks * num_tpus_per_task * kTPUTopologyRank) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "device coordinates should be ", num_tasks, "x", num_tpus_per_task, "x",
-        kTPUTopologyRank, "; got ", proto.device_coordinates_size());
+        kTPUTopologyRank, "; got ", proto.device_coordinates_size()));
   }
 
   int devices_per_chip = tpu_topology.LogicalDevicesPerChip(kTensorCore);
@@ -1407,49 +1646,50 @@ static Status ParseTopologyAttr(const string& topology_attr,
   int pos = 0;
   for (int task = 0; task < num_tasks; ++task) {
     for (int device = 0; device < num_tpus_per_task; ++device) {
-      int32 x = proto.device_coordinates(pos++);
-      int32 y = proto.device_coordinates(pos++);
-      int32 z = proto.device_coordinates(pos++);
-      int32 core = proto.device_coordinates(pos++);
+      int32_t x = proto.device_coordinates(pos++);
+      int32_t y = proto.device_coordinates(pos++);
+      int32_t z = proto.device_coordinates(pos++);
+      int32_t core = proto.device_coordinates(pos++);
 
       if (!tpu_topology.HasChip(x, y, z) || core < 0 ||
           core >= devices_per_chip) {
-        return errors::InvalidArgument(
-            "Mesh coordinates (", x, ",", y, ",", z, ",", core,
-            ") are not valid for the current TPU topology");
+        return absl::InvalidArgumentError(
+            absl::StrCat("Mesh coordinates (", x, ",", y, ",", z, ",", core,
+                         ") are not valid for the current TPU topology"));
       }
       if ((*topology)(x, y, z, core).first != -1) {
-        return errors::InvalidArgument("Duplicate coordinates (", x, ",", y,
-                                       ",", z, ",", core, ") in TPU topology");
+        return absl::InvalidArgumentError(
+            absl::StrCat("Duplicate coordinates (", x, ",", y, ",", z, ",",
+                         core, ") in TPU topology"));
       }
       (*topology)(x, y, z, core) = {task, device};
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Parses the value of the device_assignment attribute to TPUReplicate.
 // Populates *device_assignment; *device_assignment must be a 2D array with
 // shape (num_replicas, num_cores_per_replica).
-static Status ParseDeviceAssignmentAttr(
+static absl::Status ParseDeviceAssignmentAttr(
     absl::Span<const int> device_assignment_attr,
     const tpu::TpuTopologyExternal& tpu_topology, int num_replicas,
     int num_cores_per_replica,
     xla::Array2D<tpu::TpuCoreLocationExternal>* device_assignment) {
   static_assert(4 == kTPUTopologyRank, "Assumes the topology rank is 4");
 
-  const int64 device_assignment_attr_size =
+  const int64_t device_assignment_attr_size =
       num_replicas * num_cores_per_replica * kTPUTopologyRank;
   if (device_assignment_attr.size() != device_assignment_attr_size) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "Length of device_assignment attribute must be equal to num_replicas (",
         num_replicas, ") * num_cores_per_replica (", num_cores_per_replica,
-        ") * ", kTPUTopologyRank, " got ", device_assignment_attr.size());
+        ") * ", kTPUTopologyRank, " got ", device_assignment_attr.size()));
   }
   for (int core : device_assignment_attr) {
     if (core < 0 || core >= kTPUMaxTopologySize) {
-      return errors::InvalidArgument(
-          "Invalid core number in device assignment: ", core);
+      return absl::InvalidArgumentError(
+          absl::StrCat("Invalid core number in device assignment: ", core));
     }
   }
 
@@ -1463,39 +1703,40 @@ static Status ParseDeviceAssignmentAttr(
   for (int replica = 0; replica < num_replicas; ++replica) {
     for (int logical_core = 0; logical_core < num_cores_per_replica;
          ++logical_core) {
-      int32 x = device_assignment_attr[pos++];
-      int32 y = device_assignment_attr[pos++];
-      int32 z = device_assignment_attr[pos++];
-      int32 core = device_assignment_attr[pos++];
+      int32_t x = device_assignment_attr[pos++];
+      int32_t y = device_assignment_attr[pos++];
+      int32_t z = device_assignment_attr[pos++];
+      int32_t core = device_assignment_attr[pos++];
 
       if (!tpu_topology.HasChip(x, y, z) || core < 0 ||
           core >= devices_per_chip) {
-        return errors::InvalidArgument(
-            "Mesh coordinates (", x, ",", y, ",", core,
-            ") are not valid for the current TPU topology");
+        return absl::InvalidArgumentError(
+            absl::StrCat("Mesh coordinates (", x, ",", y, ",", core,
+                         ") are not valid for the current TPU topology"));
       }
       tpu::TpuCoreLocationExternal core_location =
           tpu_topology.Core(kTensorCore, x, y, z, core);
 
       if (replica_assignment(x, y, z, core) != -1) {
-        return errors::InvalidArgument("Duplicate coordinates (", x, ",", y,
-                                       ",", z, ",", core,
-                                       ") in TPU device assignment");
+        return absl::InvalidArgumentError(
+            absl::StrCat("Duplicate coordinates (", x, ",", y, ",", z, ",",
+                         core, ") in TPU device assignment"));
       }
       replica_assignment(x, y, z, core) = replica;
       (*device_assignment)(replica, logical_core) = core_location;
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Builds TensorFlow device assignments for the special case of a single core
 // computation that is replicated to every core in the mesh.
 // LINT.IfChange
-static Status BuildFullMeshDeviceAssignment(
+static absl::Status BuildFullMeshDeviceAssignment(
     int num_replicas, const std::vector<std::vector<Device*>>& tpu_devices,
     int num_tasks, int num_tpus_per_task,
-    std::vector<std::vector<string>>* tf_device_assignment) {
+    std::vector<std::vector<std::string>>* tf_device_assignment,
+    std::vector<int>* devices_to_lock) {
   // Assign TensorFlow devices to replicas arbitrarily.
   for (int i = 0; i < num_replicas; ++i) {
     int task = i / num_tpus_per_task;
@@ -1506,23 +1747,25 @@ static Status BuildFullMeshDeviceAssignment(
     // We don't actually know which TF device corresponds to which physical
     // device, but it doesn't matter—they're all identical.
     (*tf_device_assignment)[i] = {tpu_devices[task][device]->name()};
+    devices_to_lock->push_back(i);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 // LINT.ThenChange(//tensorflow/compiler/mlir/tensorflow/utils/tpu_rewrite_device_util.cc)
 
 // Builds TensorFlow device assignments for a replicated computation and convert
 // device_assignment into xla_device_assignment.
-static Status BuildGeneralDeviceAssignment(
+static absl::Status BuildGeneralDeviceAssignment(
     int num_replicas, int num_cores_per_replica,
     const std::vector<std::vector<Device*>>& tpu_devices,
     const xla::Array2D<tpu::TpuCoreLocationExternal>& device_assignment,
     const xla::Array4D<std::pair<int, int>>& topology,
-    std::vector<std::vector<string>>* tf_device_assignment,
+    std::vector<std::vector<std::string>>* tf_device_assignment,
+    std::vector<int>* devices_to_lock,
     std::unique_ptr<xla::DeviceAssignment>* xla_device_assignment) {
   // Assign TensorFlow devices to each computation's replicas according to
   // device_assignment and 'topology'.
-  *xla_device_assignment = absl::make_unique<xla::DeviceAssignment>(
+  *xla_device_assignment = std::make_unique<xla::DeviceAssignment>(
       num_replicas, num_cores_per_replica);
   for (int replica = 0; replica < num_replicas; ++replica) {
     for (int computation = 0; computation < num_cores_per_replica;
@@ -1546,17 +1789,19 @@ static Status BuildGeneralDeviceAssignment(
       TF_RET_CHECK(device >= 0 && device < tpu_devices[task].size());
       (*tf_device_assignment)[replica].push_back(
           tpu_devices[task][device]->name());
+      devices_to_lock->push_back((task * tpu_devices[task].size()) + device);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/*static*/ Status DistributedTPURewritePass::BuildDeviceAssignment(
+/*static*/ absl::Status DistributedTPURewritePass::BuildDeviceAssignment(
     const tpu::TpuTopologyExternal& tpu_topology, int num_tpus_per_task,
     const std::vector<std::vector<Device*>>& tpu_devices, int num_replicas,
-    int num_cores_per_replica, const string& topology_attr,
+    int num_cores_per_replica, const std::string& topology_attr,
     absl::Span<const int> device_assignment_attr,
-    std::vector<std::vector<string>>* tf_device_assignment,
+    std::vector<std::vector<std::string>>* tf_device_assignment,
+    std::vector<int>* devices_to_lock,
     std::unique_ptr<xla::DeviceAssignment>* xla_device_assignment) {
   const int num_tasks = tpu_devices.size();
   const int num_tpu_devices = num_tasks * num_tpus_per_task;
@@ -1565,25 +1810,22 @@ static Status BuildGeneralDeviceAssignment(
 
   // Checks num_replicas is sane first to avoid integer overflow.
   if (num_replicas > num_tpu_devices) {
-#ifdef PLATFORM_CLOUD_TPU
-    return errors::InvalidArgument("Requested num_replicas=", num_replicas,
-                                   " but there are only ", num_tpu_devices,
-                                   " cores in the TPU topology.");
-#else
-    return errors::InvalidArgument("Requested num_replicas=", num_replicas,
-                                   " but there are only ", num_tpu_devices,
-                                   " cores in the TPU topology.");
-#endif
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Requested num_replicas=", num_replicas, " but there are only ",
+        num_tpu_devices, " cores in the TPU topology."));
   }
   if (num_replicas * num_cores_per_replica > num_tpu_devices) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "Requested num_replicas=", num_replicas, " with ",
         num_cores_per_replica, " cores per replica, but there are only ",
-        num_tpu_devices, " cores in the TPU topology");
+        num_tpu_devices, " cores in the TPU topology"));
   }
 
   tf_device_assignment->clear();
   tf_device_assignment->resize(num_replicas);
+
+  devices_to_lock->clear();
+  devices_to_lock->reserve(num_replicas * num_cores_per_replica);
 
   // Special case: we allow the user to omit the topology and device assignment
   // information in two cases:
@@ -1596,23 +1838,23 @@ static Status BuildGeneralDeviceAssignment(
   if (topology_attr.empty()) {
     // LINT.IfChange
     if (num_replicas != 1 && num_replicas != num_tpu_devices) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(absl::StrCat(
           "TPUReplicate asked to create ", num_replicas,
           " replicas, but the number of cores in the TPU topology is ",
           num_tpu_devices,
           " and no TPU device assignment was supplied. "
           "A TPU device assignment is required if the number of replicas is "
           "not 1 or the number of cores in the topology (",
-          num_tpu_devices, ")");
+          num_tpu_devices, ")"));
     }
 
     if (num_cores_per_replica != 1) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           "A TPU topology must be provided if num_cores_per_replica != 1");
     }
 
     if (!device_assignment_attr.empty()) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           "A TPU topology must be provided if device_assignment_attr is "
           "non-empty");
     }
@@ -1623,7 +1865,8 @@ static Status BuildGeneralDeviceAssignment(
     // communicate with any other cores.
     if (num_replicas == 1) {
       (*tf_device_assignment)[0] = {tpu_devices[0][0]->name()};
-      return Status::OK();
+      devices_to_lock->push_back(0);
+      return absl::OkStatus();
     }
 
     // Otherwise, num_replicas is equal to the number of cores, and we build a
@@ -1631,7 +1874,7 @@ static Status BuildGeneralDeviceAssignment(
     // the topology to do so because all cores are identical.
     return BuildFullMeshDeviceAssignment(num_replicas, tpu_devices, num_tasks,
                                          num_tpus_per_task,
-                                         tf_device_assignment);
+                                         tf_device_assignment, devices_to_lock);
     // LINT.ThenChange(//tensorflow/compiler/mlir/tensorflow/utils/tpu_rewrite_device_util.cc)
   }
 
@@ -1648,10 +1891,10 @@ static Status BuildGeneralDeviceAssignment(
 
   return BuildGeneralDeviceAssignment(
       num_replicas, num_cores_per_replica, tpu_devices, device_assignment,
-      topology, tf_device_assignment, xla_device_assignment);
+      topology, tf_device_assignment, devices_to_lock, xla_device_assignment);
 }
 
-Status DistributedTPURewritePass::GetComputationForTPUReplicateOp(
+absl::Status DistributedTPURewritePass::GetComputationForTPUReplicateOp(
     const NameAttrList& function, FunctionLibraryRuntime* flr,
     Graph* computation, DataTypeVector* arg_types,
     DataTypeVector* retval_types) {
@@ -1665,24 +1908,24 @@ Status DistributedTPURewritePass::GetComputationForTPUReplicateOp(
   CopyGraph(*fbody->graph, computation);
   *arg_types = fbody->arg_types;
   *retval_types = fbody->ret_types;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Grab the InferredShape corresponding to an edge input.
-static Status GetEdgeShape(const GraphShapeInfo& shape_info, const Edge& edge,
-                           const InferredShape** info) {
+static absl::Status GetEdgeShape(const GraphShapeInfo& shape_info,
+                                 const Edge& edge, const InferredShape** info) {
   auto it = shape_info.find(edge.src()->name());
   if (it == shape_info.end()) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "Input to replicated TPU computation is missing InferredShape: ",
-        edge.src()->name());
+        edge.src()->name()));
   }
   TF_RET_CHECK(it->second.size() > edge.src_output());
   *info = &it->second[edge.src_output()];
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status DistributedTPURewritePass::GetArgAndRetvalShapes(
+absl::Status DistributedTPURewritePass::GetArgAndRetvalShapes(
     const GraphShapeInfo& shape_info, const Node& node,
     const ParameterInfo& params_info, std::vector<InferredShape>* arg_shapes,
     std::vector<InferredShape>* retval_shapes) {
@@ -1699,8 +1942,8 @@ Status DistributedTPURewritePass::GetArgAndRetvalShapes(
   TF_RET_CHECK(input_edges.size() == params_info.NumInputsFromHost());
   // Determines the shapes of the per-replica arguments and checks that all
   // replicas have identical shapes.
-  int64 edge_pos = 0;
-  auto check_shape = [&](int input_index) -> Status {
+  int64_t edge_pos = 0;
+  auto check_shape = [&](int input_index) -> absl::Status {
     const InferredShape* info;
     TF_RETURN_IF_ERROR(GetEdgeShape(shape_info, *input_edges[edge_pos], &info));
     ++edge_pos;
@@ -1710,29 +1953,29 @@ Status DistributedTPURewritePass::GetArgAndRetvalShapes(
          !info->handle_shape.IsFullyDefined())) {
       any_replica_shape_unknown[input_index] = true;
     }
-    xla::StatusOr<InferredShape> status =
+    absl::StatusOr<InferredShape> status =
         MergeInferredShapes((*arg_shapes)[input_index], *info);
     if (!status.ok()) {
-      return errors::InvalidArgument(
-          "Mismatched shapes for input ", input_index, ": ",
-          (*arg_shapes)[input_index].shape.DebugString(), " vs. ",
-          info->shape.DebugString());
+      return absl::InvalidArgumentError(
+          absl::StrCat("Mismatched shapes for input ", input_index, ": ",
+                       (*arg_shapes)[input_index].shape.DebugString(), " vs. ",
+                       info->shape.DebugString()));
     }
-    (*arg_shapes)[input_index] = status.ValueOrDie();
-    return Status::OK();
+    (*arg_shapes)[input_index] = status.value();
+    return absl::OkStatus();
   };
 
-  for (int64 i = 0; i < params_info.NumReplicas(); ++i) {
-    for (int64 j = 0; j < params_info.NumPerReplicaArgs(); ++j) {
+  for (int64_t i = 0; i < params_info.NumReplicas(); ++i) {
+    for (int64_t j = 0; j < params_info.NumPerReplicaArgs(); ++j) {
       TF_RETURN_IF_ERROR(check_shape(j));
     }
   }
 
-  for (int64 i = 0; i < params_info.NumDistributedArgs(); ++i) {
+  for (int64_t i = 0; i < params_info.NumDistributedArgs(); ++i) {
     TF_RETURN_IF_ERROR(check_shape(params_info.NumPerReplicaArgs() + i));
   }
 
-  for (int64 i = 0;
+  for (int64_t i = 0;
        i < params_info.NumPerReplicaArgs() + params_info.NumDistributedArgs();
        ++i) {
     if (any_replica_shape_unknown[i]) {
@@ -1742,7 +1985,7 @@ Status DistributedTPURewritePass::GetArgAndRetvalShapes(
   }
 
   // Determines the shape of the broadcast arguments.
-  for (int64 i = 0; i < params_info.NumBroadcastArgs(); ++i) {
+  for (int64_t i = 0; i < params_info.NumBroadcastArgs(); ++i) {
     TF_RET_CHECK(node.input_type(edge_pos) != DT_RESOURCE);
     const InferredShape* info;
     TF_RETURN_IF_ERROR(GetEdgeShape(shape_info, *input_edges[edge_pos], &info));
@@ -1754,7 +1997,7 @@ Status DistributedTPURewritePass::GetArgAndRetvalShapes(
 
   // Determines the handle shape and handle type of the resource variable
   // arguments.
-  for (int64 i = 0; i < params_info.NumVariables(); ++i) {
+  for (int64_t i = 0; i < params_info.NumVariables(); ++i) {
     TF_RET_CHECK(node.input_type(edge_pos) == DT_RESOURCE);
     const InferredShape* info;
     TF_RETURN_IF_ERROR(GetEdgeShape(shape_info, *input_edges[edge_pos], &info));
@@ -1774,7 +2017,7 @@ Status DistributedTPURewritePass::GetArgAndRetvalShapes(
   // TODO(vinuraja): Can be removed because they are not required for any
   // calculations. Leaving them here for symmetry with other structures like
   // arg_types, arg_sharding, etc.
-  for (int64 i = 0; i < params_info.NumGuaranteedConstants(); ++i) {
+  for (int64_t i = 0; i < params_info.NumGuaranteedConstants(); ++i) {
     TF_RET_CHECK(node.input_type(edge_pos) != DT_RESOURCE);
     const InferredShape* info;
     TF_RETURN_IF_ERROR(GetEdgeShape(shape_info, *input_edges[edge_pos], &info));
@@ -1795,31 +2038,31 @@ Status DistributedTPURewritePass::GetArgAndRetvalShapes(
       (*retval_shapes)[i].shape = it->second[i].shape;
     }
   } else if (node.num_outputs() > 0) {
-    return errors::InvalidArgument(
-        "Replicated TPU computation is missing InferredShape: ",
-        FormatNodeForError(node));
+    return absl::InvalidArgumentError(
+        absl::StrCat("Replicated TPU computation is missing InferredShape: ",
+                     FormatNodeForError(node)));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Verifies that all nodes have legal sharding.
-static Status ValidateCoreNumbers(const Graph& graph,
-                                  int num_cores_per_replica) {
+static absl::Status ValidateCoreNumbers(const Graph& graph,
+                                        int num_cores_per_replica) {
   for (Node* n : graph.nodes()) {
-    TF_ASSIGN_OR_RETURN(absl::optional<xla::OpSharding> sharding,
+    TF_ASSIGN_OR_RETURN(std::optional<xla::OpSharding> sharding,
                         ParseShardingFromDevice(*n, num_cores_per_replica,
                                                 /*add_metadata=*/true));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-static Status InferXlaShardingFromNeighbors(
+static absl::Status InferXlaShardingFromNeighbors(
     const Node& n, int num_cores_per_replica, FunctionLibraryRuntime* flr,
     CachedFunctionHandles* cached_function_handles,
-    absl::optional<NodeAndSharding>* output_node_and_sharding,
+    std::optional<NodeAndSharding>* output_node_and_sharding,
     bool* is_fast_mem) {
-  int64 core = -1;
-  absl::optional<NodeAndSharding> result;
+  int64_t core = -1;
+  std::optional<NodeAndSharding> result;
   // We assume the variable has been allocated on fast memory if any consuming
   // op has TPU_FAST_MEM_ATTR attribute. This is a protocol between runtime and
   // compiler.
@@ -1836,8 +2079,8 @@ static Status InferXlaShardingFromNeighbors(
     // The nodes deciding this arg's device assignment might be in
     // FunctionDef. Instantiate FunctionDefs associated with this node
     // and check nodes using this arg.
-    std::function<Status(const Edge* call_edge)> parse_sharding_from_function =
-        [&](const Edge* call_edge) {
+    std::function<absl::Status(const Edge* call_edge)>
+        parse_sharding_from_function = [&](const Edge* call_edge) {
           auto associated_functions = GetAssociatedFunctions(
               *call_edge->dst(), flr->GetFunctionLibraryDefinition());
           for (auto& associated_function : associated_functions) {
@@ -1867,12 +2110,12 @@ static Status InferXlaShardingFromNeighbors(
               }
             }
           }
-          return Status::OK();
+          return absl::OkStatus();
         };
     TF_RETURN_IF_ERROR(parse_sharding_from_function(edge));
   }
   *output_node_and_sharding = result;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool UseSpmdForXlaPartitioning(const Node* replicate_node) {
@@ -1886,7 +2129,7 @@ bool UseSpmdForXlaPartitioning(const Node* replicate_node) {
 }
 
 std::string FormatNodeAndShardingMsg(
-    const absl::optional<NodeAndSharding>& node_and_sharding) {
+    const std::optional<NodeAndSharding>& node_and_sharding) {
   DCHECK(node_and_sharding.has_value());
 
   xla::OpSharding sharding_no_metadata = node_and_sharding->sharding;
@@ -1901,7 +2144,7 @@ std::string FormatNodeAndShardingMsg(
                       " sharding '", escaped_sharding_str, "'");
 }
 
-Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
+absl::Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
     int num_cores_per_replica, const ParameterInfo& params_info,
     const DataTypeVector& arg_types,
     const std::vector<InferredShape>& arg_shapes,
@@ -1932,13 +2175,13 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
   for (const Edge* edge : replicate_node->out_edges()) {
     int num_partitioned_outputs = 0;
     for (const Edge* out_edge : edge->dst()->out_edges()) {
-      if (out_edge->dst()->type_string() == kTPUPartitionedOutput) {
+      if (_IsTPUPartitionedOutput(out_edge->dst())) {
         partitioned_output_nodes[edge->src_output()] = out_edge->dst();
         num_partitioned_outputs++;
       }
     }
     if (num_partitioned_outputs > 1) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           "More than one TPUPartitionedOutput per replciated output.");
     }
   }
@@ -1946,12 +2189,14 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
   // Verifies there are no missing arguments/return values.
   for (int i = 0; i < args.size(); ++i) {
     if (args[i] == nullptr) {
-      return errors::Internal("Missing function argument: ", i);
+      return absl::InternalError(
+          absl::StrCat("Missing function argument: ", i));
     }
   }
   for (int i = 0; i < retvals.size(); ++i) {
     if (retvals[i] == nullptr) {
-      return errors::Internal("Missing function return value: ", i);
+      return absl::InternalError(
+          absl::StrCat("Missing function return value: ", i));
     }
   }
 
@@ -1966,7 +2211,8 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
   CachedFunctionHandles cached_function_handles(flr);
   const bool use_spmd = (UseSpmdForXlaPartitioning(replicate_node) ||
                          replicate_inputs_outputs_by_default_for_xla_spmd_) &&
-                        allow_parameter_replication_for_spmd;
+                        allow_parameter_replication_for_spmd &&
+                        num_cores_per_replica > 1;
 
   // Offset _TPUReplicate non per replica argument indices by
   // (num_replicas - 1) * num_per_replica_args as _TPUReplicate nodes are
@@ -1979,8 +2225,8 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
       (params_info.NumReplicas() - 1) * params_info.NumPerReplicaArgs();
   for (int i = 0; i < args.size(); ++i) {
     const Node* n = args[i];
-    absl::optional<int64> assigned_core;
-    absl::optional<NodeAndSharding> node_and_sharding;
+    std::optional<int64_t> assigned_core;
+    std::optional<NodeAndSharding> node_and_sharding;
     bool is_fast_mem;
     TF_RETURN_IF_ERROR(InferXlaShardingFromNeighbors(
         *n, num_cores_per_replica, flr, &cached_function_handles,
@@ -1991,13 +2237,13 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
       Node* input_node;
       TF_RETURN_IF_ERROR(replicate_node->input_node(
           i + (is_per_replica_arg ? 0 : index_offset), &input_node));
-      if (input_node->type_string() == kTPUPartitionedInput) {
+      if (_IsTPUPartitionedInput(input_node)) {
         TF_ASSIGN_OR_RETURN(
-            absl::optional<xla::OpSharding> parsed_sharding,
+            std::optional<xla::OpSharding> parsed_sharding,
             GetShardingFromNodeDef(input_node->def(), /*add_metadata=*/true));
         if (!parsed_sharding.has_value())
-          return errors::InvalidArgument("Missing _XlaSharding attr from: ",
-                                         input_node->DebugString());
+          return absl::InvalidArgumentError(absl::StrCat(
+              "Missing _XlaSharding attr from: ", input_node->DebugString()));
         node_and_sharding = NodeAndSharding(input_node, *parsed_sharding);
         VLOG(1) << "Arg " << i << " parsed sharding information from "
                 << input_node->DebugString() << " : "
@@ -2011,7 +2257,7 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
           replicate_node->input_node(i + index_offset, &input_node));
       if (input_node->type_string() == kVarHandleOp) {
         TF_ASSIGN_OR_RETURN(
-            absl::optional<xla::OpSharding> parsed_sharding,
+            std::optional<xla::OpSharding> parsed_sharding,
             GetShardingFromNodeDef(input_node->def(), /*add_metadata=*/true));
         if (parsed_sharding.has_value()) {
           node_and_sharding = NodeAndSharding(input_node, *parsed_sharding);
@@ -2023,10 +2269,10 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
     }
 
     if (node_and_sharding.has_value() && enable_automatic_model_parallelism_) {
-      return tensorflow::errors::InvalidArgument(
+      return absl::InvalidArgumentError(absl::StrCat(
           "Specifying manual sharding is not allowed when automatic "
           "model parallelism is enabled.",
-          node_and_sharding->sharding.DebugString());
+          node_and_sharding->sharding.DebugString()));
     }
 
     if (!node_and_sharding.has_value()) {
@@ -2034,7 +2280,8 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
           (params_info.IsVariableArg(i) || params_info.IsBroadcastArg(i) ||
            ((params_info.IsPerReplicaArg(i) ||
              params_info.IsDistributedArg(i)) &&
-            arg_types[i] != DT_RESOURCE))) {
+            arg_types[i] != DT_RESOURCE) ||
+           params_info.IsConstantArg(i))) {
         // Use replication for host variables or non-variable per-replica
         // inputs.
         node_and_sharding = NodeAndSharding(/*node=*/nullptr,
@@ -2059,13 +2306,17 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
       *node_and_sharding->sharding.add_metadata() =
           CreateOpMetadataFromNode(*replicate_node);
     } else if (node_and_sharding->sharding.type() == xla::OpSharding::MAXIMAL) {
-      assigned_core = node_and_sharding->sharding.tile_assignment_devices(0);
+      if (use_spmd) {
+        node_and_sharding->sharding = xla::sharding_builder::Replicate();
+      } else {
+        assigned_core = node_and_sharding->sharding.tile_assignment_devices(0);
+      }
     } else if (node_and_sharding->sharding.type() !=
                    xla::OpSharding::REPLICATED &&
                node_and_sharding->sharding.type() != xla::OpSharding::OTHER) {
-      return tensorflow::errors::InvalidArgument(
+      return absl::InvalidArgumentError(absl::StrCat(
           "Unsupported argument sharding (for arg ", n->DebugString(),
-          "): ", node_and_sharding->sharding.DebugString());
+          "): ", node_and_sharding->sharding.DebugString()));
     }
     if (assigned_core.has_value()) {
       args_device_selector.ReportDeviceAssigned(*assigned_core, i);
@@ -2074,7 +2325,12 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
               << FormatNodeAndShardingMsg(node_and_sharding);
       args[i]->set_assigned_device_name(CoreDeviceLabel(*assigned_core));
     } else if (node_and_sharding->sharding.type() == xla::OpSharding::OTHER) {
-      for (int64 core : node_and_sharding->sharding.tile_assignment_devices()) {
+      for (int64_t core :
+           node_and_sharding->sharding.tile_assignment_devices()) {
+        TF_RET_CHECK(core >= 0 && core < num_cores_per_replica)
+            << "core " << core << " should be between [0, "
+            << num_cores_per_replica << "). sharding is "
+            << node_and_sharding->sharding.DebugString();
         args_device_selector.ReportDeviceAssigned(core, i);
       }
       VLOG(3) << "Assigning argument " << i << " (" << n->DebugString()
@@ -2085,7 +2341,7 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
     } else {
       DCHECK_EQ(node_and_sharding->sharding.type(),
                 xla::OpSharding::REPLICATED);
-      for (int64 core = 0; core < num_cores_per_replica; ++core) {
+      for (int64_t core = 0; core < num_cores_per_replica; ++core) {
         args_device_selector.ReportDeviceAssigned(core, i);
       }
       VLOG(3) << "Assigning argument " << i << " (" << n->DebugString()
@@ -2113,11 +2369,11 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
     TF_RETURN_IF_ERROR(retvals[i]->input_edge(0, &edge));
 
     TF_ASSIGN_OR_RETURN(
-        absl::optional<xla::OpSharding> edge_sharding,
+        std::optional<xla::OpSharding> edge_sharding,
         ParseShardingFromEdgeSource(*edge, num_cores_per_replica,
                                     /*add_metadata=*/true));
 
-    absl::optional<NodeAndSharding> node_and_sharding;
+    std::optional<NodeAndSharding> node_and_sharding;
     if (edge_sharding.has_value()) {
       node_and_sharding.emplace(NodeAndSharding(edge->src(), *edge_sharding));
     }
@@ -2125,7 +2381,7 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
     if (partitioned_output_nodes.contains(i)) {
       Node* output_node = partitioned_output_nodes[i];
       TF_ASSIGN_OR_RETURN(
-          absl::optional<xla::OpSharding> parsed_sharding,
+          std::optional<xla::OpSharding> parsed_sharding,
           GetShardingFromNodeDef(output_node->def(), /*add_metadata=*/true));
       if (parsed_sharding.has_value()) {
         node_and_sharding = NodeAndSharding(output_node, *parsed_sharding);
@@ -2134,26 +2390,31 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
                 << parsed_sharding->DebugString();
       }
     }
-    absl::optional<int64> assigned_core;
+    std::optional<int64_t> assigned_core;
     if (node_and_sharding.has_value()) {
       if (enable_automatic_model_parallelism_) {
-        return tensorflow::errors::InvalidArgument(
+        return absl::InvalidArgumentError(absl::StrCat(
             "Specifying manual sharding is not allowed when automatic "
             "model parallelism is enabled.",
-            node_and_sharding->sharding.DebugString());
+            node_and_sharding->sharding.DebugString()));
       }
 
       if (node_and_sharding->sharding.type() == xla::OpSharding::MAXIMAL) {
-        assigned_core = node_and_sharding->sharding.tile_assignment_devices(0);
-        TF_RETURN_IF_ERROR(
-            ValidateCoreNumber(*assigned_core, num_cores_per_replica));
+        if (use_spmd) {
+          node_and_sharding->sharding = xla::sharding_builder::Replicate();
+        } else {
+          assigned_core =
+              node_and_sharding->sharding.tile_assignment_devices(0);
+          TF_RETURN_IF_ERROR(
+              ValidateCoreNumber(*assigned_core, num_cores_per_replica));
+        }
       } else if (node_and_sharding->sharding.type() !=
                      xla::OpSharding::REPLICATED &&
                  node_and_sharding->sharding.type() != xla::OpSharding::OTHER) {
-        return tensorflow::errors::InvalidArgument(
+        return absl::InvalidArgumentError(absl::StrCat(
             "Unsupported argument sharding for retval ",
             retvals[i]->DebugString(), " edge=", edge->DebugString(), ": ",
-            node_and_sharding->sharding.DebugString());
+            node_and_sharding->sharding.DebugString()));
       }
     } else {
       if (use_spmd) {
@@ -2172,14 +2433,19 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
       *node_and_sharding->sharding.add_metadata() =
           CreateOpMetadataFromNode(*replicate_node);
     }
-    if (assigned_core.has_value()) {
+    if (assigned_core.has_value() && !use_spmd) {
       retvals[i]->set_assigned_device_name(CoreDeviceLabel(*assigned_core));
       retvals_device_selector.ReportDeviceAssigned(*assigned_core, i);
       VLOG(3) << "Assigning return value " << i << " ("
               << retvals[i]->DebugString() << ") to core " << *assigned_core
               << FormatNodeAndShardingMsg(node_and_sharding);
     } else if (node_and_sharding->sharding.type() == xla::OpSharding::OTHER) {
-      for (int64 core : node_and_sharding->sharding.tile_assignment_devices()) {
+      for (int64_t core :
+           node_and_sharding->sharding.tile_assignment_devices()) {
+        TF_RET_CHECK(core >= 0 && core < num_cores_per_replica)
+            << "core " << core << " should be between [0, "
+            << num_cores_per_replica << "). sharding is "
+            << node_and_sharding->sharding.DebugString();
         retvals_device_selector.ReportDeviceAssigned(core, i);
       }
       VLOG(3) << "Assigning return value " << i << " ("
@@ -2188,9 +2454,10 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
                      node_and_sharding->sharding.tile_assignment_devices(), ",")
               << " " << FormatNodeAndShardingMsg(node_and_sharding);
     } else {
-      DCHECK_EQ(node_and_sharding->sharding.type(),
-                xla::OpSharding::REPLICATED);
-      for (int64 core = 0; core < num_cores_per_replica; ++core) {
+      if (use_spmd) {
+        node_and_sharding->sharding = xla::sharding_builder::Replicate();
+      }
+      for (int64_t core = 0; core < num_cores_per_replica; ++core) {
         retvals_device_selector.ReportDeviceAssigned(core, i);
       }
       VLOG(3) << "Assigning return value " << i << " ("
@@ -2209,21 +2476,16 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
        absl::c_any_of(*retval_sharding, [](const xla::OpSharding& s) {
          return s.type() == xla::OpSharding::MAXIMAL;
        }))) {
-    LOG(WARNING) << "XLA SPMD only supports cases where all inputs/outputs "
-                    "exist on every partition (sharded or replicated). Fall "
-                    "back to MPMD.";
-    return AssignArgsAndRetvalsToCores(
-        num_cores_per_replica, params_info, arg_types, arg_shapes, retval_types,
-        retval_shapes, graph, replicate_node, flr,
-        /*allow_parameter_replication_for_spmd=*/false, arg_sharding,
-        arg_fast_mem, retval_sharding, arg_names);
+    return absl::InvalidArgumentError(
+        "XLA SPMD only supports cases where all inputs/outputs "
+        "exist on every partition (sharded or replicated).");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Builds Shape nodes that compute the shapes of arguments whose shapes are not
 // statically known.
-/* static */ Status DistributedTPURewritePass::BuildDynamicShapeNodes(
+/* static */ absl::Status DistributedTPURewritePass::BuildDynamicShapeNodes(
     const Node& replicate_node, const std::vector<InferredShape>& arg_shapes,
     const ParameterInfo& params_info, const std::vector<Node*>& variable_reads,
     Graph* graph, std::vector<Node*>* dynamic_shape_nodes) {
@@ -2246,57 +2508,85 @@ Status DistributedTPURewritePass::AssignArgsAndRetvalsToCores(
                                           ? &arg_shapes[i].shape
                                           : &arg_shapes[i].handle_shape;
     if (!shape->IsFullyDefined()) {
+      NodeDef def;
       Node* src;
       int src_output;
-      if (params_info.IsPerReplicaArg(i)) {
-        TF_RET_CHECK(i < replicate_input_edges.size());
-        // All replicas must have the same input shapes. Uses the shape of the
-        // inputs from the first replica.
-        src = replicate_input_edges[i]->src();
-        src_output = replicate_input_edges[i]->src_output();
-      } else if (params_info.IsDistributedArg(i) ||
-                 params_info.IsBroadcastArg(i)) {
-        int64 input_num =
-            params_info.NumPerReplicaArgs() * params_info.NumReplicas() + i -
-            params_info.NumPerReplicaArgs();
-        TF_RET_CHECK(0 <= input_num &&
-                     input_num < replicate_input_edges.size());
-        src = replicate_input_edges[input_num]->src();
-        src_output = replicate_input_edges[input_num]->src_output();
-      } else {
-        int64 var_num = i - params_info.NumPerReplicaArgs() -
-                        params_info.NumDistributedArgs() -
-                        params_info.NumBroadcastArgs();
+      std::vector<Node*> control_inputs;
+
+      if (params_info.IsVariableArg(i)) {
+        int64_t var_num = i - params_info.NumPerReplicaArgs() -
+                          params_info.NumDistributedArgs() -
+                          params_info.NumBroadcastArgs();
         TF_RET_CHECK(0 <= var_num && var_num < variable_reads.size());
-        src = variable_reads[var_num];
-        src_output = 0;
+        Node* read = variable_reads[var_num];
+
+        DCHECK_EQ(read->type_string(), "ReadVariableOp");
+
+        for (const Edge* edge : read->in_edges()) {
+          if (edge->IsControlEdge()) {
+            control_inputs.push_back(edge->src());
+          }
+        }
+
+        const Edge* variable_input = nullptr;
+        TF_RETURN_IF_ERROR(read->input_edge(/*idx=*/0, &variable_input));
+        src = variable_input->src();
+        src_output = variable_input->src_output();
+
+        def.set_name(
+            graph->NewName(absl::StrCat(src->name(), "/variable_shape")));
+        def.set_op("VariableShape");
+      } else {
+        if (params_info.IsPerReplicaArg(i)) {
+          TF_RET_CHECK(i < replicate_input_edges.size());
+          // All replicas must have the same input shapes. Uses the shape of the
+          // inputs from the first replica.
+          src = replicate_input_edges[i]->src();
+          src_output = replicate_input_edges[i]->src_output();
+        } else {
+          DCHECK(params_info.IsDistributedArg(i) ||
+                 params_info.IsBroadcastArg(i));
+          int64_t input_num =
+              params_info.NumPerReplicaArgs() * params_info.NumReplicas() + i -
+              params_info.NumPerReplicaArgs();
+          TF_RET_CHECK(0 <= input_num &&
+                       input_num < replicate_input_edges.size());
+          src = replicate_input_edges[input_num]->src();
+          src_output = replicate_input_edges[input_num]->src_output();
+        }
+
+        def.set_name(graph->NewName(absl::StrCat(src->name(), "/shape")));
+        def.set_op("Shape");
+        AddNodeAttr("T", src->output_type(src_output), &def);
       }
 
-      NodeDef def;
-      def.set_name(graph->NewName(strings::StrCat(src->name(), "/shape")));
-      def.set_op("Shape");
       def.set_device(src->assigned_device_name());
-      AddNodeAttr("T", src->output_type(src_output), &def);
       AddNodeAttr("out_type", DT_INT64, &def);
       MergeDebugInfo(NodeDebugInfo(replicate_node.def()), &def);
 
-      Status status;
-      Node* shape_node = graph->AddNode(def, &status);
-      if (!status.ok()) return status;
+      TF_ASSIGN_OR_RETURN(Node * shape_node, graph->AddNode(def));
       dynamic_shape_nodes->push_back(shape_node);
 
       shape_node->set_assigned_device_name(src->assigned_device_name());
       graph->AddEdge(src, src_output, shape_node, 0);
+      for (Node* control_input : control_inputs) {
+        graph->AddControlEdge(control_input, shape_node);
+      }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 namespace {
 
 bool XlaBroadcastTypeSupported(const DataType dtype) {
-  return (dtype == DT_FLOAT || dtype == DT_BFLOAT16 || dtype == DT_INT32 ||
-          dtype == DT_BOOL);
+  // Supported data types: types that map to XLA types that are <= 4 bytes.
+  xla::PrimitiveType xla_type;
+  auto status_or_type = DataTypeToPrimitiveType(dtype, &xla_type);
+  if (!status_or_type.ok()) {
+    return false;
+  }
+  return xla::ShapeUtil::ByteSizeOfPrimitiveType(xla_type) <= 4;
 }
 
 bool XlaBroadcastKindSupported(
@@ -2313,56 +2603,55 @@ bool XlaBroadcastKindSupported(
 }
 
 bool EnableXlaParamBroadcast(
-    bool enable_xla_param_broadcast,
+    bool enable_xla_param_broadcast, bool mpmd,
     const DistributedTPURewritePass::ParameterInfo& params_info, int param_num,
-    DataType dtype, int num_cores_per_replica) {
+    DataType dtype) {
   // Conditions necessary to use XLA collectives for arg broadcast:
   // 1. Globally enabled via enable_xla_param_broadcast.
   // 2. DataType must be supported.
   // 3. Parameter must be a variable, and not distributed or broadcasted.
-  // 4. Model parallelism is not currently supported.
+  // 4. For multi-core models (num_cores_per_replica > 1), must use SPMD.
   return enable_xla_param_broadcast && XlaBroadcastTypeSupported(dtype) &&
-         XlaBroadcastKindSupported(params_info, param_num) &&
-         (num_cores_per_replica == 1);
+         XlaBroadcastKindSupported(params_info, param_num) && !mpmd;
 }
 
 }  // namespace
 
 // Builds a TPUCompile node that compiles the bodies of the function call
 // `nodes`.
-Status DistributedTPURewritePass::BuildCompileNode(
+absl::Status DistributedTPURewritePass::BuildCompileNode(
     const Node* replicate_node, const NameAttrList& function,
-    uint64 library_fingerprint, const ParameterInfo& params_info,
+    uint64_t library_fingerprint, const ParameterInfo& params_info,
     const std::vector<InferredShape>& arg_shapes,
     const DataTypeVector& arg_types,
     const std::vector<Node*>& guaranteed_constant_nodes,
-    const string& session_handle,
+    const std::string& session_handle,
     const std::vector<xla::OpSharding>& arg_sharding,
     const std::vector<bool>& arg_fast_mem,
     const std::vector<std::string>& arg_names,
     const std::vector<xla::OpSharding>& retval_sharding,
-    int num_cores_per_replica, const string& compile_device,
+    int num_cores_per_replica, const std::string& compile_device,
     const xla::DeviceAssignment* xla_device_assignment,
     const std::vector<Node*>& dynamic_shape_nodes, Graph* graph,
-    Node** compile_node, int64 autotuner_thresh, int num_tasks) {
+    Node** compile_node, int64_t autotuner_thresh) {
   VLOG(1) << "BuildCompileNode";
 
   tpu::TPUCompileMetadataProto proto;
+  if (replicate_node) {
+    std::string str;
+    TF_RETURN_IF_ERROR(GetNodeAttr(replicate_node->attrs(),
+                                   "tpu_compile_options_proto", &str));
+    TF_RET_CHECK(proto.mutable_compile_options()->ParseFromString(str));
+  }
   proto.set_num_replicas(params_info.NumReplicas());
   proto.set_num_cores_per_replica(num_cores_per_replica);
   proto.set_function_library_fingerprint(library_fingerprint);
   proto.set_enable_automatic_model_parallelism(
       enable_cross_replica_sharding_mirrored_variables_);
   const bool use_spmd =
-      UseSpmdForXlaPartitioning(replicate_node) && allow_xla_spmd_partition_ &&
-      !absl::c_any_of(arg_sharding,
-                      [](const xla::OpSharding& s) {
-                        return s.type() == xla::OpSharding::MAXIMAL;
-                      }) &&
-      !absl::c_any_of(retval_sharding, [](const xla::OpSharding& s) {
-        return s.type() == xla::OpSharding::MAXIMAL;
-      });
+      UseSpmdForXlaPartitioning(replicate_node) && allow_xla_spmd_partition_;
   proto.set_use_spmd_for_xla_partitioning(use_spmd);
+  const bool mpmd = (num_cores_per_replica > 1) && !use_spmd;
 
   // Get and fill padding map.
   if (replicate_node != nullptr) {
@@ -2372,8 +2661,7 @@ Status DistributedTPURewritePass::BuildCompileNode(
   }
 
   if (xla_device_assignment != nullptr) {
-    TF_RETURN_IF_ERROR(
-        xla_device_assignment->Serialize(proto.mutable_device_assignment()));
+    xla_device_assignment->Serialize(proto.mutable_device_assignment());
   }
 
   const int num_args = arg_types.size();
@@ -2409,13 +2697,11 @@ Status DistributedTPURewritePass::BuildCompileNode(
       }
     }
 
-    // Use XLA collective primitives to distribute variables to all replicas,
-    // for multi-host systems.
+    // Use XLA collective primitives to distribute variables to all replicas.
     arg->set_requires_xla_broadcast(
-        num_tasks > 1 &&
-        EnableXlaParamBroadcast(enable_xla_param_broadcast_, params_info, i,
-                                arg_shape.handle_type /*arg.dtype?*/,
-                                num_cores_per_replica));
+        params_info.NumReplicas() > 1 &&
+        EnableXlaParamBroadcast(enable_xla_param_broadcast_, mpmd, params_info,
+                                i, arg_shape.handle_type));
 
     // As long as the argument is not a per-replica one, it should have the same
     // value for all replicas. For clarity, we keep the (redundant) checks for
@@ -2426,7 +2712,9 @@ Status DistributedTPURewritePass::BuildCompileNode(
         (params_info.IsVariableArg(i) || params_info.IsBroadcastArg(i) ||
          params_info.IsConstantArg(i)));
     if (params_info.mirrored_variable_indices().count(i) > 0) {
-      CHECK_EQ(type, DT_RESOURCE);
+      TF_RET_CHECK(type == DT_RESOURCE)
+          << "Arg type: " << type << " name: " << arg->name()
+          << " shape: " << arg->shape().DebugString();
       arg->set_is_same_data_across_replicas(true);
       // 64-bit type is not shardable by XLA:TPU yet.
       bool sharding_enabled = (arg_shape.handle_type != DT_COMPLEX64 &&
@@ -2453,7 +2741,7 @@ Status DistributedTPURewritePass::BuildCompileNode(
   }
   proto.set_xla_fusion_autotuner_thresh(autotuner_thresh);
 
-  string metadata;
+  std::string metadata;
   proto.SerializeToString(&metadata);
 
   NodeDef def;
@@ -2471,9 +2759,7 @@ Status DistributedTPURewritePass::BuildCompileNode(
   AddNodeAttr("metadata", metadata, &def);
   AddNodeAttr("Tguaranteed_constants", constant_arg_types, &def);
 
-  Status status;
-  *compile_node = graph->AddNode(def, &status);
-  TF_RETURN_IF_ERROR(status);
+  TF_ASSIGN_OR_RETURN(*compile_node, graph->AddNode(def));
 
   (*compile_node)->set_assigned_device_name(compile_device);
 
@@ -2485,11 +2771,11 @@ Status DistributedTPURewritePass::BuildCompileNode(
     graph->AddEdge(guaranteed_constant_nodes[i], 0, *compile_node,
                    dynamic_shape_nodes.size() + i);
   }
-  VLOG(1) << "BuildCompileNode(): " << status;
-  return status;
+  VLOG(1) << "BuildCompileNode()";
+  return absl::OkStatus();
 }
 
-Status DistributedTPURewritePass::FindGuaranteedConstantInputs(
+absl::Status DistributedTPURewritePass::FindGuaranteedConstantInputs(
     const Node& node, const NameRangeMap& input_range_map,
     std::vector<Node*>* guaranteed_constants) {
   std::vector<const Edge*> input_edges;
@@ -2499,10 +2785,10 @@ Status DistributedTPURewritePass::FindGuaranteedConstantInputs(
   for (int i = variables_limits.first; i < variables_limits.second; ++i) {
     guaranteed_constants->push_back(input_edges[i]->src());
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status DistributedTPURewritePass::FindVariableInputs(
+absl::Status DistributedTPURewritePass::FindVariableInputs(
     const Node& node, const NameRangeMap& input_range_map,
     std::vector<VariableInput>* variables) {
   std::vector<const Edge*> input_edges;
@@ -2541,26 +2827,27 @@ Status DistributedTPURewritePass::FindVariableInputs(
       std::vector<DataType> dtypes;
       TF_RETURN_IF_ERROR(GetNodeAttr(node->attrs(), "_handle_dtypes", &dtypes));
       if (dtypes.empty()) {
-        return errors::Internal(
+        return absl::InternalError(absl::StrCat(
             "_Arg node with resource output must have non-empty _handle_dtypes "
             "attribute: ",
-            node->DebugString());
+            node->DebugString()));
       }
       variables->push_back(VariableInput{
           input_edges[i]->src(), input_edges[i]->src_output(), dtypes[0]});
     } else {
-      return errors::Internal(
+      return absl::InternalError(absl::StrCat(
           "Cannot handle variable input with node type other than VarHandleOp "
           "and _Arg: ",
-          node->DebugString());
+          node->DebugString()));
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Builds a NoOp node, used for building control dependencies.
-static Status BuildNoopNode(const Node& source, StringPiece name,
-                            const string& device, Graph* graph, Node** node) {
+static absl::Status BuildNoopNode(const Node& source, absl::string_view name,
+                                  const std::string& device, Graph* graph,
+                                  Node** node) {
   NodeDefBuilder builder(name, "NoOp", NodeDebugInfo(source));
   if (!device.empty()) {
     builder.Device(device);
@@ -2568,15 +2855,14 @@ static Status BuildNoopNode(const Node& source, StringPiece name,
   NodeDef def;
   TF_RETURN_IF_ERROR(builder.Finalize(&def));
 
-  Status status;
-  *node = graph->AddNode(def, &status);
+  TF_ASSIGN_OR_RETURN(*node, graph->AddNode(def));
   if (!device.empty()) {
     (*node)->set_assigned_device_name(device);
   }
-  return status;
+  return absl::OkStatus();
 }
 
-Status DistributedTPURewritePass::ConnectHostComputeNodes(
+absl::Status DistributedTPURewritePass::ConnectHostComputeNodes(
     Node* compile_node, Node* key_placeholder_node, Graph* graph) {
   // First find all the downstream nodes of the key placeholder node, since we
   // want to delete the connecting edges from key_placeholder_node which would
@@ -2592,16 +2878,17 @@ Status DistributedTPURewritePass::ConnectHostComputeNodes(
       TF_RETURN_IF_ERROR(node->input_edge(i, &e));
       if (e->src() == key_placeholder_node) {
         if (input_index != -1) {
-          return errors::Internal(
+          return absl::InternalError(absl::StrCat(
               "Node ", node->name(),
-              " has multiple input edges from key placeholder node");
+              " has multiple input edges from key placeholder node"));
         }
         input_index = e->dst_input();
       }
     }
     if (input_index == -1) {
-      return errors::Internal("Node ", node->name(),
-                              " has no input edge from key placeholder node");
+      return absl::InternalError(
+          absl::StrCat("Node ", node->name(),
+                       " has no input edge from key placeholder node"));
     }
     const Edge* key_edge;
     TF_RETURN_IF_ERROR(node->input_edge(input_index, &key_edge));
@@ -2609,16 +2896,16 @@ Status DistributedTPURewritePass::ConnectHostComputeNodes(
     graph->AddEdge(compile_node, 1, node, input_index);
   }
   graph->RemoveNode(key_placeholder_node);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status DistributedTPURewritePass::BuildVariableReads(
+absl::Status DistributedTPURewritePass::BuildVariableReads(
     absl::Span<const VariableInput> variables, Node* control_predecessor,
     Graph* graph, std::vector<Node*>* variable_reads) {
   variable_reads->resize(variables.size());
   for (int i = 0; i < variables.size(); ++i) {
-    string name =
-        graph->NewName(strings::StrCat(variables[i].node->name(), "/read"));
+    std::string name =
+        graph->NewName(absl::StrCat(variables[i].node->name(), "/read"));
     NodeDefBuilder builder(name, "ReadVariableOp",
                            NodeDebugInfo(*variables[i].node));
 
@@ -2628,10 +2915,8 @@ Status DistributedTPURewritePass::BuildVariableReads(
     NodeDef def;
     TF_RETURN_IF_ERROR(builder.Finalize(&def));
 
-    Status status;
-    Node* read_node;
-    (*variable_reads)[i] = read_node = graph->AddNode(def, &status);
-    if (!status.ok()) return status;
+    TF_ASSIGN_OR_RETURN(Node * read_node, graph->AddNode(def));
+    (*variable_reads)[i] = read_node;
 
     read_node->set_requested_device(variables[i].node->requested_device());
     read_node->set_assigned_device_name(
@@ -2640,7 +2925,7 @@ Status DistributedTPURewritePass::BuildVariableReads(
 
     graph->AddControlEdge(control_predecessor, read_node);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool DistributedTPURewritePass::ContainsResourceWriteOp(
@@ -2652,7 +2937,7 @@ bool DistributedTPURewritePass::ContainsResourceWriteOp(
       return true;
     }
   }
-  for (const string& func_name : fld.ListFunctionNames()) {
+  for (const std::string& func_name : fld.ListFunctionNames()) {
     const FunctionDef* func_def = fld.Find(func_name);
     for (const NodeDef& n : func_def->node_def()) {
       const XlaResourceOpInfo* op_info = GetResourceOpInfoForOp(n.op());
@@ -2665,7 +2950,7 @@ bool DistributedTPURewritePass::ContainsResourceWriteOp(
   return false;
 }
 
-Status DistributedTPURewritePass::BuildVariableWrites(
+absl::Status DistributedTPURewritePass::BuildVariableWrites(
     absl::Span<const VariableInput> variables, Node* control_successor,
     absl::Span<const VariableWrite> variable_writes, Graph* graph) {
   CHECK_EQ(variables.size(), variable_writes.size());
@@ -2673,9 +2958,9 @@ Status DistributedTPURewritePass::BuildVariableWrites(
     const VariableWrite& write = variable_writes[i];
     NodeDebugInfo debug_info(*variables[i].node);
 
-    auto name = [&](string suffix) {
+    auto name = [&](std::string suffix) {
       return graph->NewName(
-          strings::StrCat(variables[i].node->name(), "/", suffix));
+          absl::StrCat(variables[i].node->name(), "/", suffix));
     };
 
     Node* write_node;
@@ -2714,58 +2999,54 @@ Status DistributedTPURewritePass::BuildVariableWrites(
     graph->AddEdge(write.predicate, write.predicate_output, cb.pred(), 0);
     graph->AddEdge(write.value, write.value_output, switch_val, 0);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 namespace {
 
+// Computes the shape of the sharded tensor and modifies in place.
+absl::Status ComputeShardedArgShapes(TensorShape* shape,
+                                     const xla::OpSharding& sharding) {
+  if (sharding.type() != xla::OpSharding::OTHER) {
+    return absl::OkStatus();
+  }
+  if (!shape->IsFullyDefined()) {
+    return absl::InternalError(
+        "Arg shape must be fully defined before sharded shape inference.");
+  }
+  int sharded_rank = sharding.tile_assignment_dimensions_size();
+  if (sharding.replicate_on_last_tile_dim()) {
+    sharded_rank--;
+  }
+  for (int dim_idx = 0; dim_idx < sharded_rank; ++dim_idx) {
+    auto sharded_dim = tensorflow::MathUtil::CeilOfRatio<int64_t>(
+        shape->dim_size(dim_idx), sharding.tile_assignment_dimensions(dim_idx));
+    shape->set_dim(dim_idx, sharded_dim);
+  }
+  if (sharded_rank != shape->dims()) {
+    LOG(WARNING) << "Rank of sharded arg should match sharding spec.  Rank: "
+                 << sharded_rank << ", tiled shape: " << shape->DebugString()
+                 << ", sharding: " << sharding.DebugString();
+  }
+
+  return absl::OkStatus();
+}
+
 // Creates nodes for zero-initialized dummy arguments for TPUExecute nodes.
-xla::StatusOr<Node*> MaybeCreatePerHostDummyArgs(
-    const std::vector<InferredShape>& arg_shapes, const string& host_cpu_device,
-    const DistributedTPURewritePass::ParameterInfo& params_info, Node* var_read,
-    int var_num, int num_cores_per_replica, Graph* graph) {
-  Status status;
-
-  if (num_cores_per_replica > 1) {
-    LOG_FIRST_N(WARNING, 1) << "XLA parameter broadcast is not supported for "
-                               "model-partitioned parameters. Falling back to "
-                               "non-broadcast mode for all parameters.";
-    return var_read;
-  }
-
-  DataType dtype;
-  TF_RETURN_IF_ERROR(GetNodeAttr(var_read->def(), "dtype", &dtype));
-
-  DeviceNameUtils::ParsedName parsed_device;
-  TF_RET_CHECK(DeviceNameUtils::ParseFullName(host_cpu_device, &parsed_device));
-  TF_RET_CHECK(parsed_device.has_task);
-
-  // Task 0 behaves as the primary task, where variables are assigned. Use the
-  // variable reads as arguments to TPUExecute.
-  // For other tasks, create dummies if the graph meets preconditions.
-  int64 orig_arg_num = var_num + params_info.NumPerReplicaArgs() +
-                       params_info.NumDistributedArgs() +
-                       params_info.NumBroadcastArgs();
-  if (parsed_device.task == 0 ||
-      !EnableXlaParamBroadcast(/*enable_xla_param_broadcast=*/true, params_info,
-                               orig_arg_num, dtype, num_cores_per_replica)) {
-    return var_read;
-  }
-
-  auto raw_var_shape = arg_shapes[orig_arg_num];
-  TensorShape var_shape;
-  if (!raw_var_shape.handle_shape.AsTensorShape(&var_shape) &&
-      !raw_var_shape.shape.AsTensorShape(&var_shape)) {
-    return Status(error::FAILED_PRECONDITION, "Failed to read arg shape.");
-  }
+absl::StatusOr<Node*> CreateTpuExecuteDummyArg(
+    const TensorShape& var_shape, const DataType& dtype,
+    const std::string& host_cpu_device, Node* var_read, int replica_id,
+    Graph* graph) {
+  absl::Status status;
 
   // Const - shape_as_tensor
-  const std::string name_prefix = strings::StrCat(
-      var_read->name(), absl::StrFormat("/dummy_%d", parsed_device.task));
+  const std::string name_prefix =
+      absl::StrCat(var_read->name(), absl::StrFormat("/dummy_%d", replica_id));
   NodeDef shape_tensor_def;
   shape_tensor_def.set_op("Const");
   shape_tensor_def.set_name(graph->NewName(
-      strings::StrCat(name_prefix, "/Initializer/zeros/shape_as_tensor")));
+      absl::StrCat(name_prefix, "/Initializer/zeros/shape_as_tensor")));
+  shape_tensor_def.set_device(host_cpu_device);
   AddNodeAttr("dtype", DT_INT32, &shape_tensor_def);
   TensorProto tensorshape_proto;
   tensorshape_proto.set_dtype(DT_INT32);
@@ -2775,49 +3056,110 @@ xla::StatusOr<Node*> MaybeCreatePerHostDummyArgs(
   TensorShape shape_shape({var_shape.dims()});
   shape_shape.AsProto(tensorshape_proto.mutable_tensor_shape());
   AddNodeAttr("value", tensorshape_proto, &shape_tensor_def);
-  Node* shape_as_tensor_node = graph->AddNode(shape_tensor_def, &status);
-  TF_RETURN_IF_ERROR(status);
+  TF_ASSIGN_OR_RETURN(Node * shape_as_tensor_node,
+                      graph->AddNode(shape_tensor_def));
 
   // Const - initializer value
   NodeDef init_val_def;
   init_val_def.set_op("Const");
   init_val_def.set_name(graph->NewName(
-      strings::StrCat(name_prefix, "/Initializer/zeros/const_val")));
+      absl::StrCat(name_prefix, "/Initializer/zeros/const_val")));
+  init_val_def.set_device(host_cpu_device);
   TensorProto tensor_proto;
   tensor_proto.set_dtype(dtype);
+  const absl::flat_hash_set<DataType> kSupportedIntTypes = {
+      DT_INT32, DT_INT16, DT_UINT16, DT_INT8, DT_UINT8, DT_QINT8, DT_QUINT8};
   if (dtype == DT_FLOAT) {
     tensor_proto.add_float_val(0.0f);
-  } else if (dtype == DT_BFLOAT16) {
-    tensor_proto.add_half_val(0);
-  } else if (dtype == DT_INT32) {
+  } else if (kSupportedIntTypes.contains(dtype)) {
     tensor_proto.add_int_val(0);
+  } else if (dtype == DT_BFLOAT16 || dtype == DT_HALF) {
+    tensor_proto.add_half_val(0);
+  } else if (dtype == DT_UINT32) {
+    tensor_proto.add_uint32_val(0);
   } else if (dtype == DT_BOOL) {
     tensor_proto.add_bool_val(false);
   } else {
-    return errors::Internal(
-        "Unable to create zero-init dummy arg tensor for type ", dtype);
+    return absl::InternalError(absl::StrCat(
+        "Unable to create zero-init dummy arg tensor for variable ",
+        var_read->name(), " of type ", dtype));
   }
   TensorShape scalar_shape({});
   scalar_shape.AsProto(tensor_proto.mutable_tensor_shape());
   AddNodeAttr("value", tensor_proto, &init_val_def);
   AddNodeAttr("dtype", dtype, &init_val_def);
-  Node* init_val_node = graph->AddNode(init_val_def, &status);
-  TF_RETURN_IF_ERROR(status);
+  TF_ASSIGN_OR_RETURN(Node * init_val_node, graph->AddNode(init_val_def));
 
   // Fill node
   NodeDef fill_def;
   fill_def.set_op("Fill");
   fill_def.set_device(host_cpu_device);
   fill_def.set_name(
-      graph->NewName(strings::StrCat(name_prefix, "/Initializer/zeros")));
+      graph->NewName(absl::StrCat(name_prefix, "/Initializer/zeros")));
   AddNodeAttr("T", dtype, &fill_def);
   AddNodeAttr("index_type", DT_INT32, &fill_def);
-  Node* fill_node = graph->AddNode(fill_def, &status);
-  TF_RETURN_IF_ERROR(status);
+  TF_ASSIGN_OR_RETURN(Node * fill_node, graph->AddNode(fill_def));
   graph->AddEdge(shape_as_tensor_node, 0, fill_node, 0);
   graph->AddEdge(init_val_node, 0, fill_node, 1);
 
   return fill_node;
+}
+
+// Creates dummy inputs for partitioned variables that are using XLA broadcast
+// for inputs.
+absl::Status CreatePartitionedDummyVarArgs(
+    const xla::OpSharding& sharding, const int num_replicas,
+    const int replica_id, const InferredShape& raw_shape, Node* orig_var_read,
+    const int orig_arg_num, DataType dtype, const std::string& device,
+    Graph* graph, const std::vector<std::vector<std::string>>& tpu_device_names,
+    absl::btree_map<ShardedPerHostInputIndex, Node*>* per_host_index,
+    std::map<ShardedInputIndex, ShardedInputInfo>*
+        arg_index_to_sharded_input_map) {
+  ShardedInputIndex input_index{replica_id, orig_arg_num};
+  auto iter = arg_index_to_sharded_input_map->find(input_index);
+  if (iter != arg_index_to_sharded_input_map->end()) {
+    return absl::OkStatus();
+  }
+  const int repeat = sharding.replicate_on_last_tile_dim()
+                         ? *sharding.tile_assignment_dimensions().rbegin()
+                         : 1;
+  const int num_shards = sharding.tile_assignment_devices_size() / repeat;
+
+  TensorShape var_shape;
+  if (!raw_shape.handle_shape.AsTensorShape(&var_shape) &&
+      !raw_shape.shape.AsTensorShape(&var_shape)) {
+    return absl::FailedPreconditionError("Failed to read arg shape.");
+  }
+  TF_RETURN_IF_ERROR(ComputeShardedArgShapes(&var_shape, sharding));
+
+  for (int replica = 1; replica < num_replicas; ++replica) {
+    std::vector<NodeOut> sharded_inputs_list(
+        sharding.tile_assignment_devices_size());
+    for (int i = 0; i < num_shards; ++i) {
+      for (int j = 0; j < repeat; ++j) {
+        const int index = i * repeat + j;
+        const int core = sharding.tile_assignment_devices(index);
+        std::string host_device;
+        TF_RETURN_IF_ERROR(DeviceNameUtils::DeviceNameToCpuDeviceName(
+            tpu_device_names[replica][core], &host_device));
+        ShardedPerHostInputIndex idx{host_device, orig_arg_num};
+        if (!per_host_index->contains(idx)) {
+          TF_ASSIGN_OR_RETURN(
+              auto dummy_node,
+              CreateTpuExecuteDummyArg(var_shape, dtype, host_device,
+                                       orig_var_read, replica, graph));
+          (*per_host_index)[idx] = dummy_node;
+        }
+        sharded_inputs_list[core] = {(*per_host_index)[idx], /*index=*/0};
+      }
+    }
+    ShardedInputInfo sharded_input_info{nullptr,
+                                        std::move(sharded_inputs_list)};
+    (*arg_index_to_sharded_input_map)[{replica, orig_arg_num}] =
+        sharded_input_info;
+  }
+
+  return absl::OkStatus();
 }
 
 // Helper that creates an IdentityN node containing all of the variables
@@ -2841,15 +3183,15 @@ xla::StatusOr<Node*> MaybeCreatePerHostDummyArgs(
 //
 // Returns the node and its output index to be consumed by TPUExecute for the
 // requested variable index.
-xla::StatusOr<NodeOut> CreateOrGetPerHostVariableCopy(
-    const string& host_cpu_device, int64 var_index,
+absl::StatusOr<NodeOut> CreateOrGetPerHostVariableCopy(
+    const std::string& host_cpu_device, int64_t var_index,
     const std::vector<Node*>& variable_reads,
     const DistributedTPURewritePass::ParameterInfo& params_info,
     const std::vector<xla::OpSharding>& arg_shardings,
     const Node& replicate_node, const bool enable_xla_param_broadcast,
-    const int num_cores_per_replica,
+    const bool mpmd, const int num_cores_per_replica, int replica_id,
     const std::vector<InferredShape>& arg_shapes,
-    absl::flat_hash_map<string, std::vector<NodeOut>>* per_host_var_copies,
+    absl::flat_hash_map<std::string, std::vector<NodeOut>>* per_host_var_copies,
     Graph* graph) {
   auto it = per_host_var_copies->find(host_cpu_device);
   if (it != per_host_var_copies->end()) {
@@ -2861,11 +3203,11 @@ xla::StatusOr<NodeOut> CreateOrGetPerHostVariableCopy(
   std::vector<NodeOut> index_mapping;
   index_mapping.reserve(variable_reads.size());
   dtypes.reserve(variable_reads.size());
-  for (int64 i = 0; i < variable_reads.size(); ++i) {
+  for (int64_t i = 0; i < variable_reads.size(); ++i) {
     Node* read = variable_reads[i];
-    int64 orig_arg_num = i + params_info.NumPerReplicaArgs() +
-                         params_info.NumDistributedArgs() +
-                         params_info.NumBroadcastArgs();
+    int64_t orig_arg_num = i + params_info.NumPerReplicaArgs() +
+                           params_info.NumDistributedArgs() +
+                           params_info.NumBroadcastArgs();
     if (arg_shardings[orig_arg_num].type() != xla::OpSharding::OTHER) {
       // We haven't built the IdentityN node yet, so temporarily use nullptr.
       index_mapping.push_back(
@@ -2884,28 +3226,40 @@ xla::StatusOr<NodeOut> CreateOrGetPerHostVariableCopy(
   AddNodeAttr("T", dtypes, &ndef);
   // TF meta-optimizer should skip this node for constant folding.
   AddNodeAttr("_tpu_avoid_constant_fold", "not_used", &ndef);
-  Status s;
-  Node* id_node = graph->AddNode(ndef, &s);
-  TF_RETURN_IF_ERROR(s);
+  TF_ASSIGN_OR_RETURN(Node * id_node, graph->AddNode(ndef));
   id_node->set_assigned_device_name(host_cpu_device);
 
-  for (int64 i = 0; i < variable_reads.size(); ++i) {
+  for (int64_t i = 0; i < variable_reads.size(); ++i) {
+    Node* read = variable_reads[i];
+    int64_t orig_arg_num = i + params_info.NumPerReplicaArgs() +
+                           params_info.NumDistributedArgs() +
+                           params_info.NumBroadcastArgs();
+    DataType dtype = read->output_type(0);
+    const bool use_xla_broadcast =
+        EnableXlaParamBroadcast(enable_xla_param_broadcast, mpmd, params_info,
+                                orig_arg_num, dtype) &&
+        replica_id != 0;
     if (index_mapping[i].node == nullptr) {
       // Fill index_mapping with the actual IdentityN node.
       index_mapping[i].node = id_node;
-      if (!enable_xla_param_broadcast) {
+      if (!use_xla_broadcast) {
         // Add the variable read edge to id_node.
         graph->AddEdge(variable_reads[i], 0, id_node, index_mapping[i].index);
       } else {
         // XLA param broadcast mode is enabled.  Create zero-valued dummy
         // tensors to use as variable args in the TPUExecuteOp, instead of
         // original variable reads.
+        TensorShape var_shape;
+        auto inferred_shape = arg_shapes[orig_arg_num];
+        if (!inferred_shape.handle_shape.AsTensorShape(&var_shape) &&
+            !inferred_shape.shape.AsTensorShape(&var_shape)) {
+          return absl::FailedPreconditionError("Failed to read arg shape.");
+        }
         TF_ASSIGN_OR_RETURN(
-            Node * var_read,
-            MaybeCreatePerHostDummyArgs(arg_shapes, host_cpu_device,
-                                        params_info, variable_reads[i], i,
-                                        num_cores_per_replica, graph));
-        graph->AddEdge(var_read, 0, id_node, index_mapping[i].index);
+            Node * dummy_read,
+            CreateTpuExecuteDummyArg(var_shape, dtype, host_cpu_device,
+                                     variable_reads[i], replica_id, graph));
+        graph->AddEdge(dummy_read, 0, id_node, index_mapping[i].index);
       }
     }
   }
@@ -2917,7 +3271,7 @@ xla::StatusOr<NodeOut> CreateOrGetPerHostVariableCopy(
 
 }  // namespace
 
-Status DistributedTPURewritePass::BuildExecuteNodes(
+absl::Status DistributedTPURewritePass::BuildExecuteNodes(
     const ParameterInfo& params_info, int num_tasks, int num_cores_per_replica,
     const Node& replicate_node, const std::vector<std::string>& arg_names,
     const DataTypeVector& arg_types,
@@ -2925,9 +3279,9 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
     const DataTypeVector& retval_types,
     const std::vector<xla::OpSharding>& arg_shardings,
     const std::vector<xla::OpSharding>& retval_shardings,
-    const std::vector<std::vector<string>>& tpu_device_names,
+    const std::vector<std::vector<std::string>>& tpu_device_names,
     Node* compile_node, const std::vector<Node*>& variable_reads,
-    Node* control_predecessor, Node* control_successor,
+    Node* control_predecessor, Node* control_successor, Node* multilock_acquire,
     std::vector<VariableWrite>* variable_writes, Graph* graph) {
   VLOG(1) << "BuildExecuteNodes " << replicate_node.DebugString();
   TF_RET_CHECK(params_info.NumReplicas() == tpu_device_names.size());
@@ -2948,15 +3302,19 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
       replicate_output_fan_out_dst_inputs;
   std::vector<Node*> to_be_removed_nodes;
 
+  const bool use_spmd =
+      UseSpmdForXlaPartitioning(&replicate_node) && allow_xla_spmd_partition_;
+  const bool mpmd = (num_cores_per_replica > 1) && !use_spmd;
+
   for (const Edge* e : replicate_input_edges) {
-    if (e->src()->type_string() == kTPUPartitionedInput) {
+    if (_IsTPUPartitionedInput(e->src())) {
       int num_users = 0;
       for (const auto& ue : e->src()->out_edges()) {
         if (!ue->IsControlEdge()) ++num_users;
       }
       if (num_users != 1) {
-        return tensorflow::errors::InvalidArgument(
-            e->src()->name(), " must only have one user. Found ", num_users);
+        return absl::InvalidArgumentError(absl::StrCat(
+            e->src()->name(), " must only have one user. Found ", num_users));
       }
       to_be_removed_nodes.push_back(e->src());
       std::vector<NodeAndPort>& nodes =
@@ -2964,15 +3322,23 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
       nodes.resize(num_cores_per_replica, NodeAndPort(nullptr, 0));
       VLOG(2) << "allocate " << num_cores_per_replica
               << " for replicate_input_fan_in_nodes[" << e->dst_input() << "]";
+
       std::vector<const Edge*> fan_in_edges;
       TF_RETURN_IF_ERROR(e->src()->input_edges(&fan_in_edges));
-      TF_RET_CHECK(fan_in_edges.size() == num_cores_per_replica);
 
-      for (const Edge* fe : fan_in_edges) {
-        nodes[fe->dst_input()].node = fe->src();
-        nodes[fe->dst_input()].port = fe->src_output();
+      bool is_packed = false;
+      TF_RET_CHECK((e->src()->type_string() == kTPUPartitionedInput) ||
+                   TryGetNodeAttr(e->src()->def(), "is_packed", &is_packed));
+
+      int num_fan_in_edges = fan_in_edges.size();
+      TF_RET_CHECK(is_packed || (num_fan_in_edges == num_cores_per_replica));
+
+      for (int i = 0; i < num_cores_per_replica; ++i) {
+        const Edge* fe = fan_in_edges[i % num_fan_in_edges];
+        nodes[i].node = fe->src();
+        nodes[i].port = fe->src_output();
         VLOG(2) << "replicate_input_fan_in_nodes[" << e->dst_input() << "]["
-                << fe->dst_input() << "] = " << fe->src()->name();
+                << i << "] = " << fe->src()->name();
       }
     }
   }
@@ -2991,7 +3357,7 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
     int num_partitioned_outputs = 0;
 
     for (const Edge* out_edge : edge->dst()->out_edges()) {
-      if (out_edge->dst()->type_string() == kTPUPartitionedOutput) {
+      if (_IsTPUPartitionedOutput(out_edge->dst())) {
         num_partitioned_outputs++;
         // Paths between replicate_node and replicate_output_fan_out_nodes:
         // ReplicateNode->TpuOutIdenity->kTPUPartitionedOutput->fan-out-nodes
@@ -3020,8 +3386,8 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
     }
     replicate_output_edges[edge->src_output()] = edge;
     if (num_partitioned_outputs > 1) {
-      return errors::InvalidArgument(
-          "More than one TPUPartitionedOutput per replciated output.");
+      return absl::InvalidArgumentError(
+          "More than one TPUPartitionedOutput per replicated output.");
     }
   }
 
@@ -3037,7 +3403,7 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
       TF_RETURN_IF_ERROR(ValidateCoreNumber(core, num_cores_per_replica));
       core_arg_nums[core].push_back(i);
     } else if (sharding.type() == xla::OpSharding::OTHER) {
-      for (int64 core : sharding.tile_assignment_devices()) {
+      for (int64_t core : sharding.tile_assignment_devices()) {
         core_arg_nums[core].push_back(i);
       }
     } else if (sharding.type() == xla::OpSharding::REPLICATED) {
@@ -3045,10 +3411,9 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
         core_arg_nums[core].push_back(i);
       }
     } else {
-      return tensorflow::errors::InvalidArgument(
-          "Unsupported argument sharding for arg=", arg_names[i],
-          " shape=", arg_shapes[i].shape.DebugString(), ": ",
-          sharding.DebugString());
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Unsupported argument sharding for arg=", arg_names[i], " shape=",
+          arg_shapes[i].shape.DebugString(), ": ", sharding.DebugString()));
     }
   }
   std::vector<std::vector<int>> core_retval_nums(num_cores_per_replica);
@@ -3063,18 +3428,39 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
         core_retval_nums[core].push_back(i);
       }
     } else if (sharding.type() == xla::OpSharding::OTHER) {
-      for (int64 core : sharding.tile_assignment_devices()) {
+      for (int64_t core : sharding.tile_assignment_devices()) {
         core_retval_nums[core].push_back(i);
       }
     } else {
-      return tensorflow::errors::InvalidArgument(
-          "Unsupported argument sharding: ", sharding.DebugString());
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Unsupported argument sharding: ", sharding.DebugString()));
     }
   }
 
   // Maps host device name to a list of per-variable pairs (variable_copy_node,
   // output_index_of_copy_node).
-  absl::flat_hash_map<string, std::vector<NodeOut>> per_host_var_copies;
+  absl::flat_hash_map<std::string, std::vector<NodeOut>> per_host_var_copies;
+
+  Node* execute_successor = control_successor;
+
+  int num_total_cores = params_info.NumReplicas() * num_cores_per_replica;
+  if (enable_multicore_locking_ && num_total_cores > 1) {
+    // Add a node to release exclusive access once all the cores have finished
+    // execution.
+    NodeDef lock_def;
+    lock_def.set_name(graph->NewName(
+        absl::StrCat(compile_node->name(), "/", "tpu_release_multilock")));
+    lock_def.set_op("ConsumeTpuMultilock");
+    MergeDebugInfo(NodeDebugInfo(replicate_node.def()), &lock_def);
+    TF_ASSIGN_OR_RETURN(Node * multilock_release, graph->AddNode(lock_def));
+    multilock_release->set_assigned_device_name(
+        compile_node->assigned_device_name());
+    TF_RET_CHECK(multilock_acquire != nullptr);
+    graph->AddEdge(multilock_acquire, 0, multilock_release, 0);
+    graph->AddControlEdge(multilock_release, control_successor);
+    // Make sure all execute Ops happen before the multilock_release.
+    execute_successor = multilock_release;
+  }
 
   // Mapping from original resource arg number to a second level map. Second
   // level map is from core id to output index of updated variable value.
@@ -3082,13 +3468,17 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
       orig_arg_num_to_output_index_mapping;
   // Mapping from retval index to a second level map. Second level map is from
   // core id to output index of sharded output value.
-  std::unordered_map<int, std::unordered_map<int, int>>
+  std::unordered_map<int, absl::flat_hash_map<int, int>>
       retval_index_to_output_index_mapping;
 
   // Represents mapping of argument index of sharded input to each
   // TPUExecute node to its corresponding Split node and its output index
   // from which sharded input will be fed into TPUExecute node.
   std::map<ShardedInputIndex, ShardedInputInfo> input_index_to_sharded_inputs;
+
+  // Additional map of {host, arg_num} to dummy input. Per-task copies of the
+  // inputs reduces cross-task communication and allows sharing across replicas.
+  absl::btree_map<ShardedPerHostInputIndex, Node*> sharded_per_host_index;
 
   // Builds one TPUExecute node per core per replica.
   std::vector<std::vector<Node*>> execute_nodes(params_info.NumReplicas());
@@ -3128,40 +3518,48 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
     AddNodeAttr("Targs", core_arg_types, &def);
     AddNodeAttr("Tresults", core_retval_types, &def);
 
-    for (int64 replica = 0; replica < params_info.NumReplicas(); ++replica) {
-      def.set_name(strings::StrCat(replicate_node.name(), "/_execute_", replica,
-                                   "_", core));
+    // If the producer name was set during inference, propagate the information
+    // to the TPUExecute op so it can be accessed during metric collection.
+    std::string producer_name;
+    absl::Status status =
+        GetNodeAttr(replicate_node.attrs(), "_producer_name", &producer_name);
+    if (status.ok()) {
+      AddNodeAttr("_producer_name", producer_name, &def);
+    }
 
-      Status status;
-      Node* node = graph->AddNode(def, &status);
-      if (!status.ok()) return status;
+    for (int64_t replica = 0; replica < params_info.NumReplicas(); ++replica) {
+      def.set_name(absl::StrCat(replicate_node.name(), "/_execute_", replica,
+                                "_", core));
+
+      TF_ASSIGN_OR_RETURN(Node * node, graph->AddNode(def));
       execute_nodes[replica].push_back(node);
 
       node->set_assigned_device_name(tpu_device_names[replica][core]);
 
       // Add control edges to ensure that execution happens after
-      // `control_predecessor`, happens before `control_successor`, and is
+      // `control_predecessor`, happens before `execute_successor`, and is
       // triggered by evaluating any operator that depends on the original
       // TPUReplicate operator. See the comment at the top of the header file
       // for more details.
       graph->AddControlEdge(control_predecessor, node);
-      graph->AddControlEdge(node, control_successor);
+      graph->AddControlEdge(node, execute_successor);
 
       // Add data input edges.
-      for (int64 i = 0; i < core_arg_nums[core].size(); ++i) {
-        int64 orig_arg_num = core_arg_nums[core][i];
+      for (int64_t i = 0; i < core_arg_nums[core].size(); ++i) {
+        int64_t orig_arg_num = core_arg_nums[core][i];
         VLOG(2) << " replica " << replica << " core " << core << " i " << i
                 << " orig_arg_num " << orig_arg_num;
-        if (params_info.IsPerReplicaArg(orig_arg_num) ||
-            params_info.IsDistributedArg(orig_arg_num)) {
+        const bool is_per_replica_arg =
+            params_info.IsPerReplicaArg(orig_arg_num);
+        if (is_per_replica_arg || params_info.IsDistributedArg(orig_arg_num)) {
           // Per-replica input and distributed input
-          int64 input_num = params_info.IsPerReplicaArg(orig_arg_num)
-                                ? replica * params_info.NumPerReplicaArgs() +
-                                      core_arg_nums[core][i]
-                                : params_info.NumReplicas() *
-                                          params_info.NumPerReplicaArgs() +
-                                      core_arg_nums[core][i] -
-                                      params_info.NumPerReplicaArgs();
+          const int64_t input_num =
+              is_per_replica_arg ? replica * params_info.NumPerReplicaArgs() +
+                                       core_arg_nums[core][i]
+                                 : params_info.NumReplicas() *
+                                           params_info.NumPerReplicaArgs() +
+                                       core_arg_nums[core][i] -
+                                       params_info.NumPerReplicaArgs();
 
           const Edge* edge = replicate_input_edges[input_num];
           VLOG(2) << "replicate_input_edges[" << input_num << "]";
@@ -3170,24 +3568,24 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
             DataType handle_dtype = arg_shapes[orig_arg_num].handle_type;
             if (std::find(kTpuAllTypes.begin(), kTpuAllTypes.end(),
                           handle_dtype) == kTpuAllTypes.end()) {
-              return errors::InvalidArgument(
+              return absl::InvalidArgumentError(absl::StrCat(
                   "Unsupported resource variable data type for TPU: ",
                   DataTypeString(handle_dtype), ", caused by output ",
-                  edge->src()->name(), ":", edge->src_output());
+                  edge->src()->name(), ":", edge->src_output()));
             }
           } else {
             if (std::find(kTpuAllTypes.begin(), kTpuAllTypes.end(), dtype) ==
                 kTpuAllTypes.end()) {
-              return errors::InvalidArgument(
+              return absl::InvalidArgumentError(absl::StrCat(
                   "Unsupported data type for TPU: ", DataTypeString(dtype),
                   ", caused by output ", edge->src()->name(), ":",
-                  edge->src_output());
+                  edge->src_output()));
             }
           }
-          if (arg_shardings[orig_arg_num].type() == xla::OpSharding::OTHER) {
+          if (IsSplitSharding(arg_shardings[orig_arg_num])) {
             // Don't automatically add a split node when input node is
             // kTPUPartitionedInput
-            if (edge->src()->type_string() == kTPUPartitionedInput) {
+            if (_IsTPUPartitionedInput(edge->src())) {
               VLOG(2)
                   << "Connect "
                   << replicate_input_fan_in_nodes[input_num][core].node->name()
@@ -3197,30 +3595,47 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
                              node, i);
             } else {
               if (dtype == DT_RESOURCE) {
-                return errors::InvalidArgument(
+                return absl::InvalidArgumentError(absl::StrCat(
                     "Tiled sharding for per-replica DT_RESOURCE input must",
                     "be TPUPartitionedInput. Here got ",
-                    edge->src()->type_string());
+                    edge->src()->type_string()));
               }
               const xla::OpSharding& sharding = arg_shardings[orig_arg_num];
 
-              // Create or get the Split node.
-              TF_ASSIGN_OR_RETURN(
-                  ShardedInputInfo sharded_input_info,
-                  CreateOrGetSplitNodesForInputSharding(
-                      sharding, orig_arg_num, dtype,
-                      arg_shapes[orig_arg_num].handle_shape, replica,
-                      edge->src_output(), edge->src(), control_predecessor,
-                      graph, &input_index_to_sharded_inputs));
+              ShardedInputInfo sharded_input_info;
+              if (use_nd_sharding_ops_ && is_per_replica_arg) {
+                TF_ASSIGN_OR_RETURN(
+                    sharded_input_info,
+                    CreateOrGetXlaSplitNodeForShardedPerReplicaArg(
+                        sharding, replica, orig_arg_num, dtype,
+                        PartialTensorShape(), edge->src(), edge->src_output(),
+                        graph, &input_index_to_sharded_inputs));
+              } else if (use_nd_sharding_ops_) {
+                TF_ASSIGN_OR_RETURN(
+                    sharded_input_info,
+                    CreateOrGetXlaSplitNodeForDistributedArg(
+                        sharding, params_info.NumReplicas(), replica,
+                        orig_arg_num, dtype, PartialTensorShape(), edge->src(),
+                        edge->src_output(), graph,
+                        &input_index_to_sharded_inputs));
+              } else {
+                TF_ASSIGN_OR_RETURN(
+                    sharded_input_info,
+                    CreateOrGetSplitNodesForInputSharding(
+                        sharding, orig_arg_num, dtype, PartialTensorShape(),
+                        replica, edge->src_output(), edge->src(),
+                        control_predecessor, graph,
+                        &input_index_to_sharded_inputs));
+              }
+
               NodeOut split_node_and_index =
                   sharded_input_info.sharded_inputs.at(core);
               // Connect with Split node output.
               graph->AddEdge(split_node_and_index.node,
                              split_node_and_index.index, node, i);
             }
-          } else if (edge->src()->type_string() == kTPUPartitionedInput &&
-                     arg_shardings[orig_arg_num].type() ==
-                         xla::OpSharding::REPLICATED) {
+          } else if (_IsTPUPartitionedInput(edge->src()) &&
+                     IsReplicatedSharding(arg_shardings[orig_arg_num])) {
             graph->AddEdge(replicate_input_fan_in_nodes[input_num][core].node,
                            replicate_input_fan_in_nodes[input_num][core].port,
                            node, i);
@@ -3229,38 +3644,38 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
           }
         } else if (params_info.IsBroadcastArg(orig_arg_num)) {
           // Broadcast input.
-          int64 input_num = params_info.FirstBroadcastArgFromHost() +
-                            core_arg_nums[core][i] -
-                            params_info.NumPerReplicaArgs() -
-                            params_info.NumDistributedArgs();
+          int64_t input_num = params_info.FirstBroadcastArgFromHost() +
+                              core_arg_nums[core][i] -
+                              params_info.NumPerReplicaArgs() -
+                              params_info.NumDistributedArgs();
           const Edge* edge = replicate_input_edges[input_num];
           DataType dtype = edge->src()->output_type(edge->src_output());
           if (std::find(kTpuAllTypes.begin(), kTpuAllTypes.end(), dtype) ==
               kTpuAllTypes.end()) {
-            return errors::InvalidArgument(
+            return absl::InvalidArgumentError(absl::StrCat(
                 "Unsupported data type for TPU: ", DataTypeString(dtype),
                 ", caused by output ", edge->src()->name(), ":",
-                edge->src_output());
+                edge->src_output()));
           }
           graph->AddEdge(edge->src(), edge->src_output(), node, i);
         } else {
           // Variable input.
-          int64 variable_num = orig_arg_num - params_info.NumPerReplicaArgs() -
-                               params_info.NumDistributedArgs() -
-                               params_info.NumBroadcastArgs();
+          int64_t variable_num =
+              orig_arg_num - params_info.NumPerReplicaArgs() -
+              params_info.NumDistributedArgs() - params_info.NumBroadcastArgs();
           TF_RET_CHECK(variable_num < num_variables);
 
           Node* variable_read = variable_reads[variable_num];
           DataType dtype = variable_read->output_type(0);
           if (std::find(kTpuAllTypes.begin(), kTpuAllTypes.end(), dtype) ==
               kTpuAllTypes.end()) {
-            return errors::InvalidArgument(
+            return absl::InvalidArgumentError(absl::StrCat(
                 "Unsupported resource variable data type for TPU: ",
                 DataTypeString(dtype), ", caused by ReadVariableOp ",
-                variable_read->DebugString());
+                variable_read->DebugString()));
           }
           DeviceNameUtils::ParsedName requested_device;
-          string requested = variable_read->requested_device();
+          std::string requested = variable_read->requested_device();
           TF_RET_CHECK(
               DeviceNameUtils::ParseFullName(requested, &requested_device));
           if (requested_device.type != "TPU") {
@@ -3275,7 +3690,7 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
             // round trip copy.
             // TODO(b/79580121): give each replica its own on-device variable
             // replica and then delete this code.
-            string device;
+            std::string device;
             TF_RETURN_IF_ERROR(DeviceNameUtils::DeviceNameToCpuDeviceName(
                 tpu_device_names[replica][core], &device));
             TF_ASSIGN_OR_RETURN(
@@ -3283,20 +3698,43 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
                 CreateOrGetPerHostVariableCopy(
                     device, variable_num, variable_reads, params_info,
                     arg_shardings, replicate_node, enable_xla_param_broadcast_,
-                    num_cores_per_replica, arg_shapes, &per_host_var_copies,
-                    graph));
+                    mpmd, num_cores_per_replica, replica, arg_shapes,
+                    &per_host_var_copies, graph));
 
-            if (arg_shardings[orig_arg_num].type() == xla::OpSharding::OTHER) {
-              const xla::OpSharding& sharding = arg_shardings[orig_arg_num];
-              // Create or get the Split node.
-              TF_ASSIGN_OR_RETURN(
-                  ShardedInputInfo sharded_input_info,
-                  CreateOrGetSplitNodesForInputSharding(
-                      sharding, orig_arg_num,
-                      arg_shapes[orig_arg_num].handle_type,
-                      arg_shapes[orig_arg_num].handle_shape, replica,
-                      var_data.index, var_data.node, control_predecessor, graph,
-                      &input_index_to_sharded_inputs));
+            if (IsSplitSharding(arg_shardings[orig_arg_num])) {
+              ShardedInputInfo sharded_input_info;
+
+              if (EnableXlaParamBroadcast(enable_xla_param_broadcast_, mpmd,
+                                          params_info, orig_arg_num, dtype)) {
+                // Populates the sharded dummy vars for non-zero replicas.
+                TF_RETURN_IF_ERROR(CreatePartitionedDummyVarArgs(
+                    arg_shardings[orig_arg_num], params_info.NumReplicas(),
+                    replica, arg_shapes[orig_arg_num], var_data.node,
+                    orig_arg_num, dtype, device, graph, tpu_device_names,
+                    &sharded_per_host_index, &input_index_to_sharded_inputs));
+              }
+
+              if (use_nd_sharding_ops_) {
+                TF_ASSIGN_OR_RETURN(
+                    sharded_input_info,
+                    CreateOrGetXlaSplitNodeForVariableArg(
+                        arg_shardings[orig_arg_num], params_info.NumReplicas(),
+                        replica, orig_arg_num,
+                        arg_shapes[orig_arg_num].handle_type,
+                        arg_shapes[orig_arg_num].handle_shape, var_data.node,
+                        var_data.index, graph, &to_be_removed_nodes,
+                        &input_index_to_sharded_inputs));
+              } else {
+                TF_ASSIGN_OR_RETURN(
+                    sharded_input_info,
+                    CreateOrGetSplitNodesForInputSharding(
+                        arg_shardings[orig_arg_num], orig_arg_num,
+                        arg_shapes[orig_arg_num].handle_type,
+                        arg_shapes[orig_arg_num].handle_shape, replica,
+                        var_data.index, var_data.node, control_predecessor,
+                        graph, &input_index_to_sharded_inputs));
+              }
+
               NodeOut split_node_and_index =
                   sharded_input_info.sharded_inputs[core];
               // Connect with Split node output.
@@ -3321,7 +3759,7 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
         int output_num =
             replica * num_retvals_per_replica + core_retval_nums[core][i];
         const auto& sharding = retval_shardings[core_retval_nums[core][i]];
-        if (sharding.type() == xla::OpSharding::OTHER) {
+        if (IsSplitSharding(sharding)) {
           int retval_index = core_retval_nums[core][i];
           retval_index_to_output_index_mapping[retval_index][core] = i;
           bool is_last_core =
@@ -3333,7 +3771,7 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
           const Edge* e = replicate_output_edges[output_num];
           const Edge* e_out;
           for (const Edge* out_edge : e->dst()->out_edges()) {
-            if (out_edge->dst()->type_string() == kTPUPartitionedOutput) {
+            if (_IsTPUPartitionedOutput(out_edge->dst())) {
               isPartitionOutNode = true;
               e_out = out_edge;
             }
@@ -3361,16 +3799,16 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
 
           // Add a Concat node.
           std::vector<NodeOut> orig_inputs;
-          for (int64 tile_index = 0;
+          for (int64_t tile_index = 0;
                tile_index < sharding.tile_assignment_devices_size();
                ++tile_index) {
-            int64 last_tile_dim_size =
+            int64_t last_tile_dim_size =
                 *sharding.tile_assignment_dimensions().rbegin();
             if (sharding.replicate_on_last_tile_dim() &&
                 tile_index % last_tile_dim_size != 0) {
               continue;
             }
-            int64 core_id = sharding.tile_assignment_devices(tile_index);
+            int64_t core_id = sharding.tile_assignment_devices(tile_index);
             int core_retval_index =
                 retval_index_to_output_index_mapping[retval_index][core_id];
             orig_inputs.push_back(
@@ -3379,11 +3817,20 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
                             core_retval_nums[core_id][core_retval_index])});
           }
           DataType dtype = e->src()->output_type(e->src_output());
-          TF_ASSIGN_OR_RETURN(
-              Node * concat_node,
-              CreateConcatNodesForRetval(
-                  sharding, dtype, /*inferred_shape*/ PartialTensorShape(),
-                  replica, orig_inputs, graph, /*device=*/""));
+          Node* concat_node = nullptr;
+          if (use_nd_sharding_ops_) {
+            TF_ASSIGN_OR_RETURN(
+                concat_node, CreateXlaConcatNode(
+                                 sharding, replica, dtype,
+                                 /*partial_tensor_shape=*/PartialTensorShape(),
+                                 orig_inputs, /*device=*/"", graph));
+          } else {
+            TF_ASSIGN_OR_RETURN(
+                concat_node,
+                CreateConcatNodesForRetval(
+                    sharding, dtype, /*inferred_shape=*/PartialTensorShape(),
+                    replica, orig_inputs, graph, /*device=*/""));
+          }
 
           const Edge* edge = replicate_output_edges[output_num];
           Node* dst = edge->dst();
@@ -3396,7 +3843,7 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
 
         // If this is a replicated output, outputs on all cores will be the
         // same, and we only take the output from core 0.
-        if (sharding.type() == xla::OpSharding::REPLICATED && core != 0) {
+        if (IsReplicatedSharding(sharding) && core != 0) {
           continue;
         }
 
@@ -3426,7 +3873,7 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
           const auto& sharding = arg_shardings[orig_arg_num];
           // If this is a tiling sharded variable, concat variable updates from
           // all cores.
-          if (sharding.type() == xla::OpSharding::OTHER) {
+          if (IsSplitSharding(sharding)) {
             orig_arg_num_to_output_index_mapping[orig_arg_num][core] = i;
 
             // Do this in the iteration of last core in tile assignment, so all
@@ -3439,16 +3886,16 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
 
             // Add a Concat node.
             std::vector<NodeOut> orig_inputs;
-            for (int64 tile_index = 0;
+            for (int64_t tile_index = 0;
                  tile_index < sharding.tile_assignment_devices_size();
                  ++tile_index) {
-              int64 last_tile_dim_size =
+              int64_t last_tile_dim_size =
                   *sharding.tile_assignment_dimensions().rbegin();
               if (sharding.replicate_on_last_tile_dim() &&
                   tile_index % last_tile_dim_size != 0) {
                 continue;
               }
-              int64 core_id = sharding.tile_assignment_devices(tile_index);
+              int64_t core_id = sharding.tile_assignment_devices(tile_index);
               int core_retval_num =
                   orig_arg_num_to_output_index_mapping[orig_arg_num][core_id];
               orig_inputs.push_back(
@@ -3461,12 +3908,22 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
             // be collocated with the variable.
             absl::string_view device =
                 variable_reads[core_variable_writes[i]]->assigned_device_name();
-            TF_ASSIGN_OR_RETURN(
-                Node * concat_node,
-                CreateConcatNodesForRetval(
-                    sharding, arg_shapes[orig_arg_num].handle_type,
-                    arg_shapes[orig_arg_num].handle_shape, replica, orig_inputs,
-                    graph, device));
+            Node* concat_node = nullptr;
+            if (use_nd_sharding_ops_) {
+              TF_ASSIGN_OR_RETURN(
+                  concat_node,
+                  CreateXlaConcatNode(sharding, replica,
+                                      arg_shapes[orig_arg_num].handle_type,
+                                      arg_shapes[orig_arg_num].handle_shape,
+                                      orig_inputs, device, graph));
+            } else {
+              TF_ASSIGN_OR_RETURN(
+                  concat_node,
+                  CreateConcatNodesForRetval(
+                      sharding, arg_shapes[orig_arg_num].handle_type,
+                      arg_shapes[orig_arg_num].handle_shape, replica,
+                      orig_inputs, graph, device));
+            }
             // Populate VariableWrite.
             VariableWrite& write = variable_writes->at(core_variable_writes[i]);
             write.value = concat_node;
@@ -3478,9 +3935,9 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
           }
 
           // If this is a replicated variable, outputs on all cores will be the
-          // same, and we only take the output from core 0 for the varialbe
+          // same, and we only take the output from core 0 for the variable
           // update.
-          if (sharding.type() == xla::OpSharding::REPLICATED && core != 0) {
+          if (IsReplicatedSharding(sharding) && core != 0) {
             continue;
           }
           VariableWrite& write = variable_writes->at(core_variable_writes[i]);
@@ -3496,10 +3953,11 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
   for (Node* node : to_be_removed_nodes) {
     graph->RemoveNode(node);
   }
-  return Status::OK();
-}
+  return absl::OkStatus();
+}  // NOLINT(readability/fn_size)
 
-/* static */ Status DistributedTPURewritePass::CopyOutsideCompilationNodes(
+/* static */ absl::Status
+DistributedTPURewritePass::CopyOutsideCompilationNodes(
     int replica_index, const std::vector<Node*>& outside_compilation_nodes,
     const DeviceNameUtils::ParsedName& tpu_device,
     const DeviceNameUtils::ParsedName& partial_device,
@@ -3507,20 +3965,18 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
   for (Node* node : outside_compilation_nodes) {
     NodeDef image_def = node->def();
     MergeDebugInfo(NodeDebugInfo(node->def()), &image_def);
-    const string suffix = strings::StrCat("/R", replica_index);
+    const std::string suffix = absl::StrCat("/R", replica_index);
     // In addition to node name, make the frame name unique to avoid multiple
     // LoopCond nodes in one frame.
     TF_RETURN_IF_ERROR(
         AddPrefixAndSuffixToNode("" /* prefix */, suffix, &image_def));
-    Status status;
-    Node* image = graph->AddNode(image_def, &status);
+    TF_ASSIGN_OR_RETURN(Node * image, graph->AddNode(image_def));
     image->AddAttr(kXlaReplicaIdAttrName, replica_index);
-    TF_RETURN_IF_ERROR(status);
     if (HasNodeAttr(image->def(), kXlaHasHostTransferAttrName)) {
       TF_RETURN_IF_ERROR(
           SetNodeDeviceForTPUCommunication(tpu_device, DEVICE_CPU, image));
     } else {
-      const string& original_device_string =
+      const std::string& original_device_string =
           node->assigned_device_name().empty() ? node->requested_device()
                                                : node->assigned_device_name();
       DeviceNameUtils::ParsedName device;
@@ -3541,11 +3997,12 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
     node_image_vector.resize(replica_index + 1);
     node_image_vector[replica_index] = image;
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status DistributedTPURewritePass::ReplicateOutsideCompilationNodes(
-    const std::vector<std::vector<string>>& tf_device_assignment,
+/* static */ absl::Status
+DistributedTPURewritePass::ReplicateOutsideCompilationNodes(
+    const std::vector<std::vector<std::string>>& tf_device_assignment,
     const HostComputeCoreMap& host_compute_core,
     const OutsideCompilationNodeMap& outside_compilation_nodes,
     NodeToNodeReplicasMap* node_images, Graph* graph) {
@@ -3553,7 +4010,7 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
   for (int i = 0; i < tf_device_assignment.size(); ++i) {
     const auto& core_devices = tf_device_assignment[i];
     for (const auto& oc_cluster_iter : outside_compilation_nodes) {
-      const string& oc_cluster_name = oc_cluster_iter.first;
+      const std::string& oc_cluster_name = oc_cluster_iter.first;
       const auto& oc_cluster_nodes = oc_cluster_iter.second;
       // We previously validated that host_compute_core contains an entry for
       // each cluster.
@@ -3591,13 +4048,14 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status DistributedTPURewritePass::CopyOutsideCompilationEdges(
+/* static */ absl::Status
+DistributedTPURewritePass::CopyOutsideCompilationEdges(
     const std::vector<Node*>& outside_compilation_nodes,
     const NodeToNodeReplicasMap& node_images,
-    const std::unordered_map<string, Node*> outside_compilation_inputs,
+    const std::unordered_map<std::string, Node*> outside_compilation_inputs,
     Graph* graph) {
   for (Node* node : outside_compilation_nodes) {
     const auto& images = node_images.at(node);
@@ -3624,16 +4082,16 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
       // The source node is a replicated outside_compilation node.
       const auto& src_images = iter->second;
       if (src_images.size() != images.size()) {
-        return errors::InvalidArgument(
+        return absl::InvalidArgumentError(absl::StrCat(
             "Graph contains an edge from node ", src->name(),
             " in an outside_compilation block replicated ", src_images.size(),
             " ways to node ", node->name(),
             " in an outside_compilation block replicated ", images.size(),
             " ways. Replication factors must match. Leave a comment on "
-            "tracking bug b/76419636 if you need this to be supported.");
+            "tracking bug b/76419636 if you need this to be supported."));
       }
       bool is_lifted_arg;
-      string outside_compilation_cluster;
+      std::string outside_compilation_cluster;
       if (GetNodeAttr(src->def(), kXlaIsLiftedArgAttrName, &is_lifted_arg)
               .ok() &&
           GetNodeAttr(src->def(), kOutsideCompilationAttr,
@@ -3654,7 +4112,7 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
       }
 
       bool is_placeholder_for_arg;
-      string outside_compilation_input_attr;
+      std::string outside_compilation_input_attr;
       if (GetNodeAttr(src->def(), kXlaIsPlaceholderForArg,
                       &is_placeholder_for_arg)
               .ok() &&
@@ -3702,14 +4160,14 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
           // The edge
           // is only valid if the outside_compilation block is not replicated.
           if (images.size() > 1) {
-            return errors::InvalidArgument(
+            return absl::InvalidArgumentError(absl::StrCat(
                 "Graph contains an edge from node ", node->name(),
                 " in an outside_compilation block replicated ", images.size(),
                 " ways to node ", dst->name(),
                 " that is not part of an outside_compilation block. Edges from "
                 "outside_compilation to regular graph nodes are only supported "
                 "for replication factors of 1. Leave a comment on tracking bug "
-                "b/76419636 if you need this to be supported.");
+                "b/76419636 if you need this to be supported."));
           }
           // else the cluster is not replicated so we can leave the original
           // edge in place.
@@ -3719,23 +4177,25 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
       // when iterating over in_edges of dst.
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status DistributedTPURewritePass::ReplicateOutsideCompilationEdges(
+/* static */ absl::Status
+DistributedTPURewritePass::ReplicateOutsideCompilationEdges(
     const OutsideCompilationNodeMap& outside_compilation_nodes,
     const NodeToNodeReplicasMap& node_images,
-    const std::unordered_map<string, Node*> outside_compilation_inputs,
+    const std::unordered_map<std::string, Node*> outside_compilation_inputs,
     Graph* graph) {
   for (const auto& oc_cluster_iter : outside_compilation_nodes) {
     TF_RETURN_IF_ERROR(
         CopyOutsideCompilationEdges(oc_cluster_iter.second, node_images,
                                     outside_compilation_inputs, graph));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status DistributedTPURewritePass::RemoveOutsideCompilationNodes(
+/* static */ absl::Status
+DistributedTPURewritePass::RemoveOutsideCompilationNodes(
     const NodeToNodeReplicasMap& node_images, Graph* graph) {
   for (const auto& iter : node_images) {
     if (iter.second.size() > 1) {
@@ -3744,10 +4204,10 @@ Status DistributedTPURewritePass::BuildExecuteNodes(
       graph->RemoveNode(node);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status
+/* static */ absl::Status
 DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
     Graph* g, FunctionLibraryDefinition& flib_def,
     const TPUReplicateDeviceNamesMapping& tpu_replicate_device_names_mapping) {
@@ -3779,7 +4239,7 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
 
     modified = !nodes_to_lower.empty();
 
-    auto lower_functional_node = [&flib_def, &g](Node* n) -> Status {
+    auto lower_functional_node = [&flib_def, &g](Node* n) -> absl::Status {
       // Clear device assignment. Otherwise all lowered nodes will have
       // device assignment, which is not what we want.
       n->set_requested_device("");
@@ -3788,7 +4248,7 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
       TF_RETURN_IF_ERROR(
           GetNodeAttr(n->def(), kXlaReplicaIdAttrName, &replica_id));
 
-      string outside_compilation_attr;
+      std::string outside_compilation_attr;
       TF_RETURN_IF_ERROR(GetNodeAttr(n->def(), kOutsideCompilationAttr,
                                      &outside_compilation_attr));
 
@@ -3864,7 +4324,7 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
           node->AddAttr(kXlaReplicaIdAttrName, replica_id);
         }
       }
-      return Status::OK();
+      return absl::OkStatus();
     };
 
     for (Node* n : nodes_to_lower) {
@@ -3879,7 +4339,7 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
       continue;
     }
 
-    string replicate;
+    std::string replicate;
     TF_RETURN_IF_ERROR(GetNodeAttr(n->def(), kTPUReplicateAttr, &replicate));
     auto iter = tpu_replicate_device_names_mapping.find(replicate);
     TF_RET_CHECK(iter != tpu_replicate_device_names_mapping.end());
@@ -3889,8 +4349,8 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
     TF_RETURN_IF_ERROR(
         GetNodeAttr(n->def(), kXlaReplicaIdAttrName, &replica_id));
     TF_RET_CHECK(replica_id < tpu_device_names.size());
-    const string& tpu_device_name = tpu_device_names[replica_id][0];
-    string host_device_name;
+    const std::string& tpu_device_name = tpu_device_names[replica_id][0];
+    std::string host_device_name;
     TF_RETURN_IF_ERROR(DeviceNameUtils::DeviceNameToCpuDeviceName(
         tpu_device_name, &host_device_name));
     n->set_assigned_device_name(host_device_name);
@@ -3932,39 +4392,40 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
     g->RemoveNode(n);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status DistributedTPURewritePass::ParseHostComputeCores(
+/* static */ absl::Status DistributedTPURewritePass::ParseHostComputeCores(
     const Node& replicate_node,
     const OutsideCompilationNodeMap& outside_compilation_nodes,
     HostComputeCoreMap* host_compute_core) {
-  std::vector<string> hc_core_string;
+  std::vector<std::string> hc_core_string;
   TF_RETURN_IF_ERROR(GetNodeAttr(replicate_node.attrs(), "host_compute_core",
                                  &hc_core_string));
   TF_RETURN_IF_ERROR(
       ParseHostComputeCoreList(hc_core_string, host_compute_core));
   for (const auto& iter : outside_compilation_nodes) {
-    const string& oc_cluster_name = iter.first;
+    const std::string& oc_cluster_name = iter.first;
     if (host_compute_core->find(oc_cluster_name) == host_compute_core->end()) {
       // By default put host compute Ops on replicated core 0.
       (*host_compute_core)[oc_cluster_name] = 0;
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status DistributedTPURewritePass::GetDeviceTopology(
+/* static */ absl::Status DistributedTPURewritePass::GetDeviceTopology(
     const DeviceSet& device_set, const Node& replicate_node, int* num_replicas,
     int* num_cores_per_replica, int* num_tasks,
-    std::vector<std::vector<string>>* tf_device_assignment,
+    std::vector<std::vector<std::string>>* tf_device_assignment,
+    std::vector<int>* devices_to_lock,
     std::unique_ptr<xla::DeviceAssignment>* xla_device_assignment,
-    string* tpu_compilation_device) {
+    std::string* tpu_compilation_device) {
   TF_RETURN_IF_ERROR(
       GetNodeAttr(replicate_node.attrs(), "num_replicas", num_replicas));
   if (*num_replicas < 1) {
-    return errors::InvalidArgument("num_replicas must be >= 1, got ",
-                                   *num_replicas);
+    return absl::InvalidArgumentError(
+        absl::StrCat("num_replicas must be >= 1, got ", *num_replicas));
   }
 
   // Find the set of TPU devices in the TF job.
@@ -3976,7 +4437,7 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
                                        &num_tpus_per_task, &tpu_devices));
   *num_tasks = tpu_devices.size();
 
-  string topology;
+  std::string topology;
   TF_RETURN_IF_ERROR(
       GetNodeAttr(replicate_node.attrs(), "topology", &topology));
   TF_RETURN_IF_ERROR(GetNodeAttr(
@@ -3992,23 +4453,22 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
   // calls); this may be okay, but to be conservative, just assume that the
   // master session has the proper flags set.
 
-  // We do not initialize platform right now, but we can still retrieve the
-  // TPU topology even with an uninitialized platform.
-  auto* tpu_platform = tpu::TpuPlatformInterface::GetRegisteredPlatform(
-      /*initialize_platform=*/false);
-  TF_RET_CHECK(tpu_platform);
-  tpu::TpuTopologyExternal tpu_topology(tpu_platform->GetTopologyPtr());
+  // The TPU system may be uninitialized yet, but we can still retrieve the
+  // TPU topology even with an uninitialized TPU system via
+  // TpuUtil_GetTopologyPtrFn.
+  tpu::TpuTopologyExternal tpu_topology(
+      stream_executor::tpu::OpsApiFn()->TpuUtil_GetTopologyPtrFn());
   TF_RET_CHECK(num_tpus_per_task ==
                tpu_topology.LogicalDevicesPerHost(kTensorCore));
   TF_RETURN_IF_ERROR(BuildDeviceAssignment(
       tpu_topology, num_tpus_per_task, tpu_devices, *num_replicas,
       *num_cores_per_replica, topology, device_assignment, tf_device_assignment,
-      xla_device_assignment));
+      devices_to_lock, xla_device_assignment));
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status DistributedTPURewritePass::GetIOTypes(
+/* static */ absl::Status DistributedTPURewritePass::GetIOTypes(
     int num_replicas, const Node& replicate_node, FunctionLibraryRuntime* flr,
     Graph* graph, NameRangeMap* input_name_map, const NameAttrList** function,
     std::unique_ptr<Graph>* computation, DataTypeVector* arg_types,
@@ -4028,9 +4488,9 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
   const int num_per_replica_inputs = input_types.size() - num_distributed_vars;
 
   if (num_per_replica_inputs % num_replicas != 0) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "Number of inputs to TPUReplicate (", num_per_replica_inputs,
-        ") is not divisible by the number of replicas (", num_replicas, ").");
+        ") is not divisible by the number of replicas (", num_replicas, ")."));
   }
 
   int num_variables;
@@ -4044,7 +4504,7 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
   TF_RETURN_IF_ERROR(
       GetNodeAttr(replicate_node.attrs(), "computation", function));
 
-  *computation = absl::make_unique<Graph>(graph->op_registry());
+  *computation = std::make_unique<Graph>(graph->op_registry());
   TF_RETURN_IF_ERROR(GetComputationForTPUReplicateOp(
       **function, flr, computation->get(), arg_types, retval_types));
 
@@ -4054,17 +4514,17 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
       guaranteed_constant_types.size(), retval_types->size());
 
   if (arg_types->size() != params_info->NumInputsToEachReplica()) {
-    return errors::InvalidArgument(
-        "Computation argument to TPUReplicate has wrong number of "
-        "arguments. Expected ",
-        params_info->NumInputsToEachReplica(), " inputs, got ",
-        arg_types->size());
+    return absl::InvalidArgumentError(
+        absl::StrCat("Computation argument to TPUReplicate has wrong number of "
+                     "arguments. Expected ",
+                     params_info->NumInputsToEachReplica(), " inputs, got ",
+                     arg_types->size()));
   }
   if (replicate_node.num_outputs() != params_info->NumOutputsToHost()) {
-    return errors::InvalidArgument(
-        "Wrong number of outputs from TPUReplicate. Expected ",
-        params_info->NumOutputsToHost(), " outputs, got ",
-        replicate_node.num_outputs());
+    return absl::InvalidArgumentError(
+        absl::StrCat("Wrong number of outputs from TPUReplicate. Expected ",
+                     params_info->NumOutputsToHost(), " outputs, got ",
+                     replicate_node.num_outputs()));
   }
   if (enable_cross_replica_sharding_mirrored_variables_) {
     std::vector<int> mirrored_variable_indices;
@@ -4080,19 +4540,19 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
       params_info->mutable_mirrored_variable_indices()->insert(index);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status DistributedTPURewritePass::BuildSequencingNodes(
-    const string& tpu_compilation_device, const Node& replicate_node,
+/* static */ absl::Status DistributedTPURewritePass::BuildSequencingNodes(
+    const std::string& tpu_compilation_device, const Node& replicate_node,
     Graph* graph, Node** host_transfer_sequencer, Node** control_before,
     Node** control_after) {
   *host_transfer_sequencer = nullptr;
 
   TF_RETURN_IF_ERROR(
       BuildNoopNode(replicate_node,
-                    graph->NewName(strings::StrCat(replicate_node.name(), "/",
-                                                   "control_before")),
+                    graph->NewName(absl::StrCat(replicate_node.name(), "/",
+                                                "control_before")),
                     /*device=*/"", graph, control_before));
   for (const Edge* e : replicate_node.in_edges()) {
     if (!e->IsControlEdge()) {
@@ -4105,10 +4565,10 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
       // The node is the sequencer for host transfer operations. Its control
       // dependency needs to be placed after the execute node, not before.
       if (*host_transfer_sequencer != nullptr) {
-        return errors::Internal("Replicate node ", replicate_node.name(),
-                                " has two transfer sequencer nodes: ",
-                                (*host_transfer_sequencer)->name(), " and ",
-                                predecessor->name());
+        return absl::InternalError(absl::StrCat(
+            "Replicate node ", replicate_node.name(),
+            " has two transfer sequencer nodes: ",
+            (*host_transfer_sequencer)->name(), " and ", predecessor->name()));
       }
       // Set the correct device to match the other sequencing nodes.
       predecessor->set_assigned_device_name(tpu_compilation_device);
@@ -4118,11 +4578,10 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
     }
   }
 
-  TF_RETURN_IF_ERROR(
-      BuildNoopNode(replicate_node,
-                    graph->NewName(strings::StrCat(replicate_node.name(), "/",
-                                                   "control_after")),
-                    /*device=*/tpu_compilation_device, graph, control_after));
+  TF_RETURN_IF_ERROR(BuildNoopNode(
+      replicate_node,
+      graph->NewName(absl::StrCat(replicate_node.name(), "/", "control_after")),
+      /*device=*/tpu_compilation_device, graph, control_after));
   for (Node* successor : replicate_node.out_nodes()) {
     if (successor->attrs().Find("_xla_tail_outside_compilation") != nullptr) {
       graph->AddControlEdge(successor, *control_after);
@@ -4130,10 +4589,11 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
       graph->AddControlEdge(*control_after, successor);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status DistributedTPURewritePass::DealWithConstantsAndVariables(
+/* static */ absl::Status
+DistributedTPURewritePass::DealWithConstantsAndVariables(
     const Node& replicate_node, const NameRangeMap& input_name_map,
     Graph* graph, Node* host_transfer_sequencer, Node* control_before,
     Node* control_after, absl::Span<const VariableInput> variable_nodes,
@@ -4148,13 +4608,14 @@ DistributedTPURewritePass::LowerOutsideCompilationFunctionalNodes(
   if (host_transfer_sequencer != nullptr) {
     graph->AddControlEdge(host_transfer_sequencer, control_after);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status
+/* static */ absl::Status
 DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
-    Node* replicate_node, Node* compile_node, Node** control_after_compilation,
-    Graph* graph) {
+    Node* replicate_node, Node* compile_node,
+    absl::Span<const int> devices_to_lock, Node** control_after_compilation,
+    Node** multilock_acquire, Graph* graph) {
   const Edge* compilation_edge = nullptr;
   for (const auto* e : replicate_node->out_edges()) {
     if (e->IsControlEdge() &&
@@ -4174,12 +4635,13 @@ DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
     const AttrValue* compile_status_cluster_attr =
         compilation_status->attrs().Find(kTPUCompilationResultAttr);
     TF_RET_CHECK(compile_status_cluster_attr != nullptr);
-    const string& compile_status_cluster = compile_status_cluster_attr->s();
+    const std::string& compile_status_cluster =
+        compile_status_cluster_attr->s();
     TF_RET_CHECK(!compile_status_cluster.empty());
     const AttrValue* replicate_cluster_attr =
         replicate_node->attrs().Find(kTPUReplicateAttr);
     TF_RET_CHECK(replicate_cluster_attr != nullptr);
-    const string& replicate_cluster = replicate_cluster_attr->s();
+    const std::string& replicate_cluster = replicate_cluster_attr->s();
     TF_RET_CHECK(!replicate_cluster.empty());
     TF_RET_CHECK(compile_status_cluster == replicate_cluster);
 
@@ -4194,29 +4656,75 @@ DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
   // have been to have each execute op check and return an error.
   def.set_op("TPUCompileSucceededAssert");
   MergeDebugInfo(NodeDebugInfo(replicate_node->def()), &def);
-  Status status;
-  Node* compile_succeeded = graph->AddNode(def, &status);
+  TF_ASSIGN_OR_RETURN(Node * compile_succeeded, graph->AddNode(def));
   compile_succeeded->set_assigned_device_name(
       compile_node->assigned_device_name());
-  TF_RETURN_IF_ERROR(status);
   graph->AddEdge(compile_node, 0, compile_succeeded, 0);
+
+  Node* last_node_before_sequencer = compile_succeeded;
+
+  if (enable_multicore_locking_ && devices_to_lock.size() > 1) {
+    // Add a lock node to acquire exclusive access to all the cores that will
+    // execute this program. The lock is required to prevent deadlock or
+    // incorrect results when running concurrent multi-core programs in the
+    // same distributed runtime when there is no direct graph dependency
+    // between the programs (either because they are run from different sessions
+    // or because they are in the same graph, but have no control or data
+    // dependencies to sequence them). Consider the case of two multi-core
+    // computations A and B whose cores overlap and include cores X and Y. With
+    // no locking and no graph dependencies it is possible that A's program
+    // gets enqueued before B's on core X, while B's program gets enqueued
+    // before A's on core Y. This will lead either to deadlock or to
+    // incorrect results, since the runtime has no mechanism to re-sequence
+    // the programs on the cores. By adding a multi-lock acquisition for all the
+    // before any TPUExecute ops are run, and releasing it after they complete,
+    // we ensure that the programs are enqueued on the cores in a consistent
+    // order.
+    //
+    // There is a risk when computations are in the same graph, and include a
+    // data dependency, that the lock acquisition could provoke deadlock.
+    // Suppose that A must happen before B because B's input depends on A's
+    // output. Then it is obviously necessary that A's lock acquisition must
+    // happen before B's lock acquisition, and so we must ensure that there is
+    // a graph dependency causing B's lock acquisition to be sequenced after A's
+    // lock acquisition. Right now that dependency is satisfied because the
+    // shape inference code cannot determine the shape of A's outputs, and so
+    // B's compilation, which precedes B's lock acquisition, is always sequenced
+    // after A's execution. If the shape inference is improved it will be
+    // necessary to add an explicit control edge between dependent lock
+    // acquisition ops.
+    NodeDef lock_def;
+    lock_def.set_name(graph->NewName(
+        absl::StrCat(compile_node->name(), "/", "tpu_acquire_multilock")));
+    lock_def.set_op("TpuMultilock");
+    AddNodeAttr("lock_list", devices_to_lock, &lock_def);
+    MergeDebugInfo(NodeDebugInfo(replicate_node->def()), &lock_def);
+    TF_ASSIGN_OR_RETURN(*multilock_acquire, graph->AddNode(lock_def));
+    (*multilock_acquire)
+        ->set_assigned_device_name(compile_node->assigned_device_name());
+    graph->AddControlEdge(compile_succeeded, *multilock_acquire);
+    last_node_before_sequencer = *multilock_acquire;
+  } else {
+    *multilock_acquire = nullptr;
+  }
 
   // Build a sequencing node for when compilation has completed.
   TF_RETURN_IF_ERROR(
       BuildNoopNode(*replicate_node,
-                    graph->NewName(strings::StrCat(compile_node->name(), "/",
-                                                   "after_compilation")),
+                    graph->NewName(absl::StrCat(compile_node->name(), "/",
+                                                "after_compilation")),
                     /*device=*/"", graph, control_after_compilation));
-  graph->AddControlEdge(compile_succeeded, *control_after_compilation);
+  graph->AddControlEdge(last_node_before_sequencer, *control_after_compilation);
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Updates the head and tail outside compiled nodes so that nodes have the
 // correct device and removes the replication and outside compilation attributes
 // so that these nodes do not trigger further graph optimization passes.
-/* static */ Status DistributedTPURewritePass::UpdateHeadTailOutsideCompilation(
-    const std::vector<std::vector<string>>& tf_device_assignment,
+/* static */ absl::Status
+DistributedTPURewritePass::UpdateHeadTailOutsideCompilation(
+    const std::vector<std::vector<std::string>>& tf_device_assignment,
     const std::vector<Node*>& head_tail_outside_compilation_nodes) {
   for (Node* node : head_tail_outside_compilation_nodes) {
     int replica_id;
@@ -4234,7 +4742,7 @@ DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
       }
     }
     if (node->requested_device().empty()) {
-      string cpu_device;
+      std::string cpu_device;
       TF_RETURN_IF_ERROR(DeviceNameUtils::DeviceNameToCpuDeviceName(
           tf_device_assignment[replica_id][0], &cpu_device));
       node->set_requested_device(cpu_device);
@@ -4242,12 +4750,12 @@ DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
     node->ClearAttr(kTPUReplicateAttr);
     node->ClearAttr(kOutsideCompilationAttr);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Performs the rewrite on a single TPUReplicate node.
-/* static */ Status DistributedTPURewritePass::RewriteTPUReplicateNode(
-    const string& session_handle, const DeviceSet& device_set,
+/* static */ absl::Status DistributedTPURewritePass::RewriteTPUReplicateNode(
+    const std::string& session_handle, const DeviceSet& device_set,
     Node* replicate_node, FunctionLibraryDefinition* flib_def,
     FunctionLibraryRuntime* flr, Node* host_compute_key_placeholder_node,
     const OutsideCompilationNodeMap& outside_compilation_nodes,
@@ -4255,7 +4763,7 @@ DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
     NodeToNodeReplicasMap* outside_compilation_node_images, Graph* graph,
     const GraphShapeInfo& shape_info,
     TPUReplicateDeviceNamesMapping* tpu_replicate_device_names_mapping,
-    int64 autotuner_thresh) {
+    int64_t autotuner_thresh) {
   VLOG(2) << "Rewriting node " << replicate_node->name();
 
   // num_replicas and num_cores_per_replica are the 'virtual' replicas (copies
@@ -4263,19 +4771,20 @@ DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
   // by the user. They will be mapped to physical TPU cores below.
   int num_replicas;
   int num_cores_per_replica;
-  int num_tasks;  // Number of tasks.
-  std::vector<std::vector<string>> tf_device_assignment;
+  int num_tasks;
+  std::vector<std::vector<std::string>> tf_device_assignment;
+  std::vector<int> devices_to_lock;
   std::unique_ptr<xla::DeviceAssignment> xla_device_assignment;
-  string tpu_compilation_device;
+  std::string tpu_compilation_device;
   TF_RETURN_IF_ERROR(GetDeviceTopology(
       device_set, *replicate_node, &num_replicas, &num_cores_per_replica,
-      &num_tasks, &tf_device_assignment, &xla_device_assignment,
-      &tpu_compilation_device));
+      &num_tasks, &tf_device_assignment, &devices_to_lock,
+      &xla_device_assignment, &tpu_compilation_device));
 
   TF_RETURN_IF_ERROR(UpdateHeadTailOutsideCompilation(
       tf_device_assignment, head_tail_outside_compilation_nodes));
 
-  string replicate;
+  std::string replicate;
   TF_RETURN_IF_ERROR(
       GetNodeAttr(replicate_node->def(), kTPUReplicateAttr, &replicate));
   tpu_replicate_device_names_mapping->emplace(replicate, tf_device_assignment);
@@ -4312,10 +4821,10 @@ DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
   graph->ToGraphDef(&graph_def);
   FunctionLibraryDefinition reachable_functions =
       flib_def->ReachableDefinitions(graph_def);
-  uint64 library_fingerprint;
+  uint64_t library_fingerprint;
 
   TF_RETURN_IF_ERROR(
-      FingerprintFunctionLibrary(reachable_functions, &library_fingerprint));
+      FingerprintFunctionLibrary(reachable_functions, library_fingerprint));
   VLOG(1) << "Fingerprint functions: "
           << absl::StrJoin(reachable_functions.ListFunctionNames(), ", ");
   VLOG(1) << "library_fingerprint: " << library_fingerprint;
@@ -4363,22 +4872,25 @@ DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
       arg_types, guaranteed_constant_nodes, session_handle, arg_sharding,
       arg_fast_mem, arg_names, retval_sharding, num_cores_per_replica,
       /*compile_device=*/tpu_compilation_device, xla_device_assignment.get(),
-      dynamic_shape_nodes, graph, &compile_node, autotuner_thresh, num_tasks));
+      dynamic_shape_nodes, graph, &compile_node, autotuner_thresh));
 
   // Compilation must be sequenced after the control node if the TPU computation
   // in a control-flow construct, such as a loop.
   graph->AddControlEdge(control_before, compile_node);
 
   Node* control_after_compilation;
+  Node* multilock_acquire;
   TF_RETURN_IF_ERROR(BuildCompilationStatusReturnNodes(
-      replicate_node, compile_node, &control_after_compilation, graph));
+      replicate_node, compile_node, devices_to_lock, &control_after_compilation,
+      &multilock_acquire, graph));
 
   std::vector<VariableWrite> variable_writes;
   TF_RETURN_IF_ERROR(BuildExecuteNodes(
       params_info, num_tasks, num_cores_per_replica, *replicate_node, arg_names,
       arg_types, arg_shapes, retval_types, arg_sharding, retval_sharding,
       tf_device_assignment, compile_node, variable_reads,
-      control_after_compilation, control_after, &variable_writes, graph));
+      control_after_compilation, control_after, multilock_acquire,
+      &variable_writes, graph));
   bool contains_resource_write_op =
       ContainsResourceWriteOp(*graph, reachable_functions);
 
@@ -4403,26 +4915,26 @@ DistributedTPURewritePass::BuildCompilationStatusReturnNodes(
       outside_compilation_node_images, graph));
 
   graph->RemoveNode(replicate_node);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Adds sharded weight update optimization for each host training loop.
 //
 // For any host training loop found in the graph, TPUVariableReshard ops
 // are inserted to match the best layout chosen by the XLA.
-/* static */ Status
+/* static */ absl::Status
 DistributedTPURewritePass::PerformHostTrainingLoopOptimization(
     Graph* graph, FunctionLibraryDefinition* flib_def,
     FunctionLibraryRuntime* flr) {
   std::vector<tpu::HostTrainingLoopInfo> host_training_loops_info;
-  Status s = tpu::DetectHostTrainingLoop(
+  absl::Status s = tpu::DetectHostTrainingLoop(
       /*current_function_name=*/nullptr,
       /*current_function_attr=*/nullptr, flib_def, graph, flr,
       &host_training_loops_info);
   if (!s.ok()) {
     VLOG(2) << "No valid host training loop found. Skipping sharded weight "
             << "update optimization.";
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   for (const auto& host_loop : host_training_loops_info) {
@@ -4452,16 +4964,25 @@ DistributedTPURewritePass::PerformHostTrainingLoopOptimization(
       TF_RETURN_IF_ERROR(tpu::AddReshardOp(graph, host_loop));
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status DistributedTPURewritePass::PlaceUnassignedDeviceNodesOnTPUIfPossible(
+absl::Status
+DistributedTPURewritePass::PlaceUnassignedDeviceNodesOnTPUIfPossible(
     Graph* graph) {
-  ReverseDFS(*graph, {}, PlaceOpsOnTPU);
-  return Status::OK();
+  PropagateDevices(CanAcceptTPUDevicePropagation, IsTpuDevice, graph);
+  return absl::OkStatus();
 }
 
-Status DistributedTPURewritePass::Run(
+absl::Status DistributedTPURewritePass::Run(
+    const GraphOptimizationPassOptions& options) {
+  absl::Status status = InternalRun(options);
+  tsl::OkOrSetErrorCounterPayload(
+      tensorflow::core::platform::ErrorSourceProto::TF_XLA_BRIDGE, status);
+  return status;
+}
+
+absl::Status DistributedTPURewritePass::InternalRun(
     const GraphOptimizationPassOptions& options) {
   VLOG(1) << "DistributedTPURewritePass::Run";
 
@@ -4489,8 +5010,8 @@ Status DistributedTPURewritePass::Run(
   std::vector<Node*> replicate_nodes;
   // Map from compiled subgraph cluster name to the outside_compilation nodes in
   // that cluster.
-  std::map<string, OutsideCompilationNodeMap> outside_compilation_nodes;
-  std::map<string, std::vector<Node*>> head_tail_outside_compilation_nodes;
+  std::map<std::string, OutsideCompilationNodeMap> outside_compilation_nodes;
+  std::map<std::string, std::vector<Node*>> head_tail_outside_compilation_nodes;
   TF_RETURN_IF_ERROR(FindTaggedNodes(graph, &replicate_nodes,
                                      &outside_compilation_nodes,
                                      &head_tail_outside_compilation_nodes));
@@ -4498,25 +5019,34 @@ Status DistributedTPURewritePass::Run(
   if (replicate_nodes.empty()) {
     // Remove unused TPUPartitionedInput nodes.
     for (Node* n : graph->nodes()) {
-      if (n->type_string() == kTPUPartitionedInput) graph->RemoveNode(n);
+      if (_IsTPUPartitionedInput(n)) graph->RemoveNode(n);
     }
     VLOG(1) << DumpGraphToFile("distributed_tpu_compilation_after", *graph,
                                options.flib_def);
     VLOG(1) << "Replicate nodes are empty. DistributedTPURewritePass::Run() "
                "finished";
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  std::unordered_map<string, Node*> host_compute_key_placeholder_map;
+  std::unordered_map<std::string, Node*> host_compute_key_placeholder_map;
   TF_RETURN_IF_ERROR(FindHostComputeKeyPlaceholderNodes(
       graph, replicate_nodes, &host_compute_key_placeholder_map));
 
+  // This shape inference pass does not compute the shapes of outputs of
+  // TPU computations. The concurrent multi-core locking implementation
+  // *relies* on this behavior because it ensures that, if TPU computation B's
+  // inputs depend on TPU computation A's outputs, then computation B's
+  // compilation will be sequenced after A's execution, and this ensures that
+  // locks are acquired in the correct order. If the shape inference is improved
+  // to compute shapes of TPU computation outputs, it will be necessary to add
+  // an explicit control edge between lock acquisitions for dependent
+  // computations in order to avoid deadlock.
   GraphShapeInfo shape_info;
   TF_RETURN_IF_ERROR(InferShapes(graph, /*arg_shapes=*/{},
                                  flr->GetFunctionLibraryDefinition(),
                                  &shape_info));
-  int64 autotuner_thresh = options.session_options->config.experimental()
-                               .xla_fusion_autotuner_thresh();
+  int64_t autotuner_thresh = options.session_options->config.experimental()
+                                 .xla_fusion_autotuner_thresh();
 
   NodeToNodeReplicasMap outside_compilation_node_images;
   TPUReplicateDeviceNamesMapping tpu_replicate_device_names_mapping;
@@ -4535,9 +5065,9 @@ Status DistributedTPURewritePass::Run(
   // PlaceUnassignedDeviceNodesOnTPUIfPossible function.
   TF_RETURN_IF_ERROR(SetPaddingNodesDevices(graph));
 
-  std::unordered_map<string, Node*> outside_compilation_inputs;
+  std::unordered_map<std::string, Node*> outside_compilation_inputs;
   for (Node* n : graph->op_nodes()) {
-    string lifted_arg_inputs_attr;
+    std::string lifted_arg_inputs_attr;
     if (n->type_string() == "IdentityN" &&
         GetNodeAttr(n->def(), kXlaOutsideCompilationInputsAttrName,
                     &lifted_arg_inputs_attr)
@@ -4571,7 +5101,7 @@ Status DistributedTPURewritePass::Run(
     VLOG(1) << "Host training loop optimization finished.";
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool DistributedTPURewritePass::distribute_vars_ = false;
@@ -4581,13 +5111,16 @@ bool DistributedTPURewritePass::
 bool DistributedTPURewritePass::
     enable_cross_replica_sharding_mirrored_variables_ = true;
 bool DistributedTPURewritePass::enable_automatic_model_parallelism_ = false;
-bool DistributedTPURewritePass::enable_xla_param_broadcast_ = false;
+bool DistributedTPURewritePass::enable_xla_param_broadcast_ = true;
+bool DistributedTPURewritePass::enable_multicore_locking_ = false;
+bool DistributedTPURewritePass::use_nd_sharding_ops_ = false;
 
 /*static*/ void DistributedTPURewritePass::SetDistributedTpuRewritePassOptions(
     bool distribute_vars, bool allow_xla_spmd_partition,
     bool replicate_inputs_outputs_by_default_for_xla_spmd,
     bool enable_cross_replica_sharding_mirrored_variables,
-    bool enable_automatic_model_parallelism, bool enable_xla_param_broadcast) {
+    bool enable_automatic_model_parallelism, bool enable_xla_param_broadcast,
+    bool enable_multicore_locking, bool use_nd_sharding_ops) {
   distribute_vars_ = distribute_vars;
   allow_xla_spmd_partition_ = allow_xla_spmd_partition;
   replicate_inputs_outputs_by_default_for_xla_spmd_ =
@@ -4596,6 +5129,8 @@ bool DistributedTPURewritePass::enable_xla_param_broadcast_ = false;
       enable_cross_replica_sharding_mirrored_variables;
   enable_automatic_model_parallelism_ = enable_automatic_model_parallelism;
   enable_xla_param_broadcast_ = enable_xla_param_broadcast;
+  enable_multicore_locking_ = enable_multicore_locking;
+  use_nd_sharding_ops_ = use_nd_sharding_ops;
 }
 
 }  // namespace tensorflow

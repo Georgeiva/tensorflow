@@ -12,11 +12,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+// Must be included first
+// clang-format off
+#include "xla/tsl/python/lib/core/numpy.h" //NOLINT
+// clang-format on
 
 #include "tensorflow/python/lib/core/py_seq_tensor.h"
 
 #include "tensorflow/c/eager/tfe_context_internal.h"
 #include "tensorflow/c/eager/tfe_tensorhandle_internal.h"
+#include "tensorflow/c/safe_ptr.h"
 #include "tensorflow/c/tensor_interface.h"
 #include "tensorflow/c/tf_tensor_internal.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -29,10 +34,8 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/python/lib/core/ndarray_tensor.h"
 #include "tensorflow/python/lib/core/ndarray_tensor_bridge.h"
-#include "tensorflow/python/lib/core/numpy.h"
 #include "tensorflow/python/lib/core/py_util.h"
-#include "tensorflow/python/lib/core/safe_ptr.h"
-
+#include "tensorflow/python/lib/core/safe_pyobject_ptr.h"
 namespace tensorflow {
 namespace {
 
@@ -73,7 +76,7 @@ bool IsPyFloat(PyObject* obj) {
 
 struct ConverterState {
   // The inferred tensor shape.
-  gtl::InlinedVector<int64, 4> inferred_shape;
+  absl::InlinedVector<int64_t, 4UL> inferred_shape;
 
   // The inferred tensor data type.
   DataType inferred_dtype;
@@ -112,9 +115,9 @@ PyObject* ZeroDimArrayToScalar(PyObject* obj, ConverterState* state) {
 
 // Sets *elem to a NEW reference to an element in seq on success.
 // REQUIRES: PySequence_Check(seq) && PySequence_Length(seq) > 0.
-Status SampleElementFromSequence(PyObject* seq, PyObject** elem) {
+absl::Status SampleElementFromSequence(PyObject* seq, PyObject** elem) {
   *elem = PySequence_GetItem(seq, 0);
-  if (*elem != nullptr) return Status::OK();
+  if (*elem != nullptr) return absl::OkStatus();
   // seq may implement the sequence protocol (i.e., implement __getitem__)
   // but may legitimately not have a 0-th element (__getitem__(self, 0)
   // raises a KeyError). For example:
@@ -142,13 +145,13 @@ Status SampleElementFromSequence(PyObject* seq, PyObject** elem) {
                                    Py_TYPE(seq)->tp_name,
                                    " object since it is an empty sequence");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 tstring PyRepr(PyObject* obj);
 bool IsPyDimension(PyObject* obj);
 
-Status InferShapeAndType(PyObject* obj, ConverterState* state) {
+absl::Status InferShapeAndType(PyObject* obj, ConverterState* state) {
   std::vector<Safe_PyObjectPtr> refs_to_clean;
   while (true) {
     // Convert any zero dimensional numpy arrays to scalars first of all.
@@ -205,7 +208,7 @@ Status InferShapeAndType(PyObject* obj, ConverterState* state) {
                                      ") with an unsupported type (",
                                      PyRepr(PyType(obj)), ") to a Tensor.");
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 }
 
@@ -253,21 +256,21 @@ struct Converter {
     Safe_PyObjectPtr seq = make_safe(PySequence_Fast(obj, ""));
     if (TF_PREDICT_FALSE(seq == nullptr)) return ErrorRectangular;
 
-    const int64 s = state->inferred_shape[depth];
+    const int64_t s = state->inferred_shape[depth];
     if (TF_PREDICT_FALSE(s != PySequence_Fast_GET_SIZE(seq.get()))) {
       return ErrorRectangular;
     }
 
     if (state->inferred_shape.size() - depth > 1) {
       /* Iterate over outer dim, and recursively convert each element. */
-      for (int64 i = 0; i < s; ++i) {
+      for (int64_t i = 0; i < s; ++i) {
         const char* error = Helper(PySequence_Fast_GET_ITEM(seq.get(), i),
                                    depth + 1, state, buf);
         if (TF_PREDICT_FALSE(error != nullptr)) return error;
       }
     } else {
       PyObject** l = PySequence_Fast_ITEMS(seq.get());
-      for (int64 i = 0; i < s; ++i) {
+      for (int64_t i = 0; i < s; ++i) {
         auto scalar = ZeroDimArrayToScalar(l[i], state);
         const char* error = ConverterTraits<T>::ConvertScalar(scalar, *buf);
         Py_DECREF(scalar);
@@ -278,8 +281,9 @@ struct Converter {
     return nullptr;
   }
 
-  static Status Convert(TFE_Context* ctx, PyObject* obj, ConverterState* state,
-                        TFE_TensorHandle** h, const char** error) {
+  static absl::Status Convert(TFE_Context* ctx, PyObject* obj,
+                              ConverterState* state, TFE_TensorHandle** h,
+                              const char** error) {
     // TODO(josh11b): Allocator & attributes
     AbstractTensorInterface* t;
     if (state->inferred_shape.empty()) { /* Scalar case */
@@ -308,24 +312,25 @@ struct Converter {
     }
     *h = tensorflow::wrap(tensorflow::unwrap(ctx)->CreateLocalHandle(t));
     t->Release();
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 
 // Int support
 
 template <>
-struct ConverterTraits<int64> {
-  static AbstractTensorInterface* CreateScalar(TFE_Context* ctx, int64 value) {
+struct ConverterTraits<int64_t> {
+  static AbstractTensorInterface* CreateScalar(TFE_Context* ctx,
+                                               int64_t value) {
     return tensorflow::unwrap(ctx)->CreateInt64Scalar(value);
   }
 
   static AbstractTensorInterface* CreateTensor(
-      TFE_Context* ctx, absl::Span<const int64> dim_sizes) {
+      TFE_Context* ctx, absl::Span<const int64_t> dim_sizes) {
     return tensorflow::unwrap(ctx)->CreateTensor(DT_INT64, dim_sizes);
   }
 
-  static const char* ConvertScalar(PyObject* v, int64* out) {
+  static const char* ConvertScalar(PyObject* v, int64_t* out) {
 #if PY_MAJOR_VERSION < 3
     if (TF_PREDICT_TRUE(PyInt_Check(v))) {
       *out = PyInt_AS_LONG(v);
@@ -352,7 +357,7 @@ struct ConverterTraits<int64> {
   }
 };
 
-typedef Converter<int64> Int64Converter;
+typedef Converter<int64_t> Int64Converter;
 
 template <>
 struct ConverterTraits<uint64> {
@@ -361,7 +366,7 @@ struct ConverterTraits<uint64> {
   }
 
   static AbstractTensorInterface* CreateTensor(
-      TFE_Context* ctx, absl::Span<const int64> dim_sizes) {
+      TFE_Context* ctx, absl::Span<const int64_t> dim_sizes) {
     return tensorflow::unwrap(ctx)->CreateTensor(DT_UINT64, dim_sizes);
   }
 
@@ -393,17 +398,18 @@ typedef Converter<uint64> UInt64Converter;
 
 template <>
 struct ConverterTraits<int32> {
-  static AbstractTensorInterface* CreateScalar(TFE_Context* ctx, int32 value) {
+  static AbstractTensorInterface* CreateScalar(TFE_Context* ctx,
+                                               int32_t value) {
     return tensorflow::unwrap(ctx)->CreateInt32Scalar(value);
   }
 
   static AbstractTensorInterface* CreateTensor(
-      TFE_Context* ctx, absl::Span<const int64> dim_sizes) {
+      TFE_Context* ctx, absl::Span<const int64_t> dim_sizes) {
     return tensorflow::unwrap(ctx)->CreateTensor(DT_INT32, dim_sizes);
   }
 
   static const char* ConvertScalar(PyObject* v, int32* out) {
-    int64 i;
+    int64_t i;
 #if PY_MAJOR_VERSION < 3
     if (TF_PREDICT_TRUE(PyInt_Check(v))) {
       i = PyInt_AS_LONG(v);
@@ -445,11 +451,10 @@ static inline bool CheckForOverflow(double as_double, T* out) {
 }
 
 // There is no `std::isinf` that takes `Eigen::half` as argument but Eigen
-// provides `Eigen::half_impl::isinf` instead.
+// provides `Eigen::numext::isinf` instead.
 template <>
 inline bool CheckForOverflow<Eigen::half>(double as_double, Eigen::half* out) {
-  return (sizeof(Eigen::half) < sizeof(double) &&
-          Eigen::half_impl::isinf(*out) && std::isfinite(as_double));
+  return (Eigen::numext::isinf(*out) && std::isfinite(as_double));
 }
 
 template <class T>
@@ -505,7 +510,7 @@ struct ConverterTraits<float> {
   }
 
   static AbstractTensorInterface* CreateTensor(
-      TFE_Context* ctx, absl::Span<const int64> dim_sizes) {
+      TFE_Context* ctx, absl::Span<const int64_t> dim_sizes) {
     return tensorflow::unwrap(ctx)->CreateTensor(DT_FLOAT, dim_sizes);
   }
 
@@ -521,7 +526,7 @@ struct ConverterTraits<double> {
   }
 
   static AbstractTensorInterface* CreateTensor(
-      TFE_Context* ctx, absl::Span<const int64> dim_sizes) {
+      TFE_Context* ctx, absl::Span<const int64_t> dim_sizes) {
     return tensorflow::unwrap(ctx)->CreateTensor(DT_DOUBLE, dim_sizes);
   }
 
@@ -541,7 +546,7 @@ struct ConverterTraits<Eigen::half> {
   }
 
   static AbstractTensorInterface* CreateTensor(
-      TFE_Context* ctx, absl::Span<const int64> dim_sizes) {
+      TFE_Context* ctx, absl::Span<const int64_t> dim_sizes) {
     return tensorflow::unwrap(ctx)->CreateTensor(DT_HALF, dim_sizes);
   }
 
@@ -562,7 +567,7 @@ struct ConverterTraits<tstring> {
   }
 
   static AbstractTensorInterface* CreateTensor(
-      TFE_Context* ctx, absl::Span<const int64> dim_sizes) {
+      TFE_Context* ctx, absl::Span<const int64_t> dim_sizes) {
     return tensorflow::unwrap(ctx)->CreateTensor(DT_STRING, dim_sizes);
   }
 
@@ -613,9 +618,9 @@ tstring PyRepr(PyObject* obj) {
 bool IsPyDimension(PyObject* obj) {
   const char* tp_name = obj->ob_type->tp_name;
   if (strcmp(tp_name, "Dimension") != 0) return false;
-  bool ret = str_util::EndsWith(
-      PyRepr(PyType(obj)),
-      "tensorflow.python.framework.tensor_shape.Dimension'>");
+  bool ret =
+      absl::EndsWith(PyRepr(PyType(obj)),
+                     "tensorflow.python.framework.tensor_shape.Dimension'>");
   return ret;
 }
 
@@ -629,7 +634,7 @@ struct ConverterTraits<complex128> {
   }
 
   static AbstractTensorInterface* CreateTensor(
-      TFE_Context* ctx, absl::Span<const int64> dim_sizes) {
+      TFE_Context* ctx, absl::Span<const int64_t> dim_sizes) {
     return tensorflow::unwrap(ctx)->CreateTensor(DT_COMPLEX128, dim_sizes);
   }
 
@@ -661,7 +666,7 @@ struct ConverterTraits<bool> {
   }
 
   static AbstractTensorInterface* CreateTensor(
-      TFE_Context* ctx, absl::Span<const int64> dim_sizes) {
+      TFE_Context* ctx, absl::Span<const int64_t> dim_sizes) {
     return tensorflow::unwrap(ctx)->CreateTensor(DT_BOOL, dim_sizes);
   }
 
@@ -686,13 +691,13 @@ typedef Converter<bool> BoolConverter;
 // other.
 TFE_TensorHandle* NumpyToTFE_TensorHandle(TFE_Context* ctx, PyObject* obj) {
   Safe_TF_TensorPtr tf_tensor = make_safe(static_cast<TF_Tensor*>(nullptr));
-  Status status = tensorflow::NdarrayToTensor(ctx, obj, &tf_tensor);
+  absl::Status status = tensorflow::NdarrayToTensor(ctx, obj, &tf_tensor);
 
   if (TF_PREDICT_FALSE(!status.ok())) {
     PyErr_SetString(PyExc_ValueError,
                     tensorflow::strings::StrCat(
                         "Failed to convert a NumPy array to a Tensor (",
-                        status.error_message(), ").")
+                        status.message(), ").")
                         .c_str());
     return nullptr;
   }
@@ -712,15 +717,32 @@ TFE_TensorHandle* PySeqToTFE_TensorHandle(TFE_Context* ctx, PyObject* obj,
   // These objects are efficiently handled by Numpy. We transform them into
   // Numpy arrays and handle them in the Numpy case below. Note that Tensors
   // implement the __array__ function, and will be handled in this shortcut.
-  Safe_PyObjectPtr array =
-      make_safe(PyArray_FromArrayAttr(obj, nullptr, nullptr));
-  if (array == nullptr) {
-    return nullptr;
+  // We used to call PyArray_FromArrayAttr here, but NumPy 2.0 changed its
+  // semantics such that it errors if a copy of the array is required.
+  // (Ideally no copy would be needed here, but that would be a larger change.)
+  Safe_PyObjectPtr array;
+  if (PyObject_HasAttrString(obj, "__array__")) {
+    array = make_safe(PyObject_CallMethod(obj, "__array__", nullptr));
+    if (array == nullptr) {
+      return nullptr;
+    }
+    if (!PyArray_Check(array.get())) {
+      PyErr_SetString(PyExc_ValueError,
+                      "Value returned by __array__ is not a NumPy array");
+      return nullptr;
+    }
   }
-  if (array.get() == Py_NotImplemented) {
-    // The Py_NotImplemented returned from PyArray_FromArrayAttr is not
-    // Py_INCREF'ed, so we don't want the Safe_PyObjectPtr to Py_DECREF it.
-    array.release();
+  if (!array) {
+    // Try __array_interface__ objects (such as PIL Image).
+    array = make_safe(PyArray_FromInterface(obj));
+    if (array == nullptr) {
+      return nullptr;
+    }
+    if (array.get() == Py_NotImplemented) {
+      array.release();
+    } else {
+      obj = array.get();
+    }
   } else {
     // PyArray_FromArrayAttr ensures that `array` is a PyArrayObject, so all
     // we have to do is replace `obj` with it and continue.
@@ -763,9 +785,9 @@ TFE_TensorHandle* PySeqToTFE_TensorHandle(TFE_Context* ctx, PyObject* obj,
   }
 
   ConverterState state;
-  Status status = InferShapeAndType(obj, &state);
+  absl::Status status = InferShapeAndType(obj, &state);
   if (!status.ok()) {
-    PyErr_SetString(PyExc_ValueError, status.error_message().c_str());
+    PyErr_SetString(PyExc_ValueError, absl::StatusMessageAsCStr(status));
     return nullptr;
   }
   DataType requested_dtype = DT_INVALID;
@@ -894,7 +916,7 @@ TFE_TensorHandle* PySeqToTFE_TensorHandle(TFE_Context* ctx, PyObject* obj,
   }
 
   if (!status.ok()) {
-    PyErr_SetString(PyExc_ValueError, status.error_message().c_str());
+    PyErr_SetString(PyExc_ValueError, absl::StatusMessageAsCStr(status));
     return nullptr;
   }
 

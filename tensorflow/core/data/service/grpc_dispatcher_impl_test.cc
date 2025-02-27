@@ -25,6 +25,7 @@ limitations under the License.
 #include "grpcpp/security/credentials.h"
 #include "grpcpp/support/channel_arguments.h"
 #include "absl/strings/str_cat.h"
+#include "tensorflow/core/data/service/common.h"
 #include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/data/service/credentials_factory.h"
 #include "tensorflow/core/data/service/dispatcher.pb.h"
@@ -37,6 +38,7 @@ limitations under the License.
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/protobuf/data_service.pb.h"
 #include "tensorflow/core/protobuf/service_config.pb.h"
 
 namespace tensorflow {
@@ -58,14 +60,14 @@ class GrpcDispatcherImplTest : public ::testing::Test {
     TF_ASSERT_OK(SetUpDispatcherClientStub());
   }
 
-  Status SetUpDispatcherServer() {
+  absl::Status SetUpDispatcherServer() {
     experimental::DispatcherConfig config;
     config.set_protocol(kProtocol);
     TF_RETURN_IF_ERROR(NewDispatchServer(config, dispatcher_server_));
     return dispatcher_server_->Start();
   }
 
-  Status SetUpDispatcherClientStub() {
+  absl::Status SetUpDispatcherClientStub() {
     std::shared_ptr<ChannelCredentials> credentials;
     TF_RETURN_IF_ERROR(
         CredentialsFactory::CreateClientCredentials(kProtocol, &credentials));
@@ -75,83 +77,24 @@ class GrpcDispatcherImplTest : public ::testing::Test {
     std::shared_ptr<Channel> channel =
         ::grpc::CreateCustomChannel(GetDispatcherAddress(), credentials, args);
     dispatcher_client_stub_ = DispatcherService::NewStub(channel);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   std::string GetDispatcherAddress() const {
     return absl::StrCat(kHostAddress, ":", dispatcher_server_->BoundPort());
   }
 
-  StatusOr<GetOrRegisterDatasetResponse> RegisterDataset() {
-    TF_ASSIGN_OR_RETURN(test_util::GraphDefTestCase graph_def_test_case,
-                        test_util::map_test_case(/*range=*/10));
-    GetOrRegisterDatasetRequest request;
-    GetOrRegisterDatasetResponse response;
-    *request.mutable_dataset()->mutable_graph() = graph_def_test_case.graph_def;
-    ClientContext context;
-    TF_RETURN_IF_ERROR(
-        FromGrpcStatus(dispatcher_client_stub_->GetOrRegisterDataset(
-            &context, request, &response)));
-    return response;
-  }
-
-  StatusOr<GetOrCreateJobResponse> CreateJob(const int64 dataset_id) {
-    GetOrCreateJobRequest request;
-    GetOrCreateJobResponse response;
-    request.set_dataset_id(dataset_id);
-    request.set_processing_mode(ProcessingModeDef::PARALLEL_EPOCHS);
-    ClientContext context;
-    TF_RETURN_IF_ERROR(FromGrpcStatus(
-        dispatcher_client_stub_->GetOrCreateJob(&context, request, &response)));
-    return response;
-  }
-
-  StatusOr<WorkerHeartbeatResponse> WorkerHeartbeat() {
-    WorkerHeartbeatRequest request;
-    WorkerHeartbeatResponse response;
-    request.set_worker_address(kHostAddress);
-    request.set_transfer_address(kHostAddress);
-    ClientContext client_ctx;
-    TF_RETURN_IF_ERROR(FromGrpcStatus(dispatcher_client_stub_->WorkerHeartbeat(
-        &client_ctx, request, &response)));
-    return response;
-  }
-
-  StatusOr<ClientHeartbeatResponse> ClientHeartbeat(const int64 job_client_id) {
-    ClientHeartbeatRequest request;
-    ClientHeartbeatResponse response;
-    request.set_job_client_id(job_client_id);
-    ClientContext client_ctx;
-    TF_RETURN_IF_ERROR(FromGrpcStatus(dispatcher_client_stub_->ClientHeartbeat(
-        &client_ctx, request, &response)));
-    return response;
-  }
-
   std::unique_ptr<DispatchGrpcDataServer> dispatcher_server_;
   std::unique_ptr<DispatcherService::Stub> dispatcher_client_stub_;
 };
 
-TEST_F(GrpcDispatcherImplTest, WorkerHeartbeat) {
-  TF_ASSERT_OK_AND_ASSIGN(GetOrRegisterDatasetResponse dataset_response,
-                          RegisterDataset());
-  TF_ASSERT_OK(CreateJob(dataset_response.dataset_id()).status());
-  TF_ASSERT_OK_AND_ASSIGN(WorkerHeartbeatResponse worker_response,
-                          WorkerHeartbeat());
-  ASSERT_EQ(worker_response.new_tasks().size(), 1);
-  EXPECT_EQ(worker_response.new_tasks(0).dataset_id(),
-            dataset_response.dataset_id());
-}
-
-TEST_F(GrpcDispatcherImplTest, ClientHeartbeat) {
-  TF_ASSERT_OK_AND_ASSIGN(GetOrRegisterDatasetResponse dataset_response,
-                          RegisterDataset());
-  TF_ASSERT_OK_AND_ASSIGN(GetOrCreateJobResponse job_response,
-                          CreateJob(dataset_response.dataset_id()));
-  TF_ASSERT_OK(WorkerHeartbeat().status());
-  TF_ASSERT_OK_AND_ASSIGN(ClientHeartbeatResponse client_response,
-                          ClientHeartbeat(job_response.job_client_id()));
-  ASSERT_EQ(client_response.task_info().size(), 1);
-  EXPECT_EQ(client_response.task_info(0).worker_address(), kHostAddress);
+TEST_F(GrpcDispatcherImplTest, GrpcTest) {
+  ClientContext ctx;
+  GetVersionRequest req;
+  GetVersionResponse resp;
+  TF_ASSERT_OK(
+      FromGrpcStatus(dispatcher_client_stub_->GetVersion(&ctx, req, &resp)));
+  EXPECT_EQ(resp.version(), kDataServiceVersion);
 }
 
 }  // namespace

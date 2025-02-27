@@ -21,13 +21,25 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "tensorflow/compiler/xla/status_macros.h"
+#include "xla/status_macros.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
+#include "tensorflow/core/common_runtime/optimization_registry.h"
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_builder.h"
+#include "tensorflow/core/framework/node_def_util.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/platform/fingerprint.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/strcat.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/dump_graph.h"
 
 namespace tensorflow {
@@ -46,10 +58,10 @@ uint64 MergedOpFingerprint(absl::Span<Node* const> ops) {
   return Fingerprint64(absl::StrJoin(op_names, ","));
 }
 
-Status MergeVarHandleOps(const string& device, absl::Span<Node* const> nodes,
-                         Graph* graph) {
+absl::Status MergeVarHandleOps(const string& device,
+                               absl::Span<Node* const> nodes, Graph* graph) {
   int num_var_handles(nodes.size());
-  if (num_var_handles <= 1) return Status::OK();
+  if (num_var_handles <= 1) return absl::OkStatus();
 
   std::vector<string> containers(num_var_handles);
   std::vector<string> names(num_var_handles);
@@ -74,9 +86,7 @@ Status MergeVarHandleOps(const string& device, absl::Span<Node* const> nodes,
   builder.Device(device);
   NodeDef node_def;
   TF_RETURN_IF_ERROR(builder.Finalize(&node_def));
-  Status status;
-  Node* node = graph->AddNode(node_def, &status);
-  TF_RETURN_IF_ERROR(status);
+  TF_ASSIGN_OR_RETURN(Node * node, graph->AddNode(node_def));
   node->set_assigned_device_name(device);
 
   graph->AddControlEdge(graph->source_node(), node);
@@ -90,13 +100,13 @@ Status MergeVarHandleOps(const string& device, absl::Span<Node* const> nodes,
       graph->AddEdge(node, t.second < 0 ? -1 : i, t.first, t.second);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status MergeReadVariableOps(Node* handle_op, Node* control_node,
-                            absl::Span<Node* const> nodes, Graph* graph) {
+absl::Status MergeReadVariableOps(Node* handle_op, Node* control_node,
+                                  absl::Span<Node* const> nodes, Graph* graph) {
   int num_reads(nodes.size());
-  if (num_reads <= 1) return Status::OK();
+  if (num_reads <= 1) return absl::OkStatus();
 
   DataTypeVector dtypes(num_reads);
   for (int i = 0; i < num_reads; ++i) {
@@ -109,9 +119,7 @@ Status MergeReadVariableOps(Node* handle_op, Node* control_node,
   AddNodeAttr("N", num_reads, &node_def);
   AddNodeAttr("dtypes", dtypes, &node_def);
   node_def.set_device(handle_op->requested_device());
-  Status status;
-  Node* node = graph->AddNode(node_def, &status);
-  TF_RETURN_IF_ERROR(status);
+  TF_ASSIGN_OR_RETURN(Node * node, graph->AddNode(node_def));
   node->set_assigned_device_name(handle_op->assigned_device_name());
   if (control_node) graph->AddControlEdge(control_node, node);
   for (int i = 0; i < num_reads; ++i) {
@@ -128,12 +136,13 @@ Status MergeReadVariableOps(Node* handle_op, Node* control_node,
       graph->AddEdge(node, t.second < 0 ? -1 : i, t.first, t.second);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
 
-Status VariableMergerPass::Run(const GraphOptimizationPassOptions& options) {
+absl::Status VariableMergerPass::Run(
+    const GraphOptimizationPassOptions& options) {
   Graph* graph = options.graph->get();
 
   VLOG(1) << DumpGraphToFile("variable_merger_pass_before", *graph);
@@ -198,7 +207,7 @@ Status VariableMergerPass::Run(const GraphOptimizationPassOptions& options) {
   }
 
   VLOG(1) << DumpGraphToFile("variable_merger_pass_after", *graph);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

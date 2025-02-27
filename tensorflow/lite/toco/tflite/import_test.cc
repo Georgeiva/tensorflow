@@ -14,11 +14,21 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/toco/tflite/import.h"
 
-#include "flatbuffers/flexbuffers.h"
+#include <cstdint>
+#include <initializer_list>
+#include <string>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/schema/schema_conversion_utils.h"
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "flatbuffers/vector.h"  // from @flatbuffers
+#include "tensorflow/compiler/mlir/lite/schema/schema_conversion_utils.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/toco/model.h"
+#include "tensorflow/lite/toco/model_flags.pb.h"
+#include "tensorflow/lite/toco/toco_types.h"
 #include "tensorflow/lite/version.h"
 
 namespace toco {
@@ -54,7 +64,7 @@ class ImportTest : public ::testing::Test {
         /*min=*/builder_.CreateVector<float>({0.1f}),
         /*max=*/builder_.CreateVector<float>({0.2f}),
         /*scale=*/builder_.CreateVector<float>({0.3f}),
-        /*zero_point=*/builder_.CreateVector<int64_t>({100ll}));
+        /*zero_point=*/builder_.CreateVector<int64_t>({100LL}));
     auto t1 =
         ::tflite::CreateTensor(builder_, builder_.CreateVector<int>({1, 2, 2}),
                                ::tflite::TensorType_FLOAT32, 1,

@@ -14,18 +14,21 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for `tf.data.Dataset.batch()`."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import time
+from typing import Callable, Optional
 
 from absl.testing import parameterized
 import numpy as np
 
+from tensorflow.python.checkpoint import checkpoint as trackable_utils
+from tensorflow.python.checkpoint import checkpoint_management
+from tensorflow.python.data.experimental.ops import global_shuffle_op
+from tensorflow.python.data.experimental.ops import random_access
 from tensorflow.python.data.kernel_tests import checkpoint_test_base
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.data.ops import options as options_lib
 from tensorflow.python.data.util import nest
 from tensorflow.python.framework import combinations
 from tensorflow.python.framework import dtypes
@@ -193,8 +196,8 @@ class BatchTest(test_base.DatasetTestBase, parameterized.TestCase):
         dataset,
         expected_error=(
             errors.InvalidArgumentError,
-            r'Cannot batch tensors with different shapes in component 0. First '
-            r'element had shape \[3\] and element 2 had shape \[4\].'))
+            r"Cannot batch tensors with different shapes in component 0. First "
+            r"element had shape \[3\] and element 2 had shape \[4\]."))
 
   @combinations.generate(test_base.default_test_combinations())
   def testRagged(self):
@@ -267,34 +270,76 @@ class BatchTest(test_base.DatasetTestBase, parameterized.TestCase):
       dataset = dataset.batch(
           batch_size=6, num_parallel_calls=2,
           deterministic=local_determinism).unbatch()
-      opts = dataset_ops.Options()
-      opts.experimental_deterministic = global_determinism
+      opts = options_lib.Options()
+      opts.deterministic = global_determinism
       dataset = dataset.with_options(opts)
       return dataset
 
     self.checkDeterminism(dataset_fn, expect_determinism, elements)
 
+  @combinations.generate(test_base.eager_only_combinations())
+  def testCheckpointLargeBatches(self):
+    # Batches of size 512M
+    dataset = dataset_ops.Dataset.from_tensors(
+        array_ops.ones((64, 1024, 1024), dtype=dtypes.float32)).repeat()
+    dataset = dataset.batch(2, num_parallel_calls=5)
+    iterator = iter(dataset)
+    next(iterator)  # request an element to fill the buffer
+    ckpt = trackable_utils.Checkpoint(iterator=iterator)
+    manager = checkpoint_management.CheckpointManager(
+        ckpt, self.get_temp_dir(), max_to_keep=1)
+    manager.save()
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(num_parallel_calls=[None, 1])))
+  def testName(self, num_parallel_calls):
+    dataset = dataset_ops.Dataset.range(5).batch(
+        5, num_parallel_calls=num_parallel_calls, name="batch")
+    self.assertDatasetProduces(dataset, [list(range(5))])
+
 
 class BatchCheckpointTest(checkpoint_test_base.CheckpointTestBase,
                           parameterized.TestCase):
 
-  def build_dataset(self, multiplier=15.0, tensor_slice_len=2, batch_size=2):
+  def _build_dataset(self,
+                     multiplier=15.0,
+                     tensor_slice_len=2,
+                     batch_size=2,
+                     num_parallel_calls=None,
+                     options=None):
     components = (np.arange(tensor_slice_len), np.array([[1, 2, 3]]) *
                   np.arange(tensor_slice_len)[:, np.newaxis],
                   np.array(multiplier) * np.arange(tensor_slice_len))
 
-    return dataset_ops.Dataset.from_tensor_slices(components).batch(batch_size)
+    dataset = dataset_ops.Dataset.from_tensor_slices(components)
+    dataset = dataset.batch(batch_size, num_parallel_calls=num_parallel_calls)
+    if options:
+      dataset = dataset.with_options(options)
+    return dataset
 
   @combinations.generate(
-      combinations.times(test_base.default_test_combinations(),
-                         checkpoint_test_base.default_test_combinations()))
-  def test(self, verify_fn):
+      combinations.times(
+          test_base.default_test_combinations(),
+          checkpoint_test_base.default_test_combinations(),
+          combinations.combine(
+              symbolic_checkpoint=[False, True], num_parallel_calls=[None, 4]
+          ),
+      )
+  )
+  def test(self, verify_fn, symbolic_checkpoint, num_parallel_calls):
     tensor_slice_len = 8
     batch_size = 2
+    options = options_lib.Options()
+    options.experimental_symbolic_checkpoint = symbolic_checkpoint
     num_outputs = tensor_slice_len // batch_size
-    verify_fn(self,
-              lambda: self.build_dataset(15.0, tensor_slice_len, batch_size),
-              num_outputs)
+    verify_fn(
+        self,
+        lambda: self._build_dataset(
+            15.0, tensor_slice_len, batch_size, num_parallel_calls, options
+        ),
+        num_outputs,
+    )
 
   def _sparse(self, i):
     return sparse_tensor.SparseTensorValue(
@@ -319,5 +364,233 @@ class BatchCheckpointTest(checkpoint_test_base.CheckpointTestBase,
     verify_fn(self, self._build_dataset_nested_sparse, num_outputs=1)
 
 
-if __name__ == '__main__':
+class BatchRandomAccessTest(test_base.DatasetTestBase, parameterized.TestCase):
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(index=[-1, 2, 3, 4])))
+  def testInvalidIndex(self, index):
+    dataset = dataset_ops.Dataset.from_tensor_slices([1, 2, 3, 4]).batch(2)
+    with self.assertRaises(errors.OutOfRangeError):
+      self.evaluate(random_access.at(dataset, index=index))
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testEmptyDataset(self):
+    dataset = dataset_ops.Dataset.from_tensor_slices([]).batch(2)
+    with self.assertRaises(errors.OutOfRangeError):
+      self.evaluate(random_access.at(dataset, 0))
+
+  @combinations.generate(
+      combinations.times(
+          test_base.default_test_combinations(),
+          combinations.combine(
+              count=[0, 10, 20, 30, 40, 50],
+              batch_size=[1, 3, 5, 7, 10, 20],
+              drop_remainder=[True, False])))
+  def testBasic(self, count, batch_size, drop_remainder):
+    """Tests the batch dataset logic for various input configurations.
+
+    Args:
+      count: the number of input elements
+      batch_size: the batch size
+      drop_remainder: whether a smaller batch size should be produced if batch
+        size does not divide number of inputs evenly
+    """
+    dataset = dataset_ops.Dataset.from_tensor_slices(list(range(count))).batch(
+        batch_size=batch_size, drop_remainder=drop_remainder)
+    num_full_batches = count // batch_size
+    for i in range(num_full_batches):
+      expected_batch = np.arange(
+          i * batch_size, (i * batch_size + batch_size), 1, dtype=np.int32)
+      self.assertAllEqual(expected_batch,
+                          self.evaluate(random_access.at(dataset, i)))
+    has_remainder = (not drop_remainder) and (count % batch_size != 0)
+    if has_remainder:
+      expected_batch = np.arange(batch_size * num_full_batches, count, 1)
+      self.assertAllEqual(
+          expected_batch,
+          self.evaluate(random_access.at(dataset, num_full_batches)))
+    with self.assertRaises(errors.OutOfRangeError):
+      self.evaluate(
+          random_access.at(
+              dataset, index=num_full_batches + (1 if has_remainder else 0)))
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testRandomAccessBatchWithShuffle(self):
+    dataset = dataset_ops.Dataset.from_tensor_slices([1, 2, 3, 4, 5, 6, 7])
+    shuffle_dataset = dataset.shuffle(buffer_size=10, seed=2)
+    batch_dataset = shuffle_dataset.batch(2)
+
+    expected_output = [
+        np.array([5, 2], dtype=np.int32),
+        np.array([4, 7], dtype=np.int32),
+        np.array([1, 3], dtype=np.int32),
+        np.array([6], dtype=np.int32)
+    ]
+    for i in range(4):
+      self.assertAllEqual(expected_output[i],
+                          self.evaluate(random_access.at(batch_dataset, i)))
+
+    # Checks the order is consistent with shuffle dataset.
+    for i in range(3):
+      self.assertAllEqual(
+          expected_output[i][0],
+          self.evaluate(random_access.at(shuffle_dataset, i * 2)))
+      self.assertAllEqual(
+          expected_output[i][1],
+          self.evaluate(random_access.at(shuffle_dataset, (i * 2) + 1)))
+
+    # Checks the remainder is the last element in shuffled dataset.
+    self.assertAllEqual(expected_output[3][0],
+                        self.evaluate(random_access.at(shuffle_dataset, 6)))
+
+
+class BatchGlobalShuffleTest(test_base.DatasetTestBase, parameterized.TestCase):
+
+  @combinations.generate(
+      combinations.times(
+          test_base.default_test_combinations(),
+          combinations.combine(
+              dataset_range=[100],
+              batch_size=[2, 7])))
+  def testBatch(
+      self, dataset_range: int, batch_size: int):
+    dataset = dataset_ops.Dataset.range(dataset_range)
+    dataset = dataset.batch(batch_size, drop_remainder=True)
+    dataset = dataset.prefetch(buffer_size=dataset_ops.AUTOTUNE)
+    dataset = global_shuffle_op._global_shuffle(dataset)
+    dataset = dataset.unbatch()
+
+    expected = list(range(0, (dataset_range // batch_size) * batch_size))
+    dataset_output = self.getDatasetOutput(
+        dataset, requires_initialization=True)
+    self.assertCountEqual(dataset_output, expected)
+    self.assertNotEqual(dataset_output, expected)
+
+  @combinations.generate(
+      combinations.times(
+          test_base.default_test_combinations(),
+          combinations.combine(
+              dataset_range=[100],
+              batch_size=[2, 7],
+              reshuffle=[True, False],
+              seed=[None, 42])))
+  def testReshuffleRepeatEpochs(
+      self,
+      dataset_range: int,
+      batch_size: int,
+      reshuffle: bool,
+      seed: Optional[int]):
+    dataset = dataset_ops.Dataset.range(dataset_range)
+    dataset = dataset.batch(batch_size, drop_remainder=True)
+    dataset = dataset.prefetch(buffer_size=dataset_ops.AUTOTUNE)
+    dataset = global_shuffle_op._global_shuffle(
+        dataset, seed=seed, reshuffle_each_iteration=reshuffle)
+    dataset = dataset.repeat(2)
+    dataset = dataset.unbatch()
+
+    expected = list(range(0, (dataset_range // batch_size) * batch_size))
+    len_per_iteration = len(expected)
+    expected *= 2
+
+    output = self.getDatasetOutput(dataset, requires_initialization=True)
+    self.assertCountEqual(output, expected)
+    output_per_iteration = [
+        output[i : i + len_per_iteration]
+        for i in range(0, len(output), len_per_iteration)]
+    if reshuffle:
+      self.assertNotEqual(output_per_iteration[0], output_per_iteration[1])
+    else:
+      self.assertEqual(output_per_iteration[0], output_per_iteration[1])
+
+  @combinations.generate(
+      combinations.times(
+          test_base.default_test_combinations(),
+          combinations.combine(
+              dataset_range=[100],
+              batch_size=[2, 7])))
+  def testNoDropRemainder(
+      self, dataset_range: int, batch_size: int):
+    dataset = dataset_ops.Dataset.range(dataset_range)
+    dataset = dataset.batch(batch_size, drop_remainder=False)
+    dataset = dataset.prefetch(buffer_size=dataset_ops.AUTOTUNE)
+
+    with self.assertRaisesRegex(
+        errors.FailedPreconditionError,
+        "does not support global shuffling with `drop_remainder=False`."):
+      dataset = global_shuffle_op._global_shuffle(dataset)
+      self.getDatasetOutput(dataset, requires_initialization=True)
+
+
+class BatchGlobalShuffleCheckpointTest(checkpoint_test_base.CheckpointTestBase,
+                                       parameterized.TestCase):
+
+  @combinations.generate(
+      combinations.times(
+          test_base.default_test_combinations(),
+          checkpoint_test_base.default_test_combinations(),
+          combinations.combine(
+              dataset_range=[10],
+              batch_size=[2, 3],
+              symbolic_checkpoint=[True, False])))
+  def testBatch(
+      self,
+      verify_fn: Callable[..., None],
+      dataset_range: int,
+      batch_size: int,
+      symbolic_checkpoint: bool):
+
+    def _build_dataset() -> dataset_ops.Dataset:
+      dataset = dataset_ops.Dataset.range(dataset_range)
+      dataset = dataset.batch(batch_size, drop_remainder=True)
+      dataset = dataset.prefetch(buffer_size=dataset_ops.AUTOTUNE)
+      dataset = global_shuffle_op._global_shuffle(dataset, seed=42)
+      dataset = dataset.unbatch()
+      options = options_lib.Options()
+      options.experimental_symbolic_checkpoint = symbolic_checkpoint
+      return dataset.with_options(options)
+
+    verify_fn(
+        self,
+        _build_dataset,
+        num_outputs=(dataset_range // batch_size) * batch_size,
+        assert_items_equal=True)
+
+  # Creating multiple iterators with the same seed is only supported in v2 API.
+  @combinations.generate(
+      combinations.times(
+          combinations.combine(tf_api_version=2, mode="eager"),
+          checkpoint_test_base.default_test_combinations(),
+          combinations.combine(
+              dataset_range=[10],
+              batch_size=[2, 3],
+              reshuffle_each_iteration=[True, False],
+              symbolic_checkpoint=[True, False])))
+  def testReshuffleEachIteration(
+      self,
+      verify_fn: Callable[..., None],
+      dataset_range: int,
+      batch_size: int,
+      reshuffle_each_iteration: bool,
+      symbolic_checkpoint: bool):
+
+    def _build_dataset() -> dataset_ops.Dataset:
+      dataset = dataset_ops.Dataset.range(dataset_range)
+      dataset = dataset.batch(batch_size, drop_remainder=True)
+      dataset = dataset.prefetch(buffer_size=dataset_ops.AUTOTUNE)
+      dataset = global_shuffle_op._global_shuffle(
+          dataset, seed=42, reshuffle_each_iteration=reshuffle_each_iteration)
+      dataset = dataset.unbatch()
+      options = options_lib.Options()
+      options.experimental_symbolic_checkpoint = symbolic_checkpoint
+      return dataset.with_options(options)
+
+    verify_fn(
+        self,
+        _build_dataset,
+        num_outputs=(dataset_range // batch_size) * batch_size,
+        assert_items_equal=reshuffle_each_iteration)
+
+
+if __name__ == "__main__":
   test.main()

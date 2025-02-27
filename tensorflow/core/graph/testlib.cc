@@ -40,7 +40,7 @@ Node* Send(Graph* g, Node* input, const string& tensor, const string& sender,
                   .Attr("tensor_name", tensor)
                   .Attr("send_device", sender)
                   .Attr("send_device_incarnation",
-                        static_cast<int64>(sender_incarnation))
+                        static_cast<int64_t>(sender_incarnation))
                   .Attr("recv_device", receiver)
                   .Finalize(g, &ret));
   return ret;
@@ -57,7 +57,7 @@ Node* Recv(Graph* g, const string& tensor, const string& type,
                   .Attr("tensor_name", tensor)
                   .Attr("send_device", sender)
                   .Attr("send_device_incarnation",
-                        static_cast<int64>(sender_incarnation))
+                        static_cast<int64_t>(sender_incarnation))
                   .Attr("recv_device", receiver)
                   .Finalize(g, &ret));
   return ret;
@@ -239,7 +239,7 @@ Node* Binary(Graph* g, const string& func, Node* in0, Node* in1) {
   return ret;
 }
 
-Node* Multi(Graph* g, const string& func, gtl::ArraySlice<Node*> ins) {
+Node* Multi(Graph* g, const string& func, absl::Span<Node* const> ins) {
   Node* ret;
   auto b = NodeBuilder(g->NewName("n"), func, g->op_registry());
   for (Node* n : ins) b = b.Input(n);
@@ -341,7 +341,7 @@ Node* Merge(Graph* g, Node* in0, Node* in1) {
   return ret;
 }
 
-Node* Merge(Graph* g, Node* in0, gtl::ArraySlice<string> remaining_in) {
+Node* Merge(Graph* g, Node* in0, absl::Span<const string> remaining_in) {
   std::vector<NodeBuilder::NodeOut> inputs;
   inputs.reserve(remaining_in.size() + 1);
   inputs.emplace_back(in0);
@@ -355,7 +355,7 @@ Node* Merge(Graph* g, Node* in0, gtl::ArraySlice<string> remaining_in) {
   return ret;
 }
 
-Node* Concat(Graph* g, Node* concat_dim, gtl::ArraySlice<Node*> tensors) {
+Node* Concat(Graph* g, Node* concat_dim, absl::Span<Node* const> tensors) {
   std::vector<NodeBuilder::NodeOut> nodeouts;
   nodeouts.reserve(tensors.size());
   for (auto const t : tensors) {
@@ -369,7 +369,7 @@ Node* Concat(Graph* g, Node* concat_dim, gtl::ArraySlice<Node*> tensors) {
   return ret;
 }
 
-Node* ConcatV2(Graph* g, gtl::ArraySlice<Node*> tensors, Node* concat_dim) {
+Node* ConcatV2(Graph* g, absl::Span<Node* const> tensors, Node* concat_dim) {
   std::vector<NodeBuilder::NodeOut> nodeouts;
   nodeouts.reserve(tensors.size());
   for (auto const t : tensors) {
@@ -506,7 +506,7 @@ Node* CheckNumerics(Graph* g, Node* in, const string& message) {
   return ret;
 }
 
-Node* Arg(Graph* g, int64 index, DataType type) {
+Node* Arg(Graph* g, int64_t index, DataType type) {
   Node* ret;
   TF_CHECK_OK(NodeBuilder(g->NewName("n"), "_Arg")
                   .Attr("T", type)
@@ -515,10 +515,10 @@ Node* Arg(Graph* g, int64 index, DataType type) {
   return ret;
 }
 
-Node* Retval(Graph* g, int64 index, Node* in) {
+Node* Retval(Graph* g, int64_t index, Node* in, int64_t in_index) {
   Node* ret;
   TF_CHECK_OK(NodeBuilder(g->NewName("n"), "_Retval")
-                  .Input(in)
+                  .Input(in, in_index)
                   .Attr("index", index)
                   .Finalize(g, &ret));
   return ret;

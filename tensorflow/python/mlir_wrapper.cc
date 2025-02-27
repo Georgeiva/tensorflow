@@ -13,13 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "pybind11/pybind11.h"
-#include "pybind11/pytypes.h"
+#include <string>
+#include <vector>
+
+#include "pybind11/pybind11.h"  // from @pybind11
+#include "pybind11/pytypes.h"  // from @pybind11
+#include "pybind11/stl.h"  // from @pybind11
+#include "tensorflow/c/eager/c_api.h"
+#include "tensorflow/c/safe_ptr.h"
 #include "tensorflow/c/tf_status.h"
 #include "tensorflow/compiler/mlir/python/mlir.h"
 #include "tensorflow/python/lib/core/pybind11_lib.h"
 #include "tensorflow/python/lib/core/pybind11_status.h"
-#include "tensorflow/python/lib/core/safe_ptr.h"
 
 PYBIND11_MODULE(_pywrap_mlir, m) {
   m.def("ImportGraphDef",
@@ -43,6 +48,21 @@ PYBIND11_MODULE(_pywrap_mlir, m) {
           if (!ctxt) throw py::error_already_set();
           std::string output = tensorflow::ImportFunction(
               functiondef, pass_pipeline, show_debug_info, ctxt, status.get());
+          tensorflow::MaybeRaiseRegisteredFromTFStatus(status.get());
+          return output;
+        });
+
+  m.def("ImportGraphDef",
+        [](const std::string &graphdef, const std::string &pass_pipeline,
+           bool show_debug_info, const std::string &input_names,
+           const std::string &input_data_types,
+           const std::string &input_data_shapes,
+           const std::string &output_names) {
+          tensorflow::Safe_TF_StatusPtr status =
+              tensorflow::make_safe(TF_NewStatus());
+          std::string output = tensorflow::ImportGraphDef(
+              graphdef, pass_pipeline, show_debug_info, input_names,
+              input_data_types, input_data_shapes, output_names, status.get());
           tensorflow::MaybeRaiseRegisteredFromTFStatus(status.get());
           return output;
         });
@@ -75,13 +95,15 @@ PYBIND11_MODULE(_pywrap_mlir, m) {
   m.def("ExperimentalConvertSavedModelV1ToMlir",
         [](const std::string &saved_model_path,
            const std::string &exported_names_str, const std::string &tags,
-           bool lift_variables, bool upgrade_legacy, bool show_debug_info) {
+           bool lift_variables, bool include_variables_in_initializers,
+           bool upgrade_legacy, bool show_debug_info) {
           tensorflow::Safe_TF_StatusPtr status =
               tensorflow::make_safe(TF_NewStatus());
           std::string output =
               tensorflow::ExperimentalConvertSavedModelV1ToMlir(
                   saved_model_path, exported_names_str, tags, lift_variables,
-                  upgrade_legacy, show_debug_info, status.get());
+                  include_variables_in_initializers, upgrade_legacy,
+                  show_debug_info, status.get());
           tensorflow::MaybeRaiseRegisteredFromTFStatus(status.get());
           return output;
         });
@@ -96,4 +118,12 @@ PYBIND11_MODULE(_pywrap_mlir, m) {
           tensorflow::MaybeRaiseRegisteredFromTFStatus(status.get());
           return output;
         });
+
+  m.def("ExperimentalWriteBytecode", [](const std::string &filename,
+                                        const std::string &mlir_txt) {
+    tensorflow::Safe_TF_StatusPtr status =
+        tensorflow::make_safe(TF_NewStatus());
+    tensorflow::ExperimentalWriteBytecode(filename, mlir_txt, status.get());
+    tensorflow::MaybeRaiseRegisteredFromTFStatus(status.get());
+  });
 };

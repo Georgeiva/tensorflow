@@ -19,8 +19,10 @@ limitations under the License.
 #define TF_DEVICE_DIALECT
 
 include "mlir/IR/OpBase.td"
+include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/IR/SymbolInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // TensorFlow Device Dialect definitions
@@ -46,7 +48,7 @@ def TfDevice_Dialect : Dialect {
 //===----------------------------------------------------------------------===//
 
 // Base class for the operation in this dialect.
-class TfDevice_Op<string mnemonic, list<OpTrait> traits = []> :
+class TfDevice_Op<string mnemonic, list<Trait> traits = []> :
     Op<TfDevice_Dialect, mnemonic, traits> { }
 
 def TfDevice_LaunchOp : TfDevice_Op<"launch",
@@ -71,23 +73,22 @@ This op captures all needed live-in values.
 
   let extraClassDeclaration = [{
     Block &GetBody() { return getOperation()->getRegion(0).front(); }
-    StringRef getDevice() { return device(); }
     bool WrapsSingleOp();
   }];
 
   let builders = [
     OpBuilder<(ins "StringAttr":$device, "TypeRange":$result_types),
     [{
-        $_state.addAttribute("device", device);
-        $_state.addTypes(result_types);
-        $_state.addRegion();
-      }]>
+      $_state.addAttribute("device", device);
+      $_state.addTypes(result_types);
+      $_state.addRegion();
+    }]>
   ];
 
   let hasCanonicalizer = 1;
 }
 
-def TfDevice_ReturnOp : TfDevice_Op<"return", [NoSideEffect, ReturnLike, Terminator]> {
+def TfDevice_ReturnOp : TfDevice_Op<"return", [Pure, ReturnLike, Terminator]> {
   let summary = [{
 The `tf_device.return` operation terminates and returns values from a
 `tf_device` dialect operation.
@@ -115,16 +116,11 @@ def TfDevice_LaunchFuncOp : TfDevice_Op<"launch_func", []> {
   let arguments = (ins
     StrAttr:$device,
     FlatSymbolRefAttr:$func,
-    Variadic<AnyType>:$operands);
+    Variadic<AnyType>);
 
   let results = (outs
     Variadic<AnyType>:$results
   );
-
-  let extraClassDeclaration = [{
-    StringRef getFunc() { return func(); }
-    StringRef getDevice() { return device(); }
-  }];
 }
 
 def TfDevice_ParallelExecuteOp : TfDevice_Op<"parallel_execute",
@@ -172,7 +168,7 @@ def TfDevice_ParallelExecuteOp : TfDevice_Op<"parallel_execute",
     OpBuilder<(ins "int":$num_regions, "TypeRange":$output_types)>,
   ];
 
-  let verifier = [{ return Verify(*this); }];
+  let hasVerifier = 1;
 }
 
 def TfDevice_ReplicateOp : TfDevice_Op<"replicate",
@@ -216,17 +212,17 @@ For example:
 %1 = "tf.opB"() : () -> tensor<i32>
 %2 = "tf.opC"() : () -> tensor<f32>
 %3 = "tf.opD"() : () -> tensor<f32>
-%4 = "tf.opE"() : () -> tensor<!tf.resource>
-%5 = "tf.opF"() : () -> tensor<!tf.resource>
-%6 = "tf.opG"() : () -> tensor<!tf.string>
-%7 = "tf.opH"() : () -> tensor<!tf.string>
-%8 = "tf.opI"() : () -> tensor<!tf.variant>
+%4 = "tf.opE"() : () -> tensor<!tf_type.resource>
+%5 = "tf.opF"() : () -> tensor<!tf_type.resource>
+%6 = "tf.opG"() : () -> tensor<!tf_type.string>
+%7 = "tf.opH"() : () -> tensor<!tf_type.string>
+%8 = "tf.opI"() : () -> tensor<!tf_type.variant>
 %9 = "tf.opJ"() : () -> tensor<i1>
 %output:8 = tf_device.replicate([%0, %1] as %input_0: tensor<i32>,
                                 [%2, %3] as %input_1: tensor<f32>,
-                                [%4, %5] as %input_2: tensor<!tf.resource>,
-                                [%6, %7] as %input_3: tensor<!tf.string>,
-                                %8 as %input_4: tensor<!tf.variant>)
+                                [%4, %5] as %input_2: tensor<!tf_type.resource>,
+                                [%6, %7] as %input_3: tensor<!tf_type.string>,
+                                %8 as %input_4: tensor<!tf_type.variant>)
                 {n = 2 : i32,
                  devices = {DEVICE_ALIAS_0 = ["/DEVICE:0", "/DEVICE:1"],
                             DEVICE_ALIAS_1 = ["/DEVICE:2", "/DEVICE:3"]}} {
@@ -235,25 +231,25 @@ For example:
   // "/DEVICE:1"/"/DEVICE:3", depending on which device alias is used.
   %k = "tf_device.launch"() ( {
     %9 = "tf.opK"(%input_0, %input_4, %9) :
-      (tensor<i32>, tensor<!tf.variant>, tensor<i1>) -> tensor<i32>
+      (tensor<i32>, tensor<!tf_type.variant>, tensor<i1>) -> tensor<i32>
     tf_device.return %9 : tensor<i32>
   }) {device = "DEVICE_ALIAS_0"} : () -> tensor<i32>
   %l = "tf_device.launch"() ( {
     %10 = "tf.opL"(%input_1, %input_4, %9) :
-      (tensor<f32>, tensor<!tf.variant>, tensor<i1>) -> tensor<f32>
+      (tensor<f32>, tensor<!tf_type.variant>, tensor<i1>) -> tensor<f32>
     tf_device.return %10 : tensor<f32>
   }) {device = "DEVICE_ALIAS_1"} : () -> tensor<f32>
   %m = "tf_device.launch"() ( {
     %11 = "tf.opM"(%input_2, %input_4, %9) :
-      (tensor<!tf.resource>, tensor<!tf.variant>, tensor<i1>)
-        -> tensor<!tf.resource>
-    tf_device.return %11 : tensor<!tf.resource>
+      (tensor<!tf_type.resource>, tensor<!tf_type.variant>, tensor<i1>)
+        -> tensor<!tf_type.resource>
+    tf_device.return %11 : tensor<!tf_type.resource>
   }) {device = "/DEVICE:4"} : () -> tensor<f32>
   %n = "tf.opN"(%input_3, %input_4, %9) :
-    (tensor<!tf.string>, tensor<!tf.variant>, tensor<i1>)
-      -> tensor<!tf.string>
+    (tensor<!tf_type.string>, tensor<!tf_type.variant>, tensor<i1>)
+      -> tensor<!tf_type.string>
   tf_device.return %k, %l, %m, %n :
-    tensor<i32>, tensor<f32>, tensor<!tf.resource>, tensor<!tf.string>
+    tensor<i32>, tensor<f32>, tensor<!tf_type.resource>, tensor<!tf_type.string>
 }
 // %output#0 corresponds to %k returned from "/DEVICE:0"
 // %output#1 corresponds to %k returned from "/DEVICE:1"
@@ -268,8 +264,7 @@ For example:
     Variadic<AnyType>:$replicated_inputs,
     Variadic<AnyType>:$packed_inputs,
 
-    I32ElementsAttr:$operand_segment_sizes,
-    Confined<I32Attr, [IntMinValue<2>]>:$n,
+    ConfinedAttr<I32Attr, [IntMinValue<2>]>:$n,
     OptionalAttr<DictionaryAttr>:$devices
   );
 
@@ -298,14 +293,13 @@ For example:
       "const llvm::SmallDenseMap<StringRef, llvm::SmallVector<StringRef, 4>>&":$devices,
       "llvm::ArrayRef<std::pair<ValueRange, Type>>":$replicated_inputs,
       "ValueRange":$packed_inputs, "TypeRange":$replica_output_types)>,
-    OpBuilder<(ins "int":$n, "llvm::Optional<DictionaryAttr>":$devices,
+    OpBuilder<(ins "int":$n, "std::optional<DictionaryAttr>":$devices,
       "llvm::ArrayRef<std::pair<ValueRange, Type>>":$replicated_inputs,
       "ValueRange":$packed_inputs, "TypeRange":$replica_output_types)>,
   ];
 
-  let parser = [{ return Parse$cppClass(&parser, &result); }];
-  let printer = [{ return Print(*this, &p); }];
-  let verifier = [{ return Verify(*this); }];
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 }
 
 def TfDevice_ClusterOp : TfDevice_Op<"cluster",
@@ -343,7 +337,8 @@ used to form the cluster.
   let hasCanonicalizer = 1;
 }
 
-def TfDevice_ClusterFuncOp : TfDevice_Op<"cluster_func", []> {
+def TfDevice_ClusterFuncOp : TfDevice_Op<"cluster_func",
+    [CallOpInterface, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = [{
 The `tf_device.cluster_func` launches a function containing the body of a
 cluster.
@@ -355,7 +350,7 @@ This op is used for outlining a cluster.
 
   let arguments = (ins
     FlatSymbolRefAttr:$func,
-    Variadic<AnyType>:$operands
+    Variadic<AnyType>:$args
   );
 
   let results = (outs
@@ -363,10 +358,25 @@ This op is used for outlining a cluster.
   );
 
   let extraClassDeclaration = [{
-    // returns the function that this operation will launch.
-    FuncOp getFunc() {
-      return SymbolTable::lookupNearestSymbolFrom<FuncOp>(*this, func());
+    // Gets the argument operands to the called function.
+    operand_range getArgOperands() { return getArgs(); }
+    MutableOperandRange getArgOperandsMutable() {
+      return getArgsMutable();
     }
+    // returns the function that this operation will launch.
+    func::FuncOp getFuncOp() {
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(*this, getFuncAttr());
+    }
+    CallInterfaceCallable getCallableForCallee() {
+      return getFuncAttr();
+    }
+    void setCalleeFromCallable(::mlir::CallInterfaceCallable callee);
+    Attribute removeArgAttrsAttr() { return nullptr; }
+    Attribute removeResAttrsAttr() { return nullptr; }
+    ArrayAttr getArgAttrsAttr() { return nullptr; }
+    ArrayAttr getResAttrsAttr() { return nullptr; }
+    void setArgAttrsAttr(ArrayAttr) { return; }
+    void setResAttrsAttr(ArrayAttr) { return; }
   }];
 }
 

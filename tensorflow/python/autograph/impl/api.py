@@ -14,19 +14,13 @@
 # ==============================================================================
 """This module contains the user- and codegen-facing API for AutoGraph."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import functools
-import imp
+import importlib
 import inspect
 import os
 import sys
 import textwrap
 import traceback
-
-import six
 
 from tensorflow.python.autograph import operators
 from tensorflow.python.autograph import utils
@@ -61,7 +55,7 @@ from tensorflow.python.autograph.pyct import transpiler
 from tensorflow.python.autograph.pyct.static_analysis import activity
 from tensorflow.python.autograph.pyct.static_analysis import reaching_definitions
 from tensorflow.python.autograph.utils import ag_logging as logging
-from tensorflow.python.eager import function
+from tensorflow.python.eager.polymorphic_function import tf_method_target
 from tensorflow.python.framework import errors_impl
 from tensorflow.python.util import tf_decorator
 from tensorflow.python.util import tf_inspect
@@ -204,7 +198,8 @@ class PyToTF(transpiler.PyToPy):
       # TODO(mdan): Move into core or replace with an actual importable module.
       # Craft a module that exposes the external API as well as certain
       # internal modules.
-      ag_internal = imp.new_module('autograph')
+      module_spec = importlib.machinery.ModuleSpec('autograph', None)
+      ag_internal = importlib.util.module_from_spec(module_spec)
       ag_internal.__dict__.update(inspect.getmodule(PyToTF).__dict__)
       ag_internal.ConversionOptions = converter.ConversionOptions
       ag_internal.STD = converter.STANDARD_OPTIONS
@@ -395,7 +390,7 @@ def converted_call(f, args, kwargs, caller_fn_scope=None, options=None):
 
       f_self = getattr(f, '__self__', None)
       if f_self is not None:
-        if isinstance(f_self, function.TfMethodTarget):
+        if isinstance(f_self, tf_method_target.TfMethodTarget):
           f_self = f_self.target
         effective_args = (f_self,) + effective_args
 
@@ -456,7 +451,8 @@ def _call_unconverted(f, args, kwargs, options, update_cache=True):
   if update_cache:
     conversion.cache_allowlisted(f, options)
 
-  if inspect.ismethod(f) and isinstance(f.__self__, function.TfMethodTarget):
+  if (inspect.ismethod(f) and
+      isinstance(f.__self__, tf_method_target.TfMethodTarget)):
     return f.__self__.call(args, kwargs)
 
   if kwargs is not None:
@@ -473,15 +469,18 @@ def _fall_back_unconverted(f, args, kwargs, options, exc):
       'Cause: %s\n'
       'To silence this warning, decorate the function with'
       ' @tf.autograph.experimental.do_not_convert')
-  if isinstance(exc, errors.UnsupportedLanguageElementError):
+  if isinstance(exc, errors.InaccessibleSourceCodeError):
+    if ag_ctx.INSPECT_SOURCE_SUPPORTED:
+      logging.warning(warning_template, f, '', exc)
+  elif isinstance(exc, errors.UnsupportedLanguageElementError):
     if not conversion.is_in_allowlist_cache(f, options):
-      logging.warn(warning_template, f, '', exc)
+      logging.warning(warning_template, f, '', exc)
   else:
     file_bug_message = (
         'Please report this to the TensorFlow team. When filing the bug, set'
         ' the verbosity to 10 (on Linux, `export AUTOGRAPH_VERBOSITY=10`) and'
         ' attach the full output.\n')
-    logging.warn(warning_template, f, file_bug_message, exc)
+    logging.warning(warning_template, f, file_bug_message, exc)
 
   return _call_unconverted(f, args, kwargs, options)
 
@@ -605,8 +604,7 @@ def call_with_unspecified_conversion_status(func):
 def _log_callargs(f, args, kwargs):
   """Logging helper."""
   logging.log(2, 'Defaults of %s : %s', f, f.__defaults__)
-  if not six.PY2:
-    logging.log(2, 'KW defaults of %s : %s', f, f.__kwdefaults__)
+  logging.log(2, 'KW defaults of %s : %s', f, f.__kwdefaults__)
 
   if kwargs is not None:
     callargs = tf_inspect.getcallargs(f, *args, **kwargs)

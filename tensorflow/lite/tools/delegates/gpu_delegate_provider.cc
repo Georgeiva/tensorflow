@@ -119,7 +119,7 @@ void GpuDelegateProvider::LogParams(const ToolParams& params,
 
 TfLiteDelegatePtr GpuDelegateProvider::CreateTfLiteDelegate(
     const ToolParams& params) const {
-  TfLiteDelegatePtr delegate(nullptr, [](TfLiteDelegate*) {});
+  TfLiteDelegatePtr delegate = CreateNullDelegate();
 
   if (params.Get<bool>("use_gpu")) {
 #if TFLITE_SUPPORTS_GPU_DELEGATE
@@ -148,6 +148,29 @@ TfLiteDelegatePtr GpuDelegateProvider::CreateTfLiteDelegate(
     }
     gpu_opts.max_delegated_partitions =
         params.Get<int>("max_delegated_partitions");
+#ifdef TFLITE_DEBUG_DELEGATE
+    gpu_opts.first_delegate_node_index =
+        params.Get<int>("first_delegate_node_index");
+    gpu_opts.last_delegate_node_index =
+        params.Get<int>("last_delegate_node_index");
+#endif  // TFLITE_DEBUG_DELEGATE
+#ifdef TFLITE_GPU_ENABLE_INVOKE_LOOP
+    gpu_opts.gpu_invoke_loop_times = params.Get<int>("gpu_invoke_loop_times");
+#endif  // TFLITE_GPU_ENABLE_INVOKE_LOOP
+
+    // Serialization.
+    std::string serialize_dir =
+        params.Get<std::string>("delegate_serialize_dir");
+    std::string serialize_token =
+        params.Get<std::string>("delegate_serialize_token");
+    if (!serialize_dir.empty() && !serialize_token.empty()) {
+      gpu_opts.experimental_flags =
+          gpu_opts.experimental_flags |
+          TFLITE_GPU_EXPERIMENTAL_FLAGS_ENABLE_SERIALIZATION;
+      gpu_opts.serialization_dir = serialize_dir.c_str();
+      gpu_opts.model_token = serialize_token.c_str();
+    }
+
     delegate = evaluation::CreateGPUDelegate(&gpu_opts);
 #elif defined(REAL_IPHONE_DEVICE)
     TFLGpuDelegateOptions gpu_opts = {0};

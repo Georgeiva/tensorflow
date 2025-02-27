@@ -19,14 +19,17 @@ limitations under the License.
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <ostream>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "tensorflow/core/util/stats_calculator.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/profiling/memory_info.h"
+#include "tensorflow/lite/profiling/memory_usage_monitor.h"
 #include "tensorflow/lite/tools/benchmark/benchmark_params.h"
 #include "tensorflow/lite/tools/command_line_flags.h"
 
@@ -43,23 +46,27 @@ class BenchmarkResults {
   BenchmarkResults() {}
   BenchmarkResults(double model_size_mb, int64_t startup_latency_us,
                    uint64_t input_bytes,
-                   tensorflow::Stat<int64_t> warmup_time_us,
-                   tensorflow::Stat<int64_t> inference_time_us,
+                   tensorflow::StatWithPercentiles<int64_t> warmup_time_us,
+                   tensorflow::StatWithPercentiles<int64_t> inference_time_us,
                    const profiling::memory::MemoryUsage& init_mem_usage,
-                   const profiling::memory::MemoryUsage& overall_mem_usage)
+                   const profiling::memory::MemoryUsage& overall_mem_usage,
+                   float peak_mem_mb)
       : model_size_mb_(model_size_mb),
         startup_latency_us_(startup_latency_us),
         input_bytes_(input_bytes),
         warmup_time_us_(warmup_time_us),
         inference_time_us_(inference_time_us),
         init_mem_usage_(init_mem_usage),
-        overall_mem_usage_(overall_mem_usage) {}
+        overall_mem_usage_(overall_mem_usage),
+        peak_mem_mb_(peak_mem_mb) {}
 
   const double model_size_mb() const { return model_size_mb_; }
-  tensorflow::Stat<int64_t> inference_time_us() const {
+  tensorflow::StatWithPercentiles<int64_t> inference_time_us() const {
     return inference_time_us_;
   }
-  tensorflow::Stat<int64_t> warmup_time_us() const { return warmup_time_us_; }
+  tensorflow::StatWithPercentiles<int64_t> warmup_time_us() const {
+    return warmup_time_us_;
+  }
   int64_t startup_latency_us() const { return startup_latency_us_; }
   uint64_t input_bytes() const { return input_bytes_; }
   double throughput_MB_per_second() const {
@@ -74,15 +81,21 @@ class BenchmarkResults {
   const profiling::memory::MemoryUsage& overall_mem_usage() const {
     return overall_mem_usage_;
   }
+  float peak_mem_mb() const { return peak_mem_mb_; }
 
  private:
   double model_size_mb_ = 0.0;
   int64_t startup_latency_us_ = 0;
   uint64_t input_bytes_ = 0;
-  tensorflow::Stat<int64_t> warmup_time_us_;
-  tensorflow::Stat<int64_t> inference_time_us_;
+  tensorflow::StatWithPercentiles<int64_t> warmup_time_us_;
+  tensorflow::StatWithPercentiles<int64_t> inference_time_us_;
   profiling::memory::MemoryUsage init_mem_usage_;
   profiling::memory::MemoryUsage overall_mem_usage_;
+  // An invalid value could happen when we don't monitor memory footprint for
+  // the inference, or the memory usage info isn't available on the benchmarking
+  // platform.
+  float peak_mem_mb_ =
+      profiling::memory::MemoryUsageMonitor::kInvalidMemUsageMB;
 };
 
 class BenchmarkListener {
@@ -179,7 +192,7 @@ class BenchmarkModel {
       : params_(std::move(params)) {}
   virtual ~BenchmarkModel() {}
   virtual TfLiteStatus Init() = 0;
-  TfLiteStatus Run(int argc, char** argv);
+  virtual TfLiteStatus Run(int argc, char** argv);
   virtual TfLiteStatus Run();
   void AddListener(BenchmarkListener* listener) {
     listeners_.AddListener(listener);
@@ -206,15 +219,20 @@ class BenchmarkModel {
   // Get the model file size if it's available.
   virtual int64_t MayGetModelFileSize() { return -1; }
   virtual uint64_t ComputeInputBytes() = 0;
-  virtual tensorflow::Stat<int64_t> Run(int min_num_times, float min_secs,
-                                        float max_secs, RunType run_type,
-                                        TfLiteStatus* invoke_status);
+  virtual tensorflow::StatWithPercentiles<int64_t> Run(
+      int min_num_times, float min_secs, float max_secs, RunType run_type,
+      TfLiteStatus* invoke_status);
   // Prepares input data for benchmark. This can be used to initialize input
   // data that has non-trivial cost.
   virtual TfLiteStatus PrepareInputData();
 
   virtual TfLiteStatus ResetInputsAndOutputs();
   virtual TfLiteStatus RunImpl() = 0;
+
+  // Create a MemoryUsageMonitor to report peak memory footprint if specified.
+  virtual std::unique_ptr<profiling::memory::MemoryUsageMonitor>
+  MayCreateMemoryUsageMonitor() const;
+
   BenchmarkParams params_;
   BenchmarkListeners listeners_;
 };

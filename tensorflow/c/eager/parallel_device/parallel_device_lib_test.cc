@@ -15,20 +15,35 @@ limitations under the License.
 
 #include "tensorflow/c/eager/parallel_device/parallel_device_lib.h"
 
-#include "tensorflow/c/c_api.h"
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <gmock/gmock.h>
+#include "absl/status/status.h"
 #include "tensorflow/c/c_api_experimental.h"
 #include "tensorflow/c/eager/c_api.h"
 #include "tensorflow/c/eager/c_api_experimental.h"
 #include "tensorflow/c/eager/parallel_device/parallel_device_testlib.h"
 #include "tensorflow/c/eager/tfe_context_internal.h"
+#include "tensorflow/c/tf_buffer.h"
+#include "tensorflow/c/tf_datatype.h"
+#include "tensorflow/c/tf_status.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/common_runtime/eager/context.h"
+#include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/function.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/framework/function.pb.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
 namespace parallel_device {
 
+using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 
 TEST(PARALLEL_DEVICE_LIB, TestOpWithError) {
@@ -125,7 +140,7 @@ TEST(PARALLEL_DEVICE_LIB, TestExplicitOutputShape) {
   ASSERT_TRUE(TF_GetCode(status.get()) == TF_OK) << TF_Message(status.get());
   const std::vector<std::unique_ptr<ParallelTensor>>& handles = *outputs;
   const std::vector<int64_t>* shape;
-  Status s = handles[0]->Shape(&shape);
+  absl::Status s = handles[0]->Shape(&shape);
   ASSERT_TRUE(s.ok());
   EXPECT_EQ(0, shape->size());
 }
@@ -253,8 +268,8 @@ TEST(PARALLEL_DEVICE_LIB, TestDifferentShapes) {
           parallel_device, std::move(vector_handles), status.get());
   ASSERT_TRUE(TF_GetCode(status.get()) == TF_OK) << TF_Message(status.get());
   const std::vector<int64_t>* shape;
-  Status s = unknown_length_vector->Shape(&shape);
-  EXPECT_FALSE(s.ok());
+  TF_ASSERT_OK(unknown_length_vector->Shape(&shape));
+  EXPECT_THAT(*shape, ElementsAre(-1));
 
   TensorHandlePtr scalar = FloatTensorHandle(2., status.get());
   ASSERT_TRUE(TF_GetCode(status.get()) == TF_OK) << TF_Message(status.get());
@@ -270,16 +285,15 @@ TEST(PARALLEL_DEVICE_LIB, TestDifferentShapes) {
   ASSERT_TRUE(TF_GetCode(status.get()) == TF_OK);
   // Can't take the shape of a parallel tensor with varying numbers of axes, but
   // running operations on them is OK.
-  s = unknown_length_vector->Shape(&shape);
-  EXPECT_FALSE(s.ok());
+  TF_ASSERT_OK(unknown_length_vector->Shape(&shape));
+  EXPECT_THAT(*shape, ElementsAre(-1));
   std::unique_ptr<TFE_Op, decltype(&TFE_DeleteOp)> size_op(
       TFE_NewOp(context.get(), "Size", status.get()), TFE_DeleteOp);
   auto result = parallel_device.Execute(
       context.get(), {unknown_dims_vector.get()}, "Size",
       TFE_OpGetAttrs(size_op.get()), 1, status.get());
   ASSERT_TRUE(TF_GetCode(status.get()) == TF_OK);
-  s = (*result)[0]->Shape(&shape);
-  ASSERT_TRUE(TF_GetCode(status.get()) == TF_OK);
+  TF_ASSERT_OK((*result)[0]->Shape(&shape));
   EXPECT_EQ(0, shape->size());
 }
 

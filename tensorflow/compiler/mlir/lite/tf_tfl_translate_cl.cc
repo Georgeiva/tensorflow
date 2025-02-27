@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/tf_tfl_translate_cl.h"
 
+#include "llvm/Support/CommandLine.h"
+
 using llvm::cl::opt;
 
 // TODO(jpienaar): Revise the command line option parsing here.
@@ -71,6 +73,12 @@ opt<bool> output_mlir(
     llvm::cl::desc(
         "Output MLIR rather than FlatBuffer for the generated TFLite model"),
     llvm::cl::init(false));
+// NOLINTNEXTLINE
+opt<bool> allow_all_select_tf_ops(
+    "allow-all-select-tf-ops",
+    llvm::cl::desc("Allow automatic pass through of TF ops (outside the flex "
+                   "allowlist) as select Tensorflow ops"),
+    llvm::cl::init(false));
 
 // The following approach allows injecting opdefs in addition
 // to those that are already part of the global TF registry  to be linked in
@@ -104,12 +112,6 @@ opt<std::string> quant_stats_file_name("quant-stats",
                                        llvm::cl::value_desc("filename"),
                                        llvm::cl::init(""));
 
-// NOLINTNEXTLINE
-opt<bool> convert_tf_while_to_tfl_while(
-    "convert_tf_while_to_tfl_while",
-    llvm::cl::desc("Whether to legalize TF While to TFL While."),
-    llvm::cl::init(true));
-
 // A list of comma separated TF operators which are created by the user.
 // This must be used with `-emit-select-tf-ops=true`.
 // NOLINTNEXTLINE
@@ -124,4 +126,95 @@ opt<bool> unfold_batchmatmul(
     "unfold_batchmatmul",
     llvm::cl::desc(
         "Whether to unfold TF BatchMatMul to a set of TFL FullyConnected ops."),
-    llvm::cl::init(true));
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> unfold_large_splat_constant(
+    "unfold-large-splat-constant",
+    llvm::cl::desc("Whether to unfold large splat constant tensors to reduce "
+                   "the generated model size."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> guarantee_all_funcs_one_use(
+    "guarantee-all-funcs-one-use",
+    llvm::cl::desc(
+        "Whether to clone functions to ensure each function has a single use."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> enable_dynamic_update_slice(
+    "enable-dynamic-update-slice",
+    llvm::cl::desc("Whether to enable dynamic update slice op to convert "
+                   "TensorListSetItem op."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> import_hlo("import-hlo",
+                     llvm::cl::desc("Whether the input file is hlo file."),
+                     llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<HloImportType> hlo_import_type(
+    "hlo-import-type", llvm::cl::desc("The file type of the hlo."),
+    llvm::cl::values(clEnumVal(proto, "Import hlo in proto binary format"),
+                     clEnumVal(hlotxt, "Import hlo in hlotxt format"),
+                     clEnumVal(mlir_text, "Import hlo in mlir_text format")));
+
+// NOLINTNEXTLINE
+opt<bool> enable_hlo_to_tf_conversion(
+    "enable-hlo-to-tf-conversion",
+    llvm::cl::desc("Whether to enable the hlo to tf ops conversion."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> disable_hlo_to_tfl_conversion(
+    "disable-hlo-to-tfl-conversion",
+    llvm::cl::desc("Whether to disable the hlo to tfl ops conversion."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> preserve_assert_op(
+    "preserve-assert-op",
+    llvm::cl::desc("Preserve AssertOp during tfl legalization."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> enable_stablehlo_conversion(
+    "enable-stablehlo-conversion",
+    llvm::cl::desc("Enable converting TF to Stablehlo."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> post_training_quantization(
+    "post-training-quantization",
+    llvm::cl::desc("Enable post_training_quantization."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> legalize_custom_tensor_list_ops(
+    "legalize-custom-tensor-list-ops",
+    llvm::cl::desc("Convert \"tf.TensorList*\" ops to \"tfl.custom_op\""
+                   "if they can all be supported."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> reduce_type_precision(
+    "reduce-type-precision",
+    llvm::cl::desc("Convert tensors to a lower precision if all values are "
+                   "within the reduced precision range. This could have side "
+                   "effects triggered by downstream packing algorithms."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> enable_composite_direct_lowering(
+    "enable-composite-direct-lowering",
+    llvm::cl::desc("Whether to enable the attempt to directly lower composites "
+                   "into tflite ops or not."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<std::string> model_origin_framework(
+    "model-origin-framework",
+    llvm::cl::desc("The source model type: PYTORCH, JAX, TENSORFLOW, etc."),
+    llvm::cl::init("UNSET"));

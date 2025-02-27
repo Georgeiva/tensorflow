@@ -15,6 +15,11 @@ limitations under the License.
 
 // See docs in ../ops/linalg_ops.cc.
 
+#include <cmath>
+#include <cstdint>
+#include <limits>
+
+#include "absl/log/log.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -82,7 +87,7 @@ class TridiagonalSolveOp : public LinearAlgebraOp<Scalar> {
     return TensorShapes({input_matrix_shapes[1]});
   }
 
-  int64 GetCostPerUnit(const TensorShapes& input_matrix_shapes) const final {
+  int64_t GetCostPerUnit(const TensorShapes& input_matrix_shapes) const final {
     const int num_eqs = static_cast<int>(input_matrix_shapes[0].dim_size(1));
     const int num_rhss = static_cast<int>(input_matrix_shapes[1].dim_size(0));
 
@@ -100,7 +105,7 @@ class TridiagonalSolveOp : public LinearAlgebraOp<Scalar> {
                         (add_cost + mult_cost) * (2 * num_rhss + 1));
     }
     return cost >= static_cast<double>(kint64max) ? kint64max
-                                                  : static_cast<int64>(cost);
+                                                  : static_cast<int64_t>(cost);
   }
 
   bool EnableInputForwarding() const final { return false; }
@@ -150,7 +155,8 @@ class TridiagonalSolveOp : public LinearAlgebraOp<Scalar> {
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(TridiagonalSolveOp);
+  TridiagonalSolveOp(const TridiagonalSolveOp&) = delete;
+  void operator=(const TridiagonalSolveOp&) = delete;
 
   // Adjust pivot such that neither 'rhs[i,:] / pivot' nor '1 / pivot' cause
   // overflow, where i numerates the multiple right-hand-sides. During the
@@ -306,7 +312,7 @@ class TridiagonalSolveOp : public LinearAlgebraOp<Scalar> {
 
     // We have already solved L z = P rhs above. Now we solve U x = z,
     // possibly perturbing small pivots to avoid overflow. The variable tol
-    // contains eps * max( abs( u(:,:) ) ). If tiny pivots are encoutered,
+    // contains eps * max( abs( u(:,:) ) ). If tiny pivots are encountered,
     // they are perturbed by a small amount on the scale of tol to avoid
     // overflow or scaled up to avoid underflow.
     RealScalar tol = eps * max_abs_u;

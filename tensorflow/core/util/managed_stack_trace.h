@@ -13,26 +13,42 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_UTIL_ABSTRACT_STACK_TRACE_H_
-#define TENSORFLOW_CORE_UTIL_ABSTRACT_STACK_TRACE_H_
+#ifndef TENSORFLOW_CORE_UTIL_MANAGED_STACK_TRACE_H_
+#define TENSORFLOW_CORE_UTIL_MANAGED_STACK_TRACE_H_
 
+#include <functional>
+#include <memory>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/optional.h"
 #include "tensorflow/core/platform/stack_frame.h"
 
 namespace tensorflow {
 
-// Maps filename/line_no combination into a stack frame.
-using StackTraceMap =
-    std::function<absl::optional<StackFrame>(std::pair<const char*, int>)>;
-
 // Returns "true" on filenames which should be skipped.
 using StackTraceFilter = std::function<bool(const char*)>;
 
-using ToStackFramesFunctor = std::vector<StackFrame>(int, const StackTraceMap&,
+using SourceLoc = std::pair<std::string, int>;
+
+// Using absl::Hash breaks NVCC under Windows :P
+struct PairHash {
+  template <class T1, class T2>
+  std::size_t operator()(const std::pair<T1, T2>& pair) const {
+    std::size_t h1 = std::hash<T1>()(pair.first);
+    std::size_t h2 = std::hash<T2>()(pair.second);
+    return h1 + 0x9e3779b9 + (h2 << 6) + (h2 >> 2);
+  }
+};
+
+// Maps filename/line_no combination into a stack frame.
+using SourceMap = std::unordered_map<SourceLoc, StackFrame, PairHash>;
+
+using ToStackFramesFunctor = std::vector<StackFrame>(int, const SourceMap&,
                                                      const StackTraceFilter&,
                                                      bool, int);
 
@@ -46,26 +62,60 @@ inline bool IsInternalFrameForFilename(absl::string_view file_name) {
          !absl::StrContains(file_name, "test.py");
 }
 
-// Language agnostic stack trace class. It only saves an id, and language
-// clients are responsible for managing the actual stack trace objects.
-class ManagedStackTrace {
+class CapturedStackTrace {
  public:
-  ManagedStackTrace(int id, ToStackFramesFunctor* to_stack_frames)
-      : id_(id), to_stack_frames_(to_stack_frames) {}
+  virtual ~CapturedStackTrace() = default;
+
+  std::vector<StackFrame> ToStackFrames(const SourceMap& source_map,
+                                        const StackTraceFilter& filtered) {
+    return ToStackFrames(source_map, filtered, /*reverse_traversal=*/false,
+                         /*limit=*/-1);
+  }
+  virtual std::vector<StackFrame> ToStackFrames(
+      const SourceMap& source_map, const StackTraceFilter& filtered,
+      bool reverse_traversal, int limit) const = 0;
+};
+
+// Kept for backwards compatibility with existing users, this simply wraps an
+// underlying stack trace pointer.
+class ManagedStackTrace : public CapturedStackTrace {
+ public:
+  explicit ManagedStackTrace(std::shared_ptr<CapturedStackTrace> trace)
+      : trace_(trace) {}
+
+  ~ManagedStackTrace() override { trace_.reset(); }
 
   // Returns stack trace as a vector of `StackFrame`s.
-  std::vector<StackFrame> ToStackFrames(const StackTraceMap& mapper = {},
-                                        const StackTraceFilter& filtered = {},
-                                        bool reverse_traversal = false,
-                                        int limit = -1) const {
-    return to_stack_frames_(id_, mapper, filtered, reverse_traversal, limit);
+  std::vector<StackFrame> ToStackFrames(const SourceMap& source_map,
+                                        const StackTraceFilter& filtered,
+                                        bool reverse_traversal,
+                                        int limit) const override {
+    return trace_->ToStackFrames(source_map, filtered, reverse_traversal,
+                                 limit);
   }
 
  private:
-  int id_;
-  ToStackFramesFunctor* to_stack_frames_;
+  std::shared_ptr<CapturedStackTrace> trace_;
 };
+
+// Generates a message with a definition location based on a provided stack
+// trace, or an empty one if the stack trace is empty.
+inline std::string DefinitionLocationMsg(
+    const absl::optional<ManagedStackTrace>& stack_trace) {
+  if (stack_trace.has_value()) {
+    std::vector<StackFrame> stack_frames =
+        stack_trace->ToStackFrames({}, IsInternalFrameForFilename,
+                                   /*reverse_traversal=*/true,
+                                   /*limit=*/1);
+    if (!stack_frames.empty()) {
+      const StackFrame& last_frame = stack_frames[0];
+      return absl::StrCat(" (defined @ ", last_frame.file_name, ":",
+                          last_frame.line_number, ")");
+    }
+  }
+  return "";
+}
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_UTIL_ABSTRACT_STACK_TRACE_H_
+#endif  // TENSORFLOW_CORE_UTIL_MANAGED_STACK_TRACE_H_

@@ -24,11 +24,9 @@ from tensorflow.python.keras.mixed_precision import loss_scale as keras_loss_sca
 from tensorflow.python.keras.utils import generic_utils
 from tensorflow.python.platform import tf_logging
 from tensorflow.python.training.experimental import mixed_precision_global_state
-from tensorflow.python.util.tf_export import keras_export
 
 
 # pylint: disable=g-classes-have-attributes
-@keras_export('keras.mixed_precision.Policy', v1=[])
 class Policy(object):
   """A dtype policy for a Keras layer.
 
@@ -309,7 +307,6 @@ class Policy(object):
     return cls(**config)
 
 
-@keras_export('keras.mixed_precision.experimental.Policy', v1=[])
 class PolicyV1(Policy):
   """A deprecated dtype policy for a Keras layer.
 
@@ -409,8 +406,6 @@ class PolicyV1(Policy):
 _global_policy = None
 
 
-@keras_export('keras.mixed_precision.global_policy',
-              'keras.mixed_precision.experimental.global_policy', v1=[])
 def global_policy():
   """Returns the global dtype policy.
 
@@ -451,17 +446,15 @@ def _check_if_mixed_precision_graph_rewrite_is_enabled(policy):
         'At most, one of the following can be called:\n\n'
         '  1. tf.compat.v1.train.enable_mixed_precision_graph_rewrite() '
         '(You called this first)\n'
-        '  2. tf.keras.mixed_precision.experimental.set_policy() with a mixed '
-        'precision policy (You called this second)\n\n'
+        '  2. tf.keras.mixed_precision.experimental.set_global_policy() with a '
+        'mixed precision policy (You called this second)\n\n'
         'You called both functions, which is an error, because both functions '
         'enable you to use mixed precision. If in doubt which function to use, '
         'use the second, as it supports Eager execution and is more '
         'customizable.'.format(policy=policy))
 
 
-@keras_export('keras.mixed_precision.set_global_policy',
-              'keras.mixed_precision.experimental.set_policy', v1=[])
-def set_policy(policy):
+def set_global_policy(policy):
   """Sets the global dtype policy.
 
   The global policy is the default `tf.keras.mixed_precision.Policy` used for
@@ -510,8 +503,8 @@ def set_policy(policy):
     _check_if_mixed_precision_graph_rewrite_is_enabled(policy)
   if (policy is not None and policy.compute_dtype is not None and
       not dtypes.as_dtype(policy.compute_dtype).is_floating):
-    raise ValueError('set_policy can only be used to set the global policy to '
-                     'floating-point policies, such as "float32" and '
+    raise ValueError('set_global_policy can only be used to set the global '
+                     'policy to floating-point policies, such as "float32" and '
                      '"mixed_float16", but got policy: %s'
                      % (policy.name,))
   _global_policy = policy
@@ -531,10 +524,10 @@ def policy_scope(policy):
   """
   old_policy = _global_policy
   try:
-    set_policy(policy)
+    set_global_policy(policy)
     yield
   finally:
-    set_policy(old_policy)
+    set_global_policy(old_policy)
 
 
 def _is_convertible_to_dtype(dtype):

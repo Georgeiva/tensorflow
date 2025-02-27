@@ -14,24 +14,19 @@
 # ==============================================================================
 """Tests for profiler_client."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.eager import profiler_client
 from tensorflow.python.eager import test
-from tensorflow.python.framework import errors
 from tensorflow.python.framework import test_util
 
 
 class ProfilerClientTest(test_util.TensorFlowTestCase):
 
   def testStartTracing_ProcessInvalidAddress(self):
-    with self.assertRaises(errors.UnavailableError):
+    with self.assertRaises(RuntimeError):
       profiler_client.start_tracing('localhost:6006', '/tmp/', 2000)
 
   def testMonitor_ProcessInvalidAddress(self):
-    with self.assertRaises(errors.UnavailableError):
+    with self.assertRaises(RuntimeError):
       profiler_client.monitor('localhost:6006', 2000)
 
 
