@@ -12,20 +12,23 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/mlir_generated/base_gpu_op.h"
 
 namespace tensorflow {
 
 GENERATE_AND_REGISTER_BINARY_GPU_KERNEL(BitwiseAnd, DT_INT8);
+GENERATE_AND_REGISTER_BINARY_GPU_KERNEL3(BitwiseAnd, DT_INT8, DT_INT8, DT_UINT8,
+                                         DT_UINT8);
 GENERATE_AND_REGISTER_BINARY_GPU_KERNEL(BitwiseAnd, DT_INT16);
+GENERATE_AND_REGISTER_BINARY_GPU_KERNEL3(BitwiseAnd, DT_INT16, DT_INT16,
+                                         DT_UINT16, DT_UINT16);
 GENERATE_AND_REGISTER_BINARY_GPU_KERNEL(BitwiseAnd, DT_INT32);
+GENERATE_AND_REGISTER_BINARY_GPU_KERNEL3(BitwiseAnd, DT_INT32, DT_INT32,
+                                         DT_UINT32, DT_UINT32);
 GENERATE_AND_REGISTER_BINARY_GPU_KERNEL(BitwiseAnd, DT_INT64);
-
-// TODO(b/172804967): Enable once fixed.
-// GENERATE_AND_REGISTER_BINARY_GPU_KERNEL(BitwiseAnd, DT_UINT8);
-// GENERATE_AND_REGISTER_BINARY_GPU_KERNEL(BitwiseAnd, DT_UINT16);
-// GENERATE_AND_REGISTER_BINARY_GPU_KERNEL(BitwiseAnd, DT_UINT32);
-// GENERATE_AND_REGISTER_BINARY_GPU_KERNEL(BitwiseAnd, DT_UINT64);
+GENERATE_AND_REGISTER_BINARY_GPU_KERNEL3(BitwiseAnd, DT_INT64, DT_INT64,
+                                         DT_UINT64, DT_UINT64);
 
 }  // namespace tensorflow

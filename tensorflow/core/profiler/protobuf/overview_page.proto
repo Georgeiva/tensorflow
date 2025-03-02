@@ -5,6 +5,7 @@ package tensorflow.profiler;
 import "google/protobuf/any.proto";
 import "tensorflow/core/profiler/protobuf/diagnostics.proto";
 import "tensorflow/core/profiler/protobuf/input_pipeline.proto";
+import "tensorflow/core/profiler/protobuf/power_metrics.proto";
 
 // Overview result for a TensorFlow Op.
 message OverviewTfOp {
@@ -63,6 +64,36 @@ message OverviewPageAnalysis {
   // Percentage of TF-op execution time on the device (excluding the idle time)
   // that are for outside compilation.
   double device_op_time_outside_compilation_percent = 16;
+  // Percentage of the device time that is in use.
+  double device_duty_cycle_percent = 17;
+  // BEGIN-INTERNAL
+  // Program Goodput metric in percentage.
+  double program_goodput_percent = 18;
+  // Sparse core step time in ms average.
+  double sc_step_time_ms_average = 19;
+  // Sparse core infeed time in ms average.
+  double sc_infeed_time_ms_avg = 20;
+  // Sparse core outfeed time in ms average.
+  double sc_outfeed_time_ms_avg = 21;
+  // Sparse core idle time in ms average.
+  double sc_idle_time_ms_avg = 22;
+  // Max FW VDD Core PL1 power metrics in watts.
+  double fw_max_vdd_core_pl1_power_watts = 23;
+  // Max FW VDD Core PL2 power metrics in watts.
+  double fw_max_vdd_core_pl2_power_watts = 24;
+  // Max FW VDD Core PL3 power metrics in watts.
+  double fw_max_vdd_core_pl3_power_watts = 25;
+  // Max FW VDD Core PL4 power metrics in watts.
+  double fw_max_vdd_core_pl4_power_watts = 26;
+  // Max FW HBM PL1 power metrics in watts.
+  double fw_max_hbm_pl1_power_watts = 27;
+  // Max FW HBM PL2 power metrics in watts.
+  double fw_max_hbm_pl2_power_watts = 28;
+  // Max FW HBM PL3 power metrics in watts.
+  double fw_max_hbm_pl3_power_watts = 29;
+  // Max FW HBM PL4 power metrics in watts.
+  double fw_max_hbm_pl4_power_watts = 30;
+  // END-INTERNAL
 }
 
 // Overview result for a performance tip to users.
@@ -173,8 +204,6 @@ message OverviewPageRunEnvironment {
   //   In GPU case, this corresponds to the number of GPUs (not the number of
   //   SMs).
   int32 device_core_count = 5;
-  // The per-device-core batch size.
-  int32 per_core_batch_size = 6;
   // Host-independent information about this job.
   OverviewPageHostIndependentJobInfo host_independent_job_info = 7;
   // Host-dependent information about this job.
@@ -185,6 +214,45 @@ message OverviewPageRunEnvironment {
   // The number of cores used for a single replica, e.g. model parallelism.
   // If there is no model parallelism, then num_cores_per_replica = 1
   int32 num_cores_per_replica = 10;
+  // Whether it is a training analysis or inference analysis.
+  bool is_training = 11;
+  // Power Metrics for TPU.
+  PowerMetrics power_metrics = 12;
+  reserved 6;
+}
+
+// Total and breakdown latency for inference query(s).
+// Breakdown into host/device/communication.
+message OverviewLatencyBreakdown {
+  double total_latency_us = 1;
+
+  double host_latency_us = 2;
+
+  double device_latency_us = 3;
+
+  double communication_latency_us = 4;
+}
+
+// Overview result for the inference query latency stats.
+message OverviewInferenceLatency {
+  // The percentile numbers that the inference query latency distribution
+  // should follow.  E.g., 50.0 means 50%ile.
+  // Default is [50.0, 75.0, 90.0, 99.0, 99.9].
+  repeated double percentile_numbers = 1;
+
+  // Total and breakdown of a certain percentile latency. Each element
+  // corresponds to element with the same index in percentile_numbers.
+  repeated OverviewLatencyBreakdown latency_breakdowns = 2;
+
+  // Max latency in micro seconds.
+  double max_latency_us = 3;
+
+  // Min Latency in micro seconds.
+  double min_latency_us = 4;
+
+  // Inference sessions per second aggregated over all hosts. There can be
+  // multiple queries batched in one session.
+  optional double sessions_per_second = 5;
 }
 
 message OverviewPage {
@@ -198,5 +266,7 @@ message OverviewPage {
   OverviewPageRecommendation recommendation = 4;
   // Error and warning messages for diagnosing profiling issues.
   Diagnostics diagnostics = 8;
+  // The inference query latency stats.
+  OverviewInferenceLatency inference_latency = 9;
   reserved 1, 5, 7;
 }

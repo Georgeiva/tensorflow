@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for stateless random ops."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import functools
 
 from absl.testing import parameterized
@@ -32,6 +28,7 @@ from tensorflow.python.framework import ops
 from tensorflow.python.framework import random_seed
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import gen_stateless_random_ops_v2
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
@@ -66,19 +63,28 @@ AFTER_EXPIRE = (2020, 10, 26)
 
 def invert_philox(key, value):
   """Invert the Philox bijection."""
-  key = np.array(key, dtype=np.uint32)
-  value = np.array(value, dtype=np.uint32)
-  step = np.array([0x9E3779B9, 0xBB67AE85], dtype=np.uint32)
+  key = np.array(key, dtype=np.uint64)
+  value = np.array(value, dtype=np.uint64)
+  step = np.array([0x9E3779B9, 0xBB67AE85], dtype=np.uint64)
   for n in range(10)[::-1]:
     key0, key1 = key + n * step
-    v0 = value[3] * 0x991a7cdb & 0xffffffff
-    v2 = value[1] * 0x6d7cae67 & 0xffffffff
-    hi0 = v0 * 0xD2511F53 >> 32
-    hi1 = v2 * 0xCD9E8D57 >> 32
+    mask = np.uint64(0xffffffff)
+
+    v0_mul = np.uint64(0x991a7cdb)
+    v2_mul = np.uint64(0x6d7cae67)
+    v0 = value[3] * v0_mul & mask
+    v2 = value[1] * v2_mul & mask
+
+    hi0_mul = np.uint64(0xD2511F53)
+    hi1_mul = np.uint64(0xCD9E8D57)
+
+    shift_amount = np.uint64(32)
+    hi0 = v0 * hi0_mul >> shift_amount
+    hi1 = v2 * hi1_mul >> shift_amount
     v1 = hi1 ^ value[0] ^ key0
     v3 = hi0 ^ value[2] ^ key1
     value = v0, v1, v2, v3
-  return np.array(value)
+  return np.array(value, dtype=np.uint64)
 
 
 SEEDS = ((7, 17), (11, 5), (2, 3))
@@ -105,15 +111,16 @@ def float_cases(shape_dtypes=(None,)):
   )
   # Explicitly passing in params because capturing cell variable from loop is
   # problematic in Python
-  def wrap(op, dtype, shape, shape_dtype, kwds, seed):
+  def wrap(op: ops.Operation, dtype, shape, shape_dtype, seed, **kwargs):
     device_type = get_device().device_type
     # Some dtypes are not supported on some devices
-    if (dtype == dtypes.float16 and device_type in ('XLA_GPU', 'XLA_CPU') or
-        dtype == dtypes.bfloat16 and device_type == 'GPU'):
+    if (dtype == dtypes.bfloat16 and device_type == 'GPU' and
+        not test_util.is_gpu_available(
+            cuda_only=True, min_cuda_compute_capability=(8, 0))):
       dtype = dtypes.float32
     shape_ = (constant_op.constant(shape, dtype=shape_dtype)
               if shape_dtype is not None else shape)
-    return op(seed=seed, shape=shape_, dtype=dtype, **kwds)
+    return op(seed=seed, shape=shape_, dtype=dtype, **kwargs)
 
   def _name(a):
     if hasattr(a, 'name'):
@@ -124,23 +131,25 @@ def float_cases(shape_dtypes=(None,)):
   for dtype in dtypes.float16, dtypes.bfloat16, dtypes.float32, dtypes.float64:
     for shape_dtype in shape_dtypes:
       for shape in (), (3,), (2, 5):
-        for name, stateless_op, stateful_op, kwds in cases:
+        for name, stateless_op, stateful_op, kwargs in cases:
           yield (('%s_%s_%s_%s' %
                   (name, _name(dtype), shape, _name(shape_dtype))).replace(
                       ' ', ''),
                  functools.partial(wrap, stateless_op, dtype, shape,
-                                   shape_dtype, kwds),
+                                   shape_dtype, **kwargs),
                  functools.partial(wrap, stateful_op, dtype, shape, shape_dtype,
-                                   kwds))
+                                   **kwargs))
 
 
 def int_cases(shape_dtypes=(None,), minval_maxval=None):
 
-  def wrap(op, minval, maxval, shape, shape_dtype, dtype, seed):
+  def wrap(op: ops.Operation, minval, maxval, shape, shape_dtype, dtype,
+           seed, **kwargs):
     shape_ = (constant_op.constant(shape, dtype=shape_dtype)
               if shape_dtype is not None else shape)
     return op(
-        seed=seed, shape=shape_, minval=minval, maxval=maxval, dtype=dtype)
+        seed=seed, shape=shape_, minval=minval, maxval=maxval, dtype=dtype,
+        **kwargs)
 
   if minval_maxval is None:
     minval_maxval = ((2, 11111),)
@@ -157,11 +166,22 @@ def int_cases(shape_dtypes=(None,), minval_maxval=None):
 
 def multinomial_cases():
   num_samples = 10
-  def wrap(op, logits, logits_dtype, output_dtype, seed):
+  def wrap(op: ops.Operation, logits, logits_dtype, output_dtype, seed):
+    device_type = get_device().device_type
+    # Some dtypes are not supported on some devices
+    if (logits_dtype == dtypes.bfloat16 and device_type == 'GPU' and
+        not test_util.is_gpu_available(
+            cuda_only=True, min_cuda_compute_capability=(8, 0))):
+      logits_dtype = dtypes.float32
     return op(seed=seed,
               logits=constant_op.constant(logits, dtype=logits_dtype),
               num_samples=num_samples, output_dtype=output_dtype)
-  for logits_dtype in np.float16, np.float32, np.float64:
+  for logits_dtype in (
+      np.float16,
+      dtypes.bfloat16.as_numpy_dtype,
+      np.float32,
+      np.float64,
+  ):
     for output_dtype in dtypes.int32, dtypes.int64:
       for logits in ([[0.1, 0.25, 0.5, 0.15]], [[0.5, 0.5], [0.8, 0.2],
                                                 [0.25, 0.75]]):
@@ -173,7 +193,7 @@ def multinomial_cases():
 
 
 def gamma_cases():
-  def wrap(op, alpha, dtype, shape, seed):
+  def wrap(op: ops.Operation, alpha, dtype, shape, seed):
     return op(seed=seed, shape=shape,
               alpha=constant_op.constant(alpha, dtype=dtype), dtype=dtype)
   for dtype in np.float16, np.float32, np.float64:
@@ -186,7 +206,7 @@ def gamma_cases():
 
 
 def poisson_cases():
-  def wrap(op, lam, lam_dtype, out_dtype, shape, seed):
+  def wrap(op: ops.Operation, lam, lam_dtype, out_dtype, shape, seed):
     return op(seed=seed, shape=shape,
               lam=constant_op.constant(lam_dtype(lam), dtype=lam_dtype),
               dtype=out_dtype)
@@ -201,6 +221,18 @@ def poisson_cases():
                                  lam_dtype, out_dtype, (10,)))
 
 
+def shuffle_cases():
+  for dtype in np.int32, np.int64, np.float32, np.float64:
+    # [], [0, ...] and [1, ...] are important corner cases
+    for shape in ([], [0], [1], [100], [0, 0], [1, 0], [0, 1], [1, 2], [5, 3],
+                  [7, 5, 3, 2]):
+      value = np.arange(np.prod(shape)).reshape(shape).astype(dtype)
+      yield ('shuffle',
+             functools.partial(stateless.stateless_shuffle, value),
+             functools.partial(random_ops.random_shuffle, value))
+
+
+@test_util.with_eager_op_as_function
 class StatelessOpsTest(test.TestCase, parameterized.TestCase):
 
   def _test_match(self, case, seed):
@@ -236,6 +268,15 @@ class StatelessOpsTest(test.TestCase, parameterized.TestCase):
       with compat.forward_compatibility_horizon(*AFTER_EXPIRE):
         new = stateless_op(seed=seed)
       self.assertAllClose(old, new)
+
+  def _test_explicit_alg(self, case, seed):
+    """Tests that alg=philox and alg=None are the same (on CPU/GPU)."""
+    with ops.device(get_device().name):
+      _, stateless_op, _ = case
+      implicit_alg = stateless_op(seed=seed)
+      # All device types allowed in this test will result in Philox
+      explicit_alg = stateless_op(seed=seed, alg='philox')
+      self.assertAllClose(implicit_alg, explicit_alg)
 
   def _test_determinism(self, case, seed_type):
     # Stateless values should be equal iff the seeds are equal (roughly)
@@ -346,6 +387,17 @@ class StatelessOpsTest(test.TestCase, parameterized.TestCase):
     self._test_match(case, seed)
 
   @parameterized.named_parameters(
+      ('_%s_%s_%s' % (case[0], case_id, seed_id), case, seed)  # pylint: disable=g-complex-comprehension,undefined-variable
+      for seed_id, seed in enumerate(SEEDS)
+      for case_id, case in enumerate(shuffle_cases()))
+  def testMatchShuffle(self, case, seed):
+    if get_device().device_type == 'GPU':
+      self.skipTest('Lacking GPU kernel')
+    if get_device().device_type in ('XLA_GPU', 'XLA_CPU'):
+      self.skipTest('Lacking XLA kernel')
+    self._test_match(case, seed)
+
+  @parameterized.named_parameters(
       ('_%s_%s_%s' % (case[0], case_id, seed_id), case, seed)  # pylint: disable=g-complex-comprehension
       for seed_id, seed in enumerate(SEEDS)
       for case_id, case in enumerate(float_cases()))
@@ -361,6 +413,23 @@ class StatelessOpsTest(test.TestCase, parameterized.TestCase):
   @test_util.disable_tfrt('tensorflow::DirectSession::Run crashes. b/156187396')
   def testOldAndNewStatelessMatchInt(self, case, seed):
     self._test_old_and_new_stateless_match(case, seed)
+
+  @parameterized.named_parameters(
+      ('_%s_%s' % (case[0], case_id), case)
+      for case_id, case in enumerate(float_cases()))
+  @test_util.disable_tfrt('tensorflow::DirectSession::Run crashes. b/156187396')
+  def testExplicitAlgFloat(self, case):
+    seed = (7, 17)
+    self._test_explicit_alg(case, seed)
+
+  @parameterized.named_parameters(
+      ('_%s_%s' % (case[0], case_id), case)
+      for case_id, case in enumerate(
+          int_cases(minval_maxval=((2, 11111), (None, None)))))
+  @test_util.disable_tfrt('tensorflow::DirectSession::Run crashes. b/156187396')
+  def testExplicitAlgInt(self, case):
+    seed = (7, 17)
+    self._test_explicit_alg(case, seed)
 
   @parameterized.named_parameters(
       ('_%s_%s_%s' % (case[0], seed_type.name, case_id), case, seed_type)  # pylint: disable=g-complex-comprehension
@@ -458,7 +527,7 @@ class StatelessOpsTest(test.TestCase, parameterized.TestCase):
     new_seed = stateless.split(seed, 3)
     self.assertEqual(new_seed.shape, [3, 2])
     self.assertDTypeEqual(new_seed.dtype, dtype)
-    self.assertNoEqualPair([seed] + array_ops.unstack(new_seed))
+    self.assertNoEqualPair([seed] + array_ops_stack.unstack(new_seed))
 
   @parameterized.parameters(['int32', 'int64'])
   @test_util.run_v2_only

@@ -25,6 +25,7 @@ limitations under the License.
 
 #include "absl/memory/memory.h"
 #include "tensorflow/core/framework/type_index.h"
+#include "tensorflow/core/framework/variant_encode_decode.h"
 #include "tensorflow/core/framework/variant_tensor_data.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/strcat.h"
@@ -235,9 +236,12 @@ class Variant {
   }
 
   std::string DebugString() const {
-    return strings::StrCat(
-        "Variant<type: ", TypeName(),
-        " value: ", is_empty() ? "[empty]" : GetValue()->DebugString(), ">");
+    return strings::StrCat("Variant<type: ", TypeName(),
+                           " value: ", SummarizeValue(), ">");
+  }
+
+  std::string SummarizeValue() const {
+    return is_empty() ? "[empty]" : GetValue()->DebugString();
   }
 
   // Returns a pointer to the stored value if it is type T, or nullptr

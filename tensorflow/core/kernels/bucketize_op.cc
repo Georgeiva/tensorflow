@@ -33,10 +33,10 @@ namespace functor {
 template <typename T>
 struct BucketizeFunctor<CPUDevice, T> {
   // PRECONDITION: boundaries_vector must be sorted.
-  static Status Compute(OpKernelContext* context,
-                        const typename TTypes<T, 1>::ConstTensor& input,
-                        const std::vector<float>& boundaries_vector,
-                        typename TTypes<int32, 1>::Tensor& output) {
+  static absl::Status Compute(OpKernelContext* context,
+                              const typename TTypes<T, 1>::ConstTensor& input,
+                              const std::vector<float>& boundaries_vector,
+                              typename TTypes<int32, 1>::Tensor& output) {
     const int N = input.size();
     for (int i = 0; i < N; i++) {
       auto first_bigger_it = std::upper_bound(
@@ -44,7 +44,7 @@ struct BucketizeFunctor<CPUDevice, T> {
       output(i) = first_bigger_it - boundaries_vector.begin();
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 
@@ -83,7 +83,7 @@ class BucketizeOp : public OpKernel {
       BucketizeOp<CPUDevice, T>);
 
 REGISTER_KERNEL(int32);
-REGISTER_KERNEL(int64);
+REGISTER_KERNEL(int64_t);
 REGISTER_KERNEL(float);
 REGISTER_KERNEL(double);
 #undef REGISTER_KERNEL
@@ -95,7 +95,7 @@ REGISTER_KERNEL(double);
       BucketizeOp<GPUDevice, T>);
 
 REGISTER_KERNEL(int32);
-REGISTER_KERNEL(int64);
+REGISTER_KERNEL(int64_t);
 REGISTER_KERNEL(float);
 REGISTER_KERNEL(double);
 #undef REGISTER_KERNEL

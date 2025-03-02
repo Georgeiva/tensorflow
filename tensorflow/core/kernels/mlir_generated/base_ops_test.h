@@ -16,13 +16,26 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_MLIR_GENERATED_BASE_OPS_TEST_H_
 #define TENSORFLOW_CORE_KERNELS_MLIR_GENERATED_BASE_OPS_TEST_H_
 
+#include <complex>
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <limits>
+#include <string>
+#include <type_traits>
+
 #include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "llvm/ADT/STLExtras.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 
 namespace tensorflow {
 namespace test {
+
+template <typename T>
+using is_integer = llvm::is_one_of<T, int8_t, int16_t, int32_t, int64_t,
+                                   uint8_t, uint16_t, uint32_t, uint64_t>;
 
 /// Helper functions to create or derive inputs of the right type and size.
 
@@ -39,9 +52,10 @@ absl::InlinedVector<T, 10> InputAsVector(
 
 template <typename T>
 absl::InlinedVector<T, 10> RepeatInputToMatchShape(
-    absl::InlinedVector<T, 10> input, int size) {
+    absl::InlinedVector<T, 10> input, int64_t size) {
   absl::InlinedVector<T, 10> result;
-  for (int i = 0; i < size; i++) {
+  result.reserve(size);
+  for (int64_t i = 0; i < size; i++) {
     auto value = input[i % input.size()];
     result.push_back(value);
   }
@@ -50,10 +64,11 @@ absl::InlinedVector<T, 10> RepeatInputToMatchShape(
 
 template <typename T>
 absl::InlinedVector<T, 10> RepeatElements(absl::InlinedVector<T, 10> input,
-                                          int num_repeats) {
+                                          int64_t num_repeats) {
   absl::InlinedVector<T, 10> result;
+  result.reserve(input.size() * num_repeats);
   for (T value : input) {
-    for (int i = 0; i < num_repeats; ++i) {
+    for (int64_t i = 0; i < num_repeats; ++i) {
       result.push_back(value);
     }
   }
@@ -63,6 +78,7 @@ absl::InlinedVector<T, 10> RepeatElements(absl::InlinedVector<T, 10> input,
 /// Helper functions to get default input shapes.
 
 TensorShape DefaultInputShape();
+TensorShape DefaultInputShapeExceedingInt32();
 
 /// Helper functions to configure tests.
 
@@ -78,6 +94,7 @@ struct OpsTestConfig {
   double rtol = -1;
   std::string input_attribute = "T";
   std::string output_attribute = "Tout";
+  bool jit_compilation = false;
   OpsTestConfig ExpectStrictlyEqual() {
     OpsTestConfig config = *this;
     config.expect_strictly_equal = true;
@@ -123,6 +140,11 @@ struct OpsTestConfig {
     config.output_attribute = attr;
     return config;
   }
+  OpsTestConfig JITCompilation() {
+    OpsTestConfig config = *this;
+    config.jit_compilation = true;
+    return config;
+  }
 };
 
 /// Helper functions to get more specific input data.
@@ -136,9 +158,7 @@ absl::InlinedVector<T, 10> NearZeroAndExtremeInput() {
                                    std::numeric_limits<double>::infinity()});
 }
 
-template <typename T,
-          std::enable_if_t<llvm::is_one_of<T, int8, int16, int32, int64>::value,
-                           bool> = true>
+template <typename T, std::enable_if_t<is_integer<T>::value, bool> = true>
 absl::InlinedVector<T, 10> NearZeroAndExtremeInput() {
   return InputAsVector<T, T>({std::numeric_limits<T>::min(),
                               std::numeric_limits<T>::min() + 1, -1, 0, 1,
@@ -189,12 +209,9 @@ absl::InlinedVector<T, 10> DefaultInputNonZero() {
                                          0.2, 0.3, 0.5, 0.7, 0.9, 9.0, 18.0});
 }
 
-template <typename T,
-          std::enable_if_t<llvm::is_one_of<T, int8, int16, int32, int64>::value,
-                           bool> = true>
+template <typename T, std::enable_if_t<is_integer<T>::value, bool> = true>
 absl::InlinedVector<T, 10> DefaultInputNonZero() {
-  return test::InputAsVector<T, double>(
-      {-18, -9, -1, 1, 3, 4, 5, 7, 9, 10, 18});
+  return test::InputAsVector<T, int>({-18, -9, -1, 1, 3, 4, 5, 7, 9, 10, 18});
 }
 
 template <typename T, std::enable_if_t<
@@ -206,9 +223,7 @@ absl::InlinedVector<T, 10> DefaultInputBetweenZeroAndOne() {
                                          0.999});
 }
 
-template <typename T,
-          std::enable_if_t<llvm::is_one_of<T, int8, int16, int32, int64>::value,
-                           bool> = true>
+template <typename T, std::enable_if_t<is_integer<T>::value, bool> = true>
 absl::InlinedVector<T, 10> DefaultInputLessThanBitwidth() {
   auto max_shift = sizeof(T) * 8 - 1;
   absl::InlinedVector<T, 10> v;
@@ -218,9 +233,7 @@ absl::InlinedVector<T, 10> DefaultInputLessThanBitwidth() {
 
 /// Helper functions to get default input data.
 
-template <typename T,
-          std::enable_if_t<llvm::is_one_of<T, int8, int16, int32, int64>::value,
-                           bool> = true>
+template <typename T, std::enable_if_t<is_integer<T>::value, bool> = true>
 absl::InlinedVector<T, 10> DefaultInput() {
   return InputAsVector<T, int>({-18, -9, -1, 0, 0, 1, 1, 2, 3, 5, 7, 9, 9, 18});
 }
@@ -256,7 +269,6 @@ absl::InlinedVector<T, 10> ComplexInputFromValues(
     const absl::InlinedVector<typename T::value_type, 10>& real,
     const absl::InlinedVector<typename T::value_type, 10>& imag) {
   using ElementType = typename T::value_type;
-  auto input = test::DefaultInput<ElementType>();
   absl::InlinedVector<T, 10> complex_input;
   CHECK_EQ(real.size(), imag.size());
   for (size_t i = 0; i < real.size() && i < imag.size(); ++i) {
@@ -271,6 +283,17 @@ template <typename T,
                            bool> = true>
 absl::InlinedVector<T, 10> DefaultInputNonZero() {
   auto real = test::DefaultInputNonZero<typename T::value_type>();
+  auto imag = real;
+  std::reverse(imag.begin(), imag.end());
+  return test::ComplexInputFromValues<T>(real, imag);
+}
+
+template <typename T,
+          std::enable_if_t<llvm::is_one_of<T, std::complex<float>,
+                                           std::complex<double>>::value,
+                           bool> = true>
+absl::InlinedVector<T, 10> DefaultInputGreaterOrEqualToZero() {
+  auto real = test::DefaultInputGreaterOrEqualToZero<typename T::value_type>();
   auto imag = real;
   std::reverse(imag.begin(), imag.end());
   return test::ComplexInputFromValues<T>(real, imag);

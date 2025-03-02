@@ -23,6 +23,7 @@ current_dir="$(dirname "$current_file")"
 api_dir="${current_dir}/../../../core/api_def/base_api"
 
 generate="bazel run \
+  --test_output=all \
   //tensorflow/c/experimental/ops/gen:generate_cpp -- \
   --output_dir="${current_dir}" \
   --api_dirs="${api_dir}" \
@@ -60,3 +61,15 @@ ${generate} \
   Relu \
   BiasAdd \
   BiasAddGrad
+
+${generate} \
+  --category=resource_variable \
+  VarHandleOp \
+  ReadVariableOp \
+  AssignVariableOp \
+  DestroyResourceOp
+
+${generate} \
+  --category=io \
+  RestoreV2 \
+  SaveV2

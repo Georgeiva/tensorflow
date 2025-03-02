@@ -14,10 +14,6 @@
 # ==============================================================================
 """Base testing class for strategies that require multiple nodes."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import contextlib
 import copy
 import json
@@ -29,12 +25,6 @@ import unittest
 
 import six
 
-_portpicker_import_error = None
-try:
-  import portpicker  # pylint: disable=g-import-not-at-top
-except (ImportError, ModuleNotFoundError) as _error:  # pylint: disable=invalid-name
-  _portpicker_import_error = _error
-  portpicker = None
 
 # pylint: disable=g-import-not-at-top
 from tensorflow.core.protobuf import config_pb2
@@ -42,8 +32,8 @@ from tensorflow.core.protobuf import rewriter_config_pb2
 from tensorflow.python.client import session
 from tensorflow.python.distribute import distribute_coordinator as dc
 from tensorflow.python.distribute import multi_process_runner
-from tensorflow.python.distribute.cluster_resolver import SimpleClusterResolver
-from tensorflow.python.distribute.cluster_resolver import TFConfigClusterResolver
+from tensorflow.python.distribute.cluster_resolver import cluster_resolver as cluster_resolver_lib
+from tensorflow.python.distribute.cluster_resolver import tfconfig_cluster_resolver
 from tensorflow.python.eager import context
 from tensorflow.python.eager import remote
 from tensorflow.python.framework import errors
@@ -60,28 +50,7 @@ from tensorflow.python.util.tf_export import tf_export
 
 
 original_run_std_server = dc._run_std_server  # pylint: disable=protected-access
-
-ASSIGNED_PORTS = set()
-lock = threading.Lock()
-
-
-def pick_unused_port():
-  """Returns an unused and unassigned local port."""
-  if _portpicker_import_error:
-    raise _portpicker_import_error  # pylint: disable=raising-bad-type
-
-  global ASSIGNED_PORTS
-  with lock:
-    while True:
-      try:
-        port = portpicker.pick_unused_port()
-      except portpicker.NoFreePortFoundError:
-        raise unittest.SkipTest('Flakes in portpicker library do not represent '
-                                'TensorFlow errors.')
-      if port > 10000 and port not in ASSIGNED_PORTS:
-        ASSIGNED_PORTS.add(port)
-        logging.info('Using local port %r', port)
-        return port
+pick_unused_port = test_util.pick_unused_port
 
 
 def _create_cluster(num_workers,
@@ -96,8 +65,7 @@ def _create_cluster(num_workers,
                     ps_name='ps',
                     chief_name='chief'):
   """Creates and starts local servers and returns the cluster_spec dict."""
-  if _portpicker_import_error:
-    raise _portpicker_import_error  # pylint: disable=raising-bad-type
+
   worker_ports = [pick_unused_port() for _ in range(num_workers)]
   ps_ports = [pick_unused_port() for _ in range(num_ps)]
 
@@ -218,29 +186,42 @@ class MultiProcessCluster(object):
   This class is not thread-safe.
   """
 
-  def __init__(self, cluster_resolver):
+  def __init__(self,
+               cluster_resolver,
+               stream_output=False,
+               collective_leader=None):
     self._cluster_resolver = cluster_resolver
     self._cluster_spec = cluster_resolver.cluster_spec().as_dict()
     self._rpc_layer = cluster_resolver.rpc_layer
+    self._stream_output = stream_output
     self._start_events = {}
     self._finish_events = {}
     self._mpr_manager = multi_process_runner.manager()
 
     def task_function(start_events, finish_events):
-      cluster_resolver = TFConfigClusterResolver()
+      cluster_resolver = tfconfig_cluster_resolver.TFConfigClusterResolver()
       cluster_spec = cluster_resolver.cluster_spec()
       task_type = cluster_resolver.task_type
       task_id = cluster_resolver.task_id
       rpc_layer = cluster_resolver.rpc_layer
 
-      logging.info(
-          'Starting server with cluster_spec = %r, task_type = %r, '
-          'task_id = %r, rpc_layer = %r', cluster_spec, task_type, task_id,
-          rpc_layer)
-
       # TODO(yuefengz): support GPU clusters.
       server_config = config_pb2.ConfigProto()
       server_config.device_count['GPU'] = 0
+
+      if collective_leader:
+        server_config.experimental.collective_group_leader = collective_leader
+        server_config.experimental.collective_nccl = False
+
+        logging.info(
+            'Enabling collective ops with cluster_spec = %r, task_type = %r, '
+            'task_id = %r, rpc_layer = %r, collective_leader = %s',
+            cluster_spec, task_type, task_id, rpc_layer, collective_leader)
+      else:
+        logging.info(
+            'Starting server with cluster_spec = %r, task_type = %r, '
+            'task_id = %r, rpc_layer = %r', cluster_spec, task_type, task_id,
+            rpc_layer)
 
       server_lib.Server(
           cluster_spec,
@@ -280,7 +261,7 @@ class MultiProcessCluster(object):
         self._cluster_spec,
         args=(self._start_events, self._finish_events),
         rpc_layer=self._rpc_layer,
-        stream_output=False,
+        stream_output=self._stream_output,
         return_output=False,
         use_dill_for_args=False)
     self._mpr.start()
@@ -325,7 +306,7 @@ class MultiProcessCluster(object):
       task_id: the id the task such as 1.
 
     Raises:
-      ValueError: if the server alreay exists.
+      ValueError: if the server already exists.
     """
     assert self._mpr
 
@@ -348,7 +329,11 @@ def create_multi_process_cluster(num_workers,
                                  num_ps,
                                  has_chief=False,
                                  has_eval=False,
-                                 rpc_layer='grpc'):
+                                 rpc_layer='grpc',
+                                 stream_output=False,
+                                 collective_leader=None):
+  logging.info('Now creating a MultiProcessCluster with '
+               f'num_workers={num_workers}, num_ps={num_ps}.')
   cluster_spec = create_cluster_spec(
       has_chief=has_chief,
       num_workers=num_workers,
@@ -356,8 +341,10 @@ def create_multi_process_cluster(num_workers,
       has_eval=has_eval)
 
   cluster = MultiProcessCluster(
-      SimpleClusterResolver(
-          server_lib.ClusterSpec(cluster_spec), rpc_layer=rpc_layer))
+      cluster_resolver_lib.SimpleClusterResolver(
+          server_lib.ClusterSpec(cluster_spec), rpc_layer=rpc_layer),
+      stream_output=stream_output,
+      collective_leader=collective_leader)
   cluster.start()
   return cluster
 
@@ -409,9 +396,6 @@ def create_cluster_spec(has_chief=False,
   # {'evaluator': ['localhost:23381']}
   ```
   """
-  if _portpicker_import_error:
-    raise _portpicker_import_error  # pylint: disable=raising-bad-type
-
   cluster_spec = {}
   if has_chief:
     cluster_spec['chief'] = ['localhost:%s' % pick_unused_port()]

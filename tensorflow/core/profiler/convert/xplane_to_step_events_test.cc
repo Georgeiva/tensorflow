@@ -15,17 +15,20 @@ limitations under the License.
 
 #include "tensorflow/core/profiler/convert/xplane_to_step_events.h"
 
+#include <cstdint>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "xla/tsl/profiler/utils/group_events.h"
+#include "xla/tsl/profiler/utils/xplane_schema.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/profiler/protobuf/xplane.pb.h"
 #include "tensorflow/core/profiler/utils/event_span.h"
-#include "tensorflow/core/profiler/utils/group_events.h"
 #include "tensorflow/core/profiler/utils/xplane_builder.h"
 #include "tensorflow/core/profiler/utils/xplane_schema.h"
 #include "tensorflow/core/profiler/utils/xplane_test_utils.h"
+#include "tsl/profiler/protobuf/xplane.pb.h"
 
 namespace tensorflow {
 namespace profiler {
@@ -37,12 +40,12 @@ namespace {
 // consists of matmul. The host's step db should be created only for the step
 // observed on the host.
 TEST(ConvertXPlaneToOpStats, CpuOnlyStepDbTest) {
-  constexpr int64 kFirstStepNum = 123;
-  constexpr int64 kSecondStepNum = 456;
-  constexpr int64 kFirstStepId = 0;
-  constexpr int64 kSecondStepId = 1;
-  constexpr int64 kFirstCorrelationId = 100;
-  constexpr int64 kSecondCorrelationId = 200;
+  constexpr int64_t kFirstStepNum = 123;
+  constexpr int64_t kSecondStepNum = 456;
+  constexpr int64_t kFirstStepId = 0;
+  constexpr int64_t kSecondStepId = 1;
+  constexpr int64_t kFirstCorrelationId = 100;
+  constexpr int64_t kSecondCorrelationId = 200;
 
   XSpace space;
   XPlane* host_plane = GetOrCreateHostXPlane(&space);
@@ -53,21 +56,31 @@ TEST(ConvertXPlaneToOpStats, CpuOnlyStepDbTest) {
   CreateXEvent(&host_plane_builder, &main_thread, HostEventType::kTraceContext,
                0, 100, {{StatType::kStepNum, kFirstStepNum}});
   CreateXEvent(&host_plane_builder, &main_thread, HostEventType::kFunctionRun,
-               10, 90, {{StatType::kStepId, kFirstStepId}});
+               10, 90,
+               {{StatType::kStepId, kFirstStepId},
+                {StatType::kProducerType, int64_t{1}},
+                {StatType::kProducerId, kFirstStepId}});
   CreateXEvent(&host_plane_builder, &main_thread, HostEventType::kTraceContext,
                300, 100, {{StatType::kStepNum, kSecondStepNum}});
   CreateXEvent(&host_plane_builder, &main_thread, HostEventType::kFunctionRun,
-               310, 90, {{StatType::kStepId, kSecondStepId}});
+               310, 90,
+               {{StatType::kStepId, kSecondStepId},
+                {StatType::kProducerType, int64_t{1}},
+                {StatType::kProducerId, kSecondStepId}});
 
   auto tf_executor_thread = host_plane_builder.GetOrCreateLine(1);
   CreateXEvent(&host_plane_builder, &tf_executor_thread,
                HostEventType::kExecutorStateProcess, 20, 20,
-               {{StatType::kStepId, kFirstStepId}});
+               {{StatType::kStepId, kFirstStepId},
+                {StatType::kConsumerType, int64_t{1}},
+                {StatType::kConsumerId, kFirstStepId}});
   CreateXEvent(&host_plane_builder, &tf_executor_thread, "matmul", 30, 10,
                {{StatType::kCorrelationId, kFirstCorrelationId}});
   CreateXEvent(&host_plane_builder, &tf_executor_thread,
                HostEventType::kExecutorStateProcess, 320, 20,
-               {{StatType::kStepId, kSecondStepId}});
+               {{StatType::kStepId, kSecondStepId},
+                {StatType::kConsumerType, int64_t{1}},
+                {StatType::kConsumerId, kSecondStepId}});
   CreateXEvent(&host_plane_builder, &tf_executor_thread, "matmul", 330, 10,
                {{StatType::kCorrelationId, kSecondCorrelationId}});
 
@@ -79,19 +92,98 @@ TEST(ConvertXPlaneToOpStats, CpuOnlyStepDbTest) {
   CreateXEvent(&device_plane_builder, &stream, "matmul", 50, 40,
                {{StatType::kCorrelationId, kFirstCorrelationId}});
 
-  GroupTfEvents(&space);
+  tsl::profiler::GroupTfEvents(&space);
   StepEvents device_step_events =
       ConvertDeviceTraceXPlaneToStepEvents(*device_plane);
   EXPECT_EQ(device_step_events.size(), 1);
   EXPECT_EQ(device_step_events[0].Events().size(), 1);
-  StepEvents host_step_events = ConvertHostThreadsXPlaneToStepEvents(
-      *host_plane, true, device_step_events);
+  StepEvents host_step_events =
+      ConvertHostThreadsXPlaneToStepEvents(*host_plane, &device_step_events);
   // Should contain only the step which is also present on the device.
   EXPECT_EQ(host_step_events.size(), 1);
   // TraceContext should be added as a step marker.
   EXPECT_EQ(host_step_events[0].Markers().size(), 1);
   // FunctionRun shouldn't be added.
   EXPECT_EQ(host_step_events[0].Events().size(), 2);
+}
+
+TEST(ConvertXPlaneToStepEvents, TpuDevicePlaneToStepEvents) {
+  XPlane raw_plane;
+  XPlaneBuilder plane(&raw_plane);
+  int64_t device_id = 1;
+  plane.SetId(device_id);
+  plane.SetName("/device:TPU:0");
+  XLineBuilder op_line = plane.GetOrCreateLine(0);
+  op_line.SetName(tsl::profiler::kXlaOpLineName);
+  const XStatMetadata& program_id_stat =
+      *plane.GetOrCreateStatMetadata(GetStatTypeStr(StatType::kProgramId));
+  const XStatMetadata& symbol_id_stat =
+      *plane.GetOrCreateStatMetadata(GetStatTypeStr(StatType::kSymbolId));
+  const XStatMetadata& group_id_stat =
+      *plane.GetOrCreateStatMetadata(GetStatTypeStr(StatType::kGroupId));
+  {
+    XEventMetadata* event_metadata =
+        plane.GetOrCreateEventMetadata("op_long_name");
+    event_metadata->set_display_name("op_name");
+    XStatsBuilder<XEventMetadata> stats(event_metadata, &plane);
+    stats.AddStatValue(program_id_stat, 1);
+    stats.AddStatValue(symbol_id_stat, 1);
+    {
+      XEventBuilder event = op_line.AddEvent(*event_metadata);
+      event.SetOffsetPs(0);
+      event.SetDurationPs(50);
+      event.AddStatValue(group_id_stat, 1);
+    }
+    {
+      XEventBuilder event = op_line.AddEvent(*event_metadata);
+      event.SetOffsetPs(100);
+      event.SetDurationPs(50);
+      event.AddStatValue(group_id_stat, 2);
+    }
+  }
+  {
+    XEventMetadata* event_metadata =
+        plane.GetOrCreateEventMetadata("op_long_name2");
+    event_metadata->set_display_name("op_name2");
+    XStatsBuilder<XEventMetadata> stats(event_metadata, &plane);
+    stats.AddStatValue(program_id_stat, 1);
+    stats.AddStatValue(symbol_id_stat, 2);
+    XEventBuilder event = op_line.AddEvent(*event_metadata);
+    event.SetOffsetPs(50);
+    event.SetDurationPs(50);
+    event.AddStatValue(group_id_stat, 1);
+  }
+  XLineBuilder step_line = plane.GetOrCreateLine(1);
+  step_line.SetName(tsl::profiler::kStepLineName);
+  {
+    XEventMetadata* event_metadata = plane.CreateEventMetadata();
+    XStatsBuilder<XEventMetadata> stats(event_metadata, &plane);
+    {
+      XEventBuilder event = step_line.AddEvent(*event_metadata);
+      event.SetOffsetPs(0);
+      event.SetDurationPs(100);
+      event.AddStatValue(group_id_stat, 1);
+    }
+    {
+      XEventBuilder event = step_line.AddEvent(*event_metadata);
+      event.SetOffsetPs(100);
+      event.SetDurationPs(100);
+      event.AddStatValue(group_id_stat, 2);
+    }
+  }
+
+  StepEvents step_events = ConvertDeviceTraceXPlaneToStepEvents(raw_plane);
+  EXPECT_EQ(step_events.size(), 2);
+  EXPECT_TRUE(step_events.contains(1));
+  StepDetails step_1 = step_events[/*group_id=*/1];
+  ASSERT_TRUE(step_1.PerCoreOpMetricsDb().contains(device_id));
+  EXPECT_EQ(step_1.PerCoreOpMetricsDb().at(device_id).metrics_db_size(), 2);
+  EXPECT_EQ(step_1.Markers().size(), 1);
+  EXPECT_TRUE(step_events.contains(2));
+  StepDetails step_2 = step_events[/*group_id=*/2];
+  ASSERT_TRUE(step_2.PerCoreOpMetricsDb().contains(device_id));
+  EXPECT_EQ(step_2.PerCoreOpMetricsDb().at(device_id).metrics_db_size(), 1);
+  EXPECT_EQ(step_2.Markers().size(), 1);
 }
 
 }  // namespace

@@ -18,7 +18,7 @@ limitations under the License.
 
 #include <string>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -34,8 +34,8 @@ namespace functor {
 
 template <typename Device, typename T>
 struct LaunchTensorToHashBucket {
-  void operator()(OpKernelContext* c, const int64 num_buckets, const T* input,
-                  const int num_elems, int64* output) {
+  void operator()(OpKernelContext* c, const int64_t num_buckets, const T* input,
+                  const int num_elems, int64_t* output) {
     string format = "%";
     switch (DataTypeToEnum<T>::value) {
       case DT_INT8:
@@ -61,18 +61,18 @@ struct LaunchTensorToHashBucket {
       // The number of buckets is always in the positive range of int64 so is
       // the resulting bucket_id. Casting the bucket_id from uint64 to int64 is
       // safe.
-      output[i] = static_cast<int64>(bucket_id);
+      output[i] = static_cast<int64_t>(bucket_id);
     }
   }
 };
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 template <typename T>
 struct LaunchTensorToHashBucket<Eigen::GpuDevice, T> {
-  void operator()(OpKernelContext* c, const int64 num_buckets, const T* input,
-                  const int num_elems, int64* output);
+  void operator()(OpKernelContext* c, const int64_t num_buckets, const T* input,
+                  const int num_elems, int64_t* output);
 };
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 }  // namespace functor
 
 }  // namespace tensorflow

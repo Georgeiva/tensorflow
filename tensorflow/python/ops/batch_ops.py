@@ -14,13 +14,9 @@
 # ==============================================================================
 
 """Operations for automatic batching and unbatching."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from tensorflow.python.eager import function
+from tensorflow.python.eager import def_function
 from tensorflow.python.framework import ops
-from tensorflow.python.framework import tensor_spec
+from tensorflow.python.framework import tensor
 from tensorflow.python.ops import gen_batch_ops
 # pylint: disable=wildcard-import
 from tensorflow.python.ops.gen_batch_ops import *
@@ -91,20 +87,22 @@ def batch_function(num_batch_threads,
 
     def decorated(*args):  # pylint: disable=missing-docstring
 
-      @function.defun(autograph=autograph)
+      @def_function.function(autograph=autograph)
       def computation(*computation_args):
         return fn(*computation_args)
 
-      computation = computation.get_concrete_function(
-          *[tensor_spec.TensorSpec(dtype=x.dtype, shape=x.shape, name=str(i))
-            for i, x in enumerate(args)])
+      computation = computation.get_concrete_function(*[
+          tensor.TensorSpec(
+              dtype=x.dtype, shape=x.shape, name="batch_" + str(i))
+          for i, x in enumerate(args)
+      ])
 
       with ops.name_scope("batch") as name:
         for a in args:
-          if not isinstance(a, ops.Tensor):
+          if not isinstance(a, tensor.Tensor):
             raise ValueError("All arguments to functions decorated with "
                              "`batch_function`  are supposed to be Tensors; "
-                             "found %s" % repr(a))
+                             f"found {a!r}.")
         outputs = gen_batch_ops.batch_function(
             num_batch_threads=num_batch_threads,
             max_batch_size=max_batch_size,

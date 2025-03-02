@@ -17,20 +17,22 @@ limitations under the License.
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <string>
 #include <unordered_map>
+#include <utility>
 
 #include "flatbuffers/flexbuffers.h"  // from @flatbuffers
 #include "tensorflow/core/example/feature.pb.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/lib/core/blocking_counter.h"
+#include "tensorflow/core/platform/blocking_counter.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/fingerprint.h"
 #include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/util/example_proto_fast_parsing.h"
 #include "tensorflow/core/util/presized_cuckoo_map.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/kernels/parse_example/example_proto_fast_parsing.h"
@@ -109,7 +111,7 @@ void FillAndCopyVarLen(const int d, const size_t num_elements,
 bool ParseExample(StringRef serialized, Example* example) {
   DCHECK(example != nullptr);
   tf::protobuf::io::CodedInputStream stream(
-      reinterpret_cast<const uint8*>(serialized.str), serialized.len);
+      reinterpret_cast<const uint8_t*>(serialized.str), serialized.len);
   tensorflow::example::EnableAliasing(&stream);
   return ParseExample(&stream, example);
 }
@@ -128,8 +130,8 @@ Status FastParseSerializedExample(
   if (!ParseExample(serialized_example, &parsed_example)) {
     return tf::errors::Internal("Failed to parse example");
   }
-  std::vector<tf::int64> dense_feature_last_example(config.dense.size(), -1);
-  std::vector<tf::int64> sparse_feature_last_example(config.sparse.size(), -1);
+  std::vector<int64_t> dense_feature_last_example(config.dense.size(), -1);
+  std::vector<int64_t> sparse_feature_last_example(config.sparse.size(), -1);
   // Handle features present in the example.
   const size_t parsed_example_size = parsed_example.size();
   for (size_t i = 0; i < parsed_example_size; ++i) {
@@ -162,7 +164,7 @@ Status FastParseSerializedExample(
     };
 
     tf::DataType example_dtype;
-    if (feature.ParseDataType(&example_dtype) != Status::OK()) {
+    if (feature.ParseDataType(&example_dtype) != absl::OkStatus()) {
       return parse_error();
     }
     if (is_dense) {
@@ -193,8 +195,8 @@ Status FastParseSerializedExample(
 
         switch (config.dense[d].dtype) {
           case tf::DT_INT64: {
-            auto out_p = reinterpret_cast<tf::int64*>(out->data.raw) + offset;
-            LimitedArraySlice<tf::int64> slice(out_p, num_elements);
+            auto out_p = reinterpret_cast<int64_t*>(out->data.raw) + offset;
+            LimitedArraySlice<int64_t> slice(out_p, num_elements);
             if (!feature.ParseInt64List(&slice)) return parse_error();
             if (slice.EndDistance() != 0) {
               return shape_error(num_elements - slice.EndDistance(), "int64");
@@ -348,7 +350,7 @@ Status FastParseSerializedExample(
     const std::size_t offset = example_index * num_elements;
     switch (config.dense[d].dtype) {
       case tf::DT_INT64: {
-        std::copy_n(in.flat<tf::int64>().data(), num_elements,
+        std::copy_n(in.flat<int64_t>().data(), num_elements,
                     out->data.i64 + offset);
         break;
       }
@@ -385,7 +387,7 @@ Status FastParseSerializedExample(
     out.example_end_indices.push_back(prev_example_end_index);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void CountSparseFeatures(const SparseBuffer& sparse_buffer,
@@ -428,7 +430,7 @@ void CopySparseBufferToTensor(tf::DataType dtype, size_t offset,
   }
 }
 
-inline void CopyToBuffer(tf::gtl::ArraySlice<tstring> vec, char* tensor_buffer,
+inline void CopyToBuffer(absl::Span<const tstring> vec, char* tensor_buffer,
                          int num_examples, int batch_size,
                          int elements_per_stride) {
   int i = 0, k = 0;
@@ -452,7 +454,7 @@ inline void CopyToBuffer(tf::gtl::ArraySlice<tstring> vec, char* tensor_buffer,
 
 Status FastParseExampleLite(
     const FastParseExampleConfig& config, const TfLiteTensor* serialized,
-    tf::gtl::ArraySlice<tstring> example_names, bool* quick_filter,
+    absl::Span<const tstring> example_names, bool* quick_filter,
     int quick_filter_size, const std::unique_ptr<ConfigIndex>& config_index,
     int config_index_size, SeededHasher* hasher, TfLiteResult* result,
     std::map<absl::string_view, int>& stats, TfLiteContext* context) {
@@ -465,7 +467,7 @@ Status FastParseExampleLite(
   std::vector<SparseBuffer> varlen_dense_buffers(config.dense.size());
   Status status_of_minibatch;
   for (size_t e = 0; e < count; ++e) {
-    Status status_of_minibatch = FastParseSerializedExample(
+    status_of_minibatch = FastParseSerializedExample(
         GetString(serialized, e),
         (!example_names.empty() ? example_names[e] : "<unknown>"), e, config,
         quick_filter, quick_filter_size, config_index, config_index_size,
@@ -488,9 +490,9 @@ Status FastParseExampleLite(
     TfLiteTensor* indices = result->sparse_indices[d];
     TfLiteTensor* values = result->sparse_values[d];
 
-    TfLiteTensor* dense_shape = result->sparse_shapes[d];
-    auto* dense_shape_ptr = reinterpret_cast<int64_t*>(dense_shape->data.raw);
-    dense_shape_ptr[1] = max_num_features;
+    TfLiteTensor* sparse_shape = result->sparse_shapes[d];
+    auto* sparse_shape_ptr = reinterpret_cast<int64_t*>(sparse_shape->data.raw);
+    sparse_shape_ptr[1] = max_num_features;
 
     TfLiteIntArray* index_shape = TfLiteIntArrayCreate(2);
     index_shape->data[0] = total_num_features;
@@ -553,10 +555,11 @@ Status FastParseExampleLite(
     tf::TensorShape values_shape;
     DCHECK_EQ(max_num_features % config.dense[d].elements_per_stride, 0);
     const size_t batch_size = GetStringCount(serialized);
-    values_shape.AddDim(batch_size);
-    values_shape.AddDim(max_num_elements);
+    TF_RETURN_IF_ERROR(values_shape.AddDimWithStatus(batch_size));
+    TF_RETURN_IF_ERROR(values_shape.AddDimWithStatus(max_num_elements));
     for (int i = 1; i < config.dense[d].shape.dims(); ++i) {
-      values_shape.AddDim(config.dense[d].shape.dim_size(i));
+      TF_RETURN_IF_ERROR(
+          values_shape.AddDimWithStatus(config.dense[d].shape.dim_size(i)));
     }
     TfLiteTensor* values = result->dense_values[d];
     const size_t num_elements = GetTensorShape(values).FlatSize();
@@ -569,9 +572,8 @@ Status FastParseExampleLite(
     const size_t num_elements_per_minibatch = num_elements / batch_size;
     switch (config.dense[d].dtype) {
       case tf::DT_INT64: {
-        FillAndCopyVarLen<tf::int64>(d, num_elements,
-                                     num_elements_per_minibatch, config,
-                                     varlen_dense_buffers, values);
+        FillAndCopyVarLen<int64_t>(d, num_elements, num_elements_per_minibatch,
+                                   config, varlen_dense_buffers, values);
         break;
       }
       case tf::DT_FLOAT: {
@@ -631,12 +633,12 @@ Status FastParseExampleLite(
         memcpy(tensor_buffer + sizeof(int32_t) * (i + 1), &offset_i,
                sizeof(int32_t));
       }
-      tf::gtl::ArraySlice<tstring> slice(vec.data(), vec.size());
+      absl::Span<const tstring> slice(vec.data(), vec.size());
       CopyToBuffer(slice, tensor_buffer + start, count, batch_size,
                    elements_per_stride);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -675,7 +677,7 @@ void* Init(TfLiteContext* context, const char* buffer, size_t length) {
 template <typename T>
 tf::Tensor AsTensor(const std::vector<T>& val) {
   tf::Tensor ret(tf::DataTypeToEnum<T>::value,
-                 {static_cast<tf::int64>(val.size())});
+                 {static_cast<int64_t>(val.size())});
   std::copy_n(val.begin(), val.size(), ret.flat<T>().data());
   return ret;
 }
@@ -823,8 +825,8 @@ TfLiteStatus EvalParseExample(TfLiteContext* context, TfLiteNode* node) {
       std::string k(key.str, key.len);
       switch (sparse_output->type) {
         case kTfLiteInt64:
-          data->config.sparse.emplace_back(
-              k, tf::DataTypeToEnum<tf::int64>::value);
+          data->config.sparse.emplace_back(k,
+                                           tf::DataTypeToEnum<int64_t>::value);
           break;
         case kTfLiteFloat32:
           data->config.sparse.emplace_back(k, tf::DataTypeToEnum<float>::value);
@@ -861,8 +863,8 @@ TfLiteStatus EvalParseExample(TfLiteContext* context, TfLiteNode* node) {
       switch (dense_output->type) {
         case kTfLiteInt64:
           data->config.dense.emplace_back(
-              k, tf::DataTypeToEnum<tf::int64>::value, dense_shapes[i],
-              AsTensor<tf::int64>(std::vector<tf::int64>(
+              k, tf::DataTypeToEnum<int64_t>::value, dense_shapes[i],
+              AsTensor<int64_t>(std::vector<int64_t>(
                   dense_defaults->data.i64,
                   dense_defaults->data.i64 + elements_per_stride)),
               false, elements_per_stride);
@@ -969,7 +971,7 @@ TfLiteStatus EvalParseExample(TfLiteContext* context, TfLiteNode* node) {
       data->config, serialized, {}, data->quick_filter, data->quick_filter_size,
       data->config_index, data->config_index_size, &data->hasher, &data->got,
       stats, context);
-  if (status != tf::Status::OK()) {
+  if (status != absl::OkStatus()) {
     TF_LITE_KERNEL_LOG(context, status.ToString().c_str());
     return kTfLiteError;
   }

@@ -13,16 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for `tf.data.Dataset.take_while()`."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.python.data.kernel_tests import checkpoint_test_base
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.data.ops import options as options_lib
 from tensorflow.python.framework import combinations
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import errors
@@ -114,21 +111,41 @@ class TakeWhileTest(test_base.DatasetTestBase, parameterized.TestCase):
         predicate=lambda x: x < 2).repeat(5)
     self.assertDatasetProduces(dataset, np.tile([0, 1], 5))
 
+  @combinations.generate(test_base.default_test_combinations())
+  def testTakeWhileDatasetStops(self):
+    dataset = dataset_ops.Dataset.range(10)
+    dataset = dataset.take_while(
+        lambda x: math_ops.logical_not(math_ops.equal(x, 5)))
+    self.assertDatasetProduces(dataset, range(5))
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testName(self):
+    dataset = dataset_ops.Dataset.from_tensors(42).take_while(
+        lambda _: True, name="take_while")
+    self.assertDatasetProduces(dataset, [42])
+
 
 class TakeWhileCheckpointTest(checkpoint_test_base.CheckpointTestBase,
                               parameterized.TestCase):
 
-  def _build_dataset(self, num_elements, upper_bound):
-    return dataset_ops.Dataset.range(num_elements).take_while(
-        predicate=lambda x: x < upper_bound)
+  def _build_dataset(self, num_elements, upper_bound, options=None):
+    dataset = dataset_ops.Dataset.range(num_elements)
+    dataset = dataset.take_while(predicate=lambda x: x < upper_bound)
+    if options:
+      dataset = dataset.with_options(options)
+    return dataset
 
   @combinations.generate(
       combinations.times(
           test_base.default_test_combinations(),
           checkpoint_test_base.default_test_combinations(),
+          combinations.combine(symbolic_checkpoint=[False, True]),
           combinations.combine(num_elements=[10, 23], upper_bound=[10, 23])))
-  def test(self, verify_fn, num_elements, upper_bound):
-    verify_fn(self, lambda: self._build_dataset(num_elements, upper_bound),
+  def test(self, verify_fn, symbolic_checkpoint, num_elements, upper_bound):
+    options = options_lib.Options()
+    options.experimental_symbolic_checkpoint = symbolic_checkpoint
+    verify_fn(self,
+              lambda: self._build_dataset(num_elements, upper_bound, options),
               min(num_elements, upper_bound))
 
 

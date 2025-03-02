@@ -18,8 +18,8 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "tensorflow/core/lib/monitoring/collected_metrics.h"
-#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/profiler/protobuf/xplane.pb.h"
 
@@ -32,8 +32,8 @@ struct TfStreamzSnapshot {
   uint64 end_time_ns;    // time after collection.
 };
 
-Status SerializeToXPlane(const std::vector<TfStreamzSnapshot>& snapshots,
-                         XPlane* plane, uint64 line_start_time_ns);
+absl::Status SerializeToXPlane(const std::vector<TfStreamzSnapshot>& snapshots,
+                               XPlane* plane, uint64 line_start_time_ns);
 
 }  // namespace profiler
 }  // namespace tensorflow

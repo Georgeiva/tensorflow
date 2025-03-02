@@ -13,10 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "absl/status/status.h"
+#include "xla/tsl/platform/errors.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
-#include "tensorflow/core/lib/core/status.h"
 
 namespace tensorflow {
 
@@ -34,15 +35,14 @@ REGISTER_OP("_TPUCompileMlir")
     .Output("program: num_computations * string")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       int num_computations;
-      TF_RETURN_IF_ERROR(
-          GetNodeAttr(c->attrs(), "num_computations", &num_computations));
+      TF_RETURN_IF_ERROR(c->GetAttr("num_computations", &num_computations));
       // Compilation status.
       c->set_output(0, c->Scalar());
       // Programs.
       for (int i = 0; i < num_computations; ++i) {
         c->set_output(i + 1, c->Vector(3));
       }
-      return Status::OK();
+      return absl::OkStatus();
     })
     .Doc(
         R"(
@@ -60,21 +60,21 @@ topology.
 look up the program in the compilation cache.
 )");
 
-REGISTER_OP("_TPUCompileMlirPlaceholderProgramKey")
+REGISTER_OP("_XlaCompileMlirPlaceholderProgramKey")
     .SetIsStateful()
     .Output("program: string")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->Vector(3));
-      return Status::OK();
+      return absl::OkStatus();
     })
     .SetIsStateful()
     .Doc(
         R"(
-Placeholder program key (compilation cache key) of a _TPUCompileMlir `program`.
+Placeholder program key (compilation cache key) of a XLA `program`.
 
 This op can be used when certain rewrite passes materialize ops that require a
-program key but the _TPUCompileMlir op has not been added yet. Subsequent
-rewrite passes must replace this op with a _TPUCompileMlir op `program` output.
+program key but the _TPUCompileMlir or _XlaCompile op has not been added yet.
+Subsequent rewrite passes must replace this op with `program` output.
 )");
 
 REGISTER_OP("TPUCompile")
@@ -94,8 +94,7 @@ REGISTER_OP("TPUCompile")
     .Output("may_modify_variables: num_computations * bool")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       int num_computations;
-      TF_RETURN_IF_ERROR(
-          GetNodeAttr(c->attrs(), "num_computations", &num_computations));
+      TF_RETURN_IF_ERROR(c->GetAttr("num_computations", &num_computations));
       // Compilation status.
       c->set_output(0, c->Scalar());
       // Programs.
@@ -106,7 +105,7 @@ REGISTER_OP("TPUCompile")
       for (int i = 0; i < num_computations; ++i) {
         c->set_output(num_computations + i + 1, c->Scalar());
       }
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("TPUCompileSucceededAssert")

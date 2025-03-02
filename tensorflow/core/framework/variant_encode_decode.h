@@ -26,6 +26,7 @@ limitations under the License.
 #include "tensorflow/core/framework/variant_tensor_data.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/abi.h"
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/protobuf.h"
 
 namespace tensorflow {
@@ -68,7 +69,10 @@ void EncodeVariantImpl(const T& value,
                        TypeResolver<T, false /* is_pod */, false /* Tensor */,
                                     true /* protobuf */>,
                        VariantTensorData* data) {
-  value.SerializeToString(&data->metadata_);
+  if (!value.SerializeToString(&data->metadata_)) {
+    data->metadata_.clear();
+    LOG(ERROR) << "Failed to encode variant " << value.DebugString();
+  }
 }
 
 // Specialization for other types
@@ -152,7 +156,7 @@ template <typename T>
 std::string TypeNameVariantImpl(
     const T& value, TypeNameResolver<T, false /* has_type_name */,
                                      false /* Tensor */, true /* protobuf */>) {
-  return value.GetTypeName();
+  return std::string(value.GetTypeName());
 }
 
 template <typename T>
@@ -267,13 +271,13 @@ bool DecodeVariant(std::string* buf, VariantTensorDataProto* value);
 
 // Encodes an array of Variant objects in to the given StringListEncoder.
 // `variant_array` is assumed to point to an array of `n` Variant objects.
-void EncodeVariantList(const Variant* variant_array, int64 n,
+void EncodeVariantList(const Variant* variant_array, int64_t n,
                        std::unique_ptr<port::StringListEncoder> e);
 
 // Decodes an array of Variant objects from the given StringListDecoder.
 // `variant_array` is assumed to point to an array of `n` Variant objects.
 bool DecodeVariantList(std::unique_ptr<port::StringListDecoder> d,
-                       Variant* variant_array, int64 n);
+                       Variant* variant_array, int64_t n);
 
 }  // end namespace tensorflow
 

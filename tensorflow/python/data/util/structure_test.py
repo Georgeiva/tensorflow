@@ -14,16 +14,13 @@
 # ==============================================================================
 """Tests for utilities working with arbitrarily nested structures."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
+import dataclasses
 import functools
 
+from absl.testing import parameterized
 import numpy as np
 import wrapt
-from absl.testing import parameterized
 
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
@@ -32,10 +29,9 @@ from tensorflow.python.data.util import structure
 from tensorflow.python.framework import combinations
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
-from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import tensor_shape
-from tensorflow.python.framework import tensor_spec
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import tensor_array_ops
 from tensorflow.python.ops import variables
@@ -44,7 +40,6 @@ from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.ops.ragged import ragged_tensor_value
 from tensorflow.python.platform import test
 from tensorflow.python.util.compat import collections_abc
-
 
 # NOTE(mrry): Arguments of parameterized tests are lifted into lambdas to make
 # sure they are not executed before the (eager- or graph-mode) test environment
@@ -55,7 +50,7 @@ from tensorflow.python.util.compat import collections_abc
 def _test_flat_structure_combinations():
   cases = [
       ("Tensor", lambda: constant_op.constant(37.0),
-       lambda: tensor_spec.TensorSpec, lambda: [dtypes.float32], lambda: [[]]),
+       lambda: tensor.TensorSpec, lambda: [dtypes.float32], lambda: [[]]),
       ("TensorArray", lambda: tensor_array_ops.TensorArray(
           dtype=dtypes.float32, element_shape=(3,), size=0),
        lambda: tensor_array_ops.TensorArraySpec, lambda: [dtypes.variant],
@@ -107,11 +102,15 @@ def _test_is_compatible_with_structure_combinations():
   cases = [
       ("Tensor", lambda: constant_op.constant(37.0), lambda: [
           constant_op.constant(38.0),
-          array_ops.placeholder(dtypes.float32),
-          variables.Variable(100.0), 42.0,
+          array_ops.placeholder(dtypes.float32), 42.0,
           np.array(42.0, dtype=np.float32)
       ], lambda: [constant_op.constant([1.0, 2.0]),
                   constant_op.constant(37)]),
+      # TODO(b/209081027): add Python constant and TF constant to the
+      # incompatible branch after ResourceVariable becoming a CompositeTensor.
+      ("Variable", lambda: variables.Variable(100.0),
+       lambda: [variables.Variable(99.0)],
+       lambda: [1]),
       ("TensorArray", lambda: tensor_array_ops.TensorArray(
           dtype=dtypes.float32, element_shape=(3,), size=0), lambda: [
               tensor_array_ops.TensorArray(
@@ -337,8 +336,8 @@ def _test_round_trip_conversion_combinations():
 
 def _test_convert_legacy_structure_combinations():
   cases = [
-      (dtypes.float32, tensor_shape.TensorShape([]), ops.Tensor,
-       tensor_spec.TensorSpec([], dtypes.float32)),
+      (dtypes.float32, tensor_shape.TensorShape([]), tensor.Tensor,
+       tensor.TensorSpec([], dtypes.float32)),
       (dtypes.int32, tensor_shape.TensorShape([2,
                                                2]), sparse_tensor.SparseTensor,
        sparse_tensor.SparseTensorSpec([2, 2], dtypes.int32)),
@@ -370,13 +369,13 @@ def _test_convert_legacy_structure_combinations():
           "a": tensor_shape.TensorShape([]),
           "b": (tensor_shape.TensorShape([2, 2]), tensor_shape.TensorShape([]))
       }, {
-          "a": ops.Tensor,
-          "b": (sparse_tensor.SparseTensor, ops.Tensor)
+          "a": tensor.Tensor,
+          "b": (sparse_tensor.SparseTensor, tensor.Tensor)
       }, {
           "a":
-              tensor_spec.TensorSpec([], dtypes.float32),
+              tensor.TensorSpec([], dtypes.float32),
           "b": (sparse_tensor.SparseTensorSpec([2, 2], dtypes.int32),
-                tensor_spec.TensorSpec([], dtypes.string))
+                tensor.TensorSpec([], dtypes.string))
       })
   ]
 
@@ -393,10 +392,10 @@ def _test_convert_legacy_structure_combinations():
 
 def _test_batch_combinations():
   cases = [
-      (tensor_spec.TensorSpec([], dtypes.float32), 32,
-       tensor_spec.TensorSpec([32], dtypes.float32)),
-      (tensor_spec.TensorSpec([], dtypes.float32), None,
-       tensor_spec.TensorSpec([None], dtypes.float32)),
+      (tensor.TensorSpec([], dtypes.float32), 32,
+       tensor.TensorSpec([32], dtypes.float32)),
+      (tensor.TensorSpec([], dtypes.float32), None,
+       tensor.TensorSpec([None], dtypes.float32)),
       (sparse_tensor.SparseTensorSpec([None], dtypes.float32), 32,
        sparse_tensor.SparseTensorSpec([32, None], dtypes.float32)),
       (sparse_tensor.SparseTensorSpec([4], dtypes.float32), None,
@@ -407,14 +406,14 @@ def _test_batch_combinations():
        ragged_tensor.RaggedTensorSpec([None, 4, None], dtypes.float32, 2)),
       ({
           "a":
-              tensor_spec.TensorSpec([], dtypes.float32),
+              tensor.TensorSpec([], dtypes.float32),
           "b": (sparse_tensor.SparseTensorSpec([2, 2], dtypes.int32),
-                tensor_spec.TensorSpec([], dtypes.string))
+                tensor.TensorSpec([], dtypes.string))
       }, 128, {
           "a":
-              tensor_spec.TensorSpec([128], dtypes.float32),
+              tensor.TensorSpec([128], dtypes.float32),
           "b": (sparse_tensor.SparseTensorSpec([128, 2, 2], dtypes.int32),
-                tensor_spec.TensorSpec([128], dtypes.string))
+                tensor.TensorSpec([128], dtypes.string))
       }),
   ]
 
@@ -430,10 +429,10 @@ def _test_batch_combinations():
 
 def _test_unbatch_combinations():
   cases = [
-      (tensor_spec.TensorSpec([32], dtypes.float32),
-       tensor_spec.TensorSpec([], dtypes.float32)),
-      (tensor_spec.TensorSpec([None], dtypes.float32),
-       tensor_spec.TensorSpec([], dtypes.float32)),
+      (tensor.TensorSpec([32], dtypes.float32),
+       tensor.TensorSpec([], dtypes.float32)),
+      (tensor.TensorSpec([None], dtypes.float32),
+       tensor.TensorSpec([], dtypes.float32)),
       (sparse_tensor.SparseTensorSpec([32, None], dtypes.float32),
        sparse_tensor.SparseTensorSpec([None], dtypes.float32)),
       (sparse_tensor.SparseTensorSpec([None, 4], dtypes.float32),
@@ -444,14 +443,14 @@ def _test_unbatch_combinations():
        ragged_tensor.RaggedTensorSpec([None, None], dtypes.float32, 1)),
       ({
           "a":
-              tensor_spec.TensorSpec([128], dtypes.float32),
+              tensor.TensorSpec([128], dtypes.float32),
           "b": (sparse_tensor.SparseTensorSpec([128, 2, 2], dtypes.int32),
-                tensor_spec.TensorSpec([None], dtypes.string))
+                tensor.TensorSpec([None], dtypes.string))
       }, {
           "a":
-              tensor_spec.TensorSpec([], dtypes.float32),
+              tensor.TensorSpec([], dtypes.float32),
           "b": (sparse_tensor.SparseTensorSpec([2, 2], dtypes.int32),
-                tensor_spec.TensorSpec([], dtypes.string))
+                tensor.TensorSpec([], dtypes.string))
       }),
   ]
 
@@ -492,6 +491,23 @@ def _test_to_batched_tensor_list_combinations():
                                               element_0_fn))
 
   return functools.reduce(reduce_fn, cases, [])
+
+
+@dataclasses.dataclass
+class MaskedTensor:
+  mask: bool
+  value: tensor.Tensor
+
+  def __tf_flatten__(self):
+    metadata = (self.mask,)
+    components = (self.value,)
+    return metadata, components
+
+  def __tf_unflatten__(self, metadata, components):
+    mask = metadata[0]
+    value = components[0]
+    return MaskedTensor(mask=mask, value=value)
+
 
 # TODO(jsimsa): Add tests for OptionalStructure and DatasetStructure.
 class StructureTest(test_base.DatasetTestBase, parameterized.TestCase):
@@ -686,7 +702,7 @@ class StructureTest(test_base.DatasetTestBase, parameterized.TestCase):
       structure.to_tensor_list(s_tensor, value_nest)
 
     with self.assertRaisesRegex(TypeError,
-                                "Neither a SparseTensor nor SparseTensorValue"):
+                                "neither a SparseTensor nor SparseTensorValue"):
       structure.to_tensor_list(s_sparse_tensor, value_tensor)
 
     with self.assertRaisesRegex(
@@ -701,13 +717,20 @@ class StructureTest(test_base.DatasetTestBase, parameterized.TestCase):
         ValueError, "The two structures don't have the same nested structure."):
       structure.to_tensor_list(s_nest, value_sparse_tensor)
 
-    with self.assertRaisesRegex(ValueError, r"Incompatible input:"):
+    with self.assertRaisesRegex(
+        ValueError,
+        "Cannot create a Tensor from the tensor list because item 0 "
+        ".*tf.Tensor.* is incompatible with the expected TypeSpec "
+        ".*TensorSpec.*"):
       structure.from_tensor_list(s_tensor, flat_sparse_tensor)
 
     with self.assertRaisesRegex(ValueError, "Expected 1 tensors but got 2."):
       structure.from_tensor_list(s_tensor, flat_nest)
 
-    with self.assertRaisesRegex(ValueError, "Incompatible input: "):
+    with self.assertRaisesRegex(
+        ValueError, "Cannot create a SparseTensor from the tensor list because "
+        "item 0 .*tf.Tensor.* is incompatible with the expected TypeSpec "
+        ".*TensorSpec.*"):
       structure.from_tensor_list(s_sparse_tensor, flat_tensor)
 
     with self.assertRaisesRegex(ValueError, "Expected 1 tensors but got 2."):
@@ -769,7 +792,7 @@ class StructureTest(test_base.DatasetTestBase, parameterized.TestCase):
       structure.to_tensor_list(s_0, value_2)
 
     with self.assertRaisesRegex(TypeError,
-                                "Neither a SparseTensor nor SparseTensorValue"):
+                                "neither a SparseTensor nor SparseTensorValue"):
       structure.to_tensor_list(s_1, value_0)
 
     with self.assertRaisesRegex(
@@ -788,22 +811,24 @@ class StructureTest(test_base.DatasetTestBase, parameterized.TestCase):
         ValueError, "The two structures don't have the same nested structure."):
       structure.to_tensor_list(s_2, value_1)
 
-    with self.assertRaisesRegex(ValueError, r"Incompatible input:"):
+    with self.assertRaisesRegex(ValueError,
+                                r"Cannot create a Tensor from the tensor list"):
       structure.from_tensor_list(s_0, flat_s_1)
 
-    with self.assertRaisesRegex(ValueError, "Expected 2 tensors but got 3."):
+    with self.assertRaisesRegex(ValueError, "Expected 2 tensors but got 3"):
       structure.from_tensor_list(s_0, flat_s_2)
 
-    with self.assertRaisesRegex(ValueError, "Incompatible input: "):
+    with self.assertRaisesRegex(
+        ValueError, "Cannot create a SparseTensor from the tensor list"):
       structure.from_tensor_list(s_1, flat_s_0)
 
-    with self.assertRaisesRegex(ValueError, "Expected 2 tensors but got 3."):
+    with self.assertRaisesRegex(ValueError, "Expected 2 tensors but got 3"):
       structure.from_tensor_list(s_1, flat_s_2)
 
-    with self.assertRaisesRegex(ValueError, "Expected 3 tensors but got 2."):
+    with self.assertRaisesRegex(ValueError, "Expected 3 tensors but got 2"):
       structure.from_tensor_list(s_2, flat_s_0)
 
-    with self.assertRaisesRegex(ValueError, "Expected 3 tensors but got 2."):
+    with self.assertRaisesRegex(ValueError, "Expected 3 tensors but got 2"):
       structure.from_tensor_list(s_2, flat_s_1)
 
   @combinations.generate(
@@ -816,10 +841,22 @@ class StructureTest(test_base.DatasetTestBase, parameterized.TestCase):
     self.assertEqual(actual_structure, expected_structure)
 
   @combinations.generate(test_base.default_test_combinations())
+  def testConvertLegacyStructureFail(self):
+    with self.assertRaisesRegex(
+        TypeError, "Could not build a structure for output class "
+        "_EagerTensorArray. Make sure any component class in "
+        "`output_classes` inherits from one of the following classes: "
+        "`tf.TypeSpec`, `tf.sparse.SparseTensor`, `tf.Tensor`, "
+        "`tf.TensorArray`."):
+      structure.convert_legacy_structure(dtypes.int32,
+                                         tensor_shape.TensorShape([2, None]),
+                                         tensor_array_ops._EagerTensorArray)
+
+  @combinations.generate(test_base.default_test_combinations())
   def testNestedNestedStructure(self):
-    s = (tensor_spec.TensorSpec([], dtypes.int64),
-         (tensor_spec.TensorSpec([], dtypes.float32),
-          tensor_spec.TensorSpec([], dtypes.string)))
+    s = (tensor.TensorSpec([], dtypes.int64),
+         (tensor.TensorSpec([], dtypes.float32),
+          tensor.TensorSpec([], dtypes.string)))
 
     int64_t = constant_op.constant(37, dtype=dtypes.int64)
     float32_t = constant_op.constant(42.0)
@@ -896,7 +933,7 @@ class StructureTest(test_base.DatasetTestBase, parameterized.TestCase):
   def testDatasetSpecConstructor(self):
     rt_spec = ragged_tensor.RaggedTensorSpec([10, None], dtypes.int32)
     st_spec = sparse_tensor.SparseTensorSpec([10, 20], dtypes.float32)
-    t_spec = tensor_spec.TensorSpec([10, 8], dtypes.string)
+    t_spec = tensor.TensorSpec([10, 8], dtypes.string)
     element_spec = {"rt": rt_spec, "st": st_spec, "t": t_spec}
     ds_struct = dataset_ops.DatasetSpec(element_spec, [5])
     self.assertEqual(ds_struct._element_spec, element_spec)
@@ -908,15 +945,48 @@ class StructureTest(test_base.DatasetTestBase, parameterized.TestCase):
     elem = CustomMap(foo=constant_op.constant(37.))
     spec = structure.type_spec_from_value(elem)
     self.assertIsInstance(spec, CustomMap)
-    self.assertEqual(spec["foo"], tensor_spec.TensorSpec([], dtypes.float32))
+    self.assertEqual(spec["foo"], tensor.TensorSpec([], dtypes.float32))
 
   @combinations.generate(test_base.default_test_combinations())
   def testObjectProxy(self):
     nt_type = collections.namedtuple("A", ["x", "y"])
     proxied = wrapt.ObjectProxy(nt_type(1, 2))
     proxied_spec = structure.type_spec_from_value(proxied)
-    self.assertEqual(structure.type_spec_from_value(nt_type(1, 2)),
-                     proxied_spec)
+    self.assertEqual(
+        structure.type_spec_from_value(nt_type(1, 2)), proxied_spec)
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testTypeSpecNotBuild(self):
+    with self.assertRaisesRegex(
+        TypeError, "Could not build a `TypeSpec` for 100 with type int"):
+      structure.type_spec_from_value(100, use_fallback=False)
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testTypeSpecNotCompatible(self):
+    test_obj = structure.NoneTensorSpec()
+    with self.assertRaisesRegex(
+        ValueError, r"No `TypeSpec` is compatible with both NoneTensorSpec\(\) "
+        "and 100"):
+      test_obj.most_specific_compatible_shape(100)
+    self.assertEqual(test_obj,
+                     test_obj.most_specific_compatible_shape(test_obj))
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testDataclasses(self):
+    mt = MaskedTensor(mask=True, value=constant_op.constant([1]))
+
+    mt_type_spec = structure.type_spec_from_value(mt)
+    self.assertEqual(mt_type_spec.mask, mt.mask)
+    self.assertEqual(
+        mt_type_spec.value, structure.type_spec_from_value(mt.value)
+    )
+
+    mt2 = MaskedTensor(mask=True, value=constant_op.constant([2]))
+    mt3 = MaskedTensor(mask=False, value=constant_op.constant([1]))
+    mt2_type_spec = structure.type_spec_from_value(mt2)
+    mt3_type_spec = structure.type_spec_from_value(mt3)
+    self.assertEqual(mt_type_spec, mt2_type_spec)
+    self.assertNotEqual(mt_type_spec, mt3_type_spec)
 
 
 class CustomMap(collections_abc.Mapping):

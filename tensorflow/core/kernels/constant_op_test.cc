@@ -39,7 +39,7 @@ class ConstantOpTest : public OpsTestBase {
 
 void ConstantOpTest::PersistentMemoryTrackingTest(bool on_gpu) {
   DataType data_type = DT_INT32;
-  std::initializer_list<int64> dims = {2, 3, 4, 5};
+  std::initializer_list<int64_t> dims = {2, 3, 4, 5};
   Tensor tensor(data_type, TensorShape(dims));
   for (int i = 0; i < 2 * 3 * 4 * 5; ++i) {
     tensor.flat<int32>()(i) = i;
@@ -60,7 +60,7 @@ void ConstantOpTest::PersistentMemoryTrackingTest(bool on_gpu) {
   std::unique_ptr<Device> device(DeviceFactory::NewDevice(
       device_string, {}, "/job:worker/replica:0/task:0"));
 
-  Status status;
+  absl::Status status;
   std::unique_ptr<OpKernel> op(CreateOpKernel(device_type, device.get(),
                                               cpu_allocator(), const_node,
                                               TF_GRAPH_DEF_VERSION, &status));
@@ -120,7 +120,7 @@ static void BM_ManyConsts_Parallel(::testing::benchmark::State& state) {
   test::Benchmark("cpu", ManyConsts(num, false /* !sequential */),
                   /*old_benchmark_api*/ false)
       .Run(state);
-  state.SetItemsProcessed(static_cast<int64>(state.iterations()) * num);
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * num);
 }
 BENCHMARK(BM_ManyConsts_Parallel)->Range(1, 1 << 10);
 
@@ -130,7 +130,7 @@ static void BM_ManyConsts_Sequential(::testing::benchmark::State& state) {
   test::Benchmark("cpu", ManyConsts(num, true /* sequential */),
                   /*old_benchmark_api*/ false)
       .Run(state);
-  state.SetItemsProcessed(static_cast<int64>(state.iterations()) * num);
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * num);
 }
 BENCHMARK(BM_ManyConsts_Sequential)->Range(1, 1 << 10);
 

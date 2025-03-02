@@ -28,8 +28,8 @@ namespace tensorflow {
 namespace grappler {
 namespace {
 
-Status OptimizeWithMapParallelization(const GrapplerItem& item,
-                                      GraphDef* output, bool autotune) {
+absl::Status OptimizeWithMapParallelization(const GrapplerItem& item,
+                                            GraphDef* output, bool autotune) {
   MapParallelization optimizer;
   RewriterConfig_CustomGraphOptimizer config;
   if (autotune) {
@@ -43,7 +43,7 @@ Status OptimizeWithMapParallelization(const GrapplerItem& item,
 
 using graph_tests_utils::MakeMapNode;
 const char stateless_fun_name[] = "XTimesTwo";
-const char stateful_fun_name[] = "RandomUniform";
+const char stateful_fun_name[] = "RandomUniformFn";
 
 class AutotuneSetting : public ::testing::TestWithParam<bool> {};
 

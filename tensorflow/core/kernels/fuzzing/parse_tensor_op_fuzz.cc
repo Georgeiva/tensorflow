@@ -13,8 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/cc/ops/standard_ops.h"
+#include "absl/log/log.h"
+#include "tensorflow/cc/framework/scope.h"
+#include "tensorflow/cc/ops/array_ops.h"
+#include "tensorflow/cc/ops/parsing_ops.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor.pb.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/fuzzing/fuzz_session.h"
+#include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/platform/tstring.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace fuzzing {
@@ -54,8 +64,8 @@ class FuzzParseTensor : public FuzzSession {
       return;
     }
     TensorShape shape(proto.tensor_shape());
-    const int64 num_elements = shape.num_elements();
-    const int64 max_num_elements = 1 << 18;
+    const int64_t num_elements = shape.num_elements();
+    const int64_t max_num_elements = 1 << 18;
     if (num_elements > max_num_elements) {
       LOG(WARNING) << "Requiring a tensor with too many elements\n";
       return;

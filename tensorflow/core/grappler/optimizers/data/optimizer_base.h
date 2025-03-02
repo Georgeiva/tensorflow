@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_DATA_OPTIMIZER_BASE_H_
 #define TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_DATA_OPTIMIZER_BASE_H_
 
+#include "absl/status/status.h"
+#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/grappler/optimizers/custom_graph_optimizer.h"
 
 namespace tensorflow {
@@ -26,19 +28,19 @@ class TFDataOptimizerBase : public CustomGraphOptimizer {
  public:
   struct OptimizationStats {
     // Identifies the number of independent graph changes for an optimization.
-    int64 num_changes = 0;
+    int64_t num_changes = 0;
   };
 
   TFDataOptimizerBase() = default;
   ~TFDataOptimizerBase() override = default;
 
-  Status Optimize(Cluster* cluster, const GrapplerItem& item,
-                  GraphDef* output) final;
+  absl::Status Optimize(Cluster* cluster, const GrapplerItem& item,
+                        GraphDef* output) final;
 
-  virtual Status OptimizeAndCollectStats(Cluster* cluster,
-                                         const GrapplerItem& item,
-                                         GraphDef* output,
-                                         OptimizationStats* stats) = 0;
+  virtual absl::Status OptimizeAndCollectStats(Cluster* cluster,
+                                               const GrapplerItem& item,
+                                               GraphDef* output,
+                                               OptimizationStats* stats) = 0;
 };
 
 }  // namespace grappler

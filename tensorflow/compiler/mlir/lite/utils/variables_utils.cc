@@ -14,9 +14,13 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/compiler/mlir/lite/utils/variables_utils.h"
 
-#include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
+#include "llvm/Support/Casting.h"
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 
 namespace mlir {
 namespace TFL {
@@ -28,7 +32,19 @@ bool IsSupportedVariableType(Operation* op) {
     type = op->getResult(0).getType().cast<ShapedType>();
   } else if (llvm::isa<TF::AssignVariableOp>(op)) {
     type = op->getOperand(1).getType().cast<ShapedType>();
+  } else if (llvm::isa<TF::VarHandleOp>(op)) {
+    type = op->getResult(0)
+               .getType()
+               .cast<ShapedType>()
+               .getElementType()
+               .cast<TF::TensorFlowTypeWithSubtype>()
+               .GetSubtypes()
+               .back();
   }
+  return IsSupportedVariableType(type);
+}
+
+bool IsSupportedVariableType(ShapedType type) {
   auto element_type = type.getElementType();
   // Check complex types.
   if (auto complex_type = element_type.dyn_cast<mlir::ComplexType>()) {

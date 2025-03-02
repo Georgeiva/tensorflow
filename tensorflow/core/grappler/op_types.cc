@@ -389,6 +389,10 @@ bool IsMirrorPadGrad(const NodeDef& node) {
   return node.op() == "MirrorPadGrad";
 }
 
+bool IsMklFusedMish(const NodeDef& node) {
+  return node.op() == "_MklFusedMish";
+}
+
 bool IsMod(const NodeDef& node) { return node.op() == "Mod"; }
 
 bool IsMul(const NodeDef& node) { return node.op() == "Mul"; }
@@ -440,7 +444,7 @@ bool IsQuantizedMatMul(const NodeDef& node) {
 }
 
 bool IsQueue(const NodeDef& node) {
-  return str_util::EndsWith(node.op(), "QueueV2");
+  return absl::EndsWith(node.op(), "QueueV2");
 }
 
 bool IsRandomShuffle(const NodeDef& node) {
@@ -519,6 +523,8 @@ bool IsShape(const NodeDef& node) { return node.op() == "Shape"; }
 bool IsShapeN(const NodeDef& node) { return node.op() == "ShapeN"; }
 
 bool IsShuffle(const NodeDef& node) { return node.op() == "Shuffle"; }
+
+bool IsSigmoid(const NodeDef& node) { return node.op() == "Sigmoid"; }
 
 bool IsSigmoidGrad(const NodeDef& node) { return node.op() == "SigmoidGrad"; }
 
@@ -676,7 +682,7 @@ bool IsPersistent(const NodeDef& node) {
 
 bool HasRefInput(const NodeDef& node) {
   const OpDef* op_def;
-  Status status = OpRegistry::Global()->LookUpOpDef(node.op(), &op_def);
+  absl::Status status = OpRegistry::Global()->LookUpOpDef(node.op(), &op_def);
   if (!status.ok()) {
     return false;
   }
@@ -696,19 +702,19 @@ bool IsDataset(const NodeDef& node) {
          op == "DatasetToSingleElement" || op == "ReduceDataset";
 }
 
-bool IsStateful(const NodeDef node, const OpRegistryInterface* op_registry) {
+bool IsStateful(const NodeDef& node, const OpRegistryInterface* op_registry) {
   const OpDef* op_def = nullptr;
   const string& op_name = node.op();
-  Status status = op_registry->LookUpOpDef(op_name, &op_def);
+  absl::Status status = op_registry->LookUpOpDef(op_name, &op_def);
   if (!status.ok()) {
     LOG(WARNING) << "Failed to lookup OpDef for " << op_name
-                 << ". Error: " << status.error_message();
+                 << ". Error: " << status.message();
     return false;
   }
   return op_def->is_stateful();
 }
 
-bool IsStateful(const NodeDef node) {
+bool IsStateful(const NodeDef& node) {
   return IsStateful(node, OpRegistry::Global());
 }
 
@@ -720,7 +726,7 @@ bool IsFreeOfSideEffect(const NodeDef& node,
   }
   const OpDef* op_def = nullptr;
   const string& op_name = node.op();
-  Status status = op_registry->LookUpOpDef(op_name, &op_def);
+  absl::Status status = op_registry->LookUpOpDef(op_name, &op_def);
   if (!status.ok()) {
     return false;
   }
@@ -805,7 +811,7 @@ bool IsValueAndOrderAndShapePreserving(const NodeDef& node) {
       CHECK_NOTNULL((new const gtl::FlatSet<string>{
           "CheckNumerics",
           "DebugGradientIdentity",
-          "DeepCopy"
+          "DeepCopy",
           "Enter",
           "Exit",
           "PreventGradient",
@@ -853,51 +859,15 @@ bool IsValuePreserving(const NodeDef& node) {
 bool IsUnaryElementWise(const NodeDef& node) {
   static const gtl::FlatSet<string>* const kElementWiseOps =
       CHECK_NOTNULL((new gtl::FlatSet<string>{
-          "Abs",
-          "Acos",
-          "Acosh",
-          "Asin",
-          "Asinh",
-          "Atan",
-          "Atanh",
-          "Ceil",
-          "ComplexAbs",
-          "Conj",
-          "Cos",
-          "Cosh",
-          "Digamma",
-          "Elu"
-          "Erf",
-          "Erfc",
-          "Exp",
-          "Expm1",
-          "Floor",
-          "Inv",
-          "Invert",
-          "Isinf",
-          "Isnan",
-          "Isfinite",
-          "Lgamma",
-          "Log",
-          "Log1p",
-          "LogicalNot",
-          "Neg",
-          "Reciprocal",
-          "Relu",
-          "Relu6",
-          "Rint",
-          "Round",
-          "Selu",
-          "Rsqrt",
-          "Sigmoid",
-          "Sign",
-          "Sin",
-          "SinH",
-          "Softplus",
-          "Softsign",
-          "Sqrt",
-          "Square",
-          "Tan"
+          "Abs",      "Acos",     "Acosh",      "Asin",       "Asinh",
+          "Atan",     "Atanh",    "Ceil",       "ComplexAbs", "Conj",
+          "Cos",      "Cosh",     "Digamma",    "Elu",        "Erf",
+          "Erfc",     "Exp",      "Expm1",      "Floor",      "Inv",
+          "Invert",   "Isinf",    "Isnan",      "Isfinite",   "Lgamma",
+          "Log",      "Log1p",    "LogicalNot", "Neg",        "Reciprocal",
+          "Relu",     "Relu6",    "Rint",       "Round",      "Selu",
+          "Rsqrt",    "Sigmoid",  "Sign",       "Sin",        "SinH",
+          "Softplus", "Softsign", "Sqrt",       "Square",     "Tan",
           "Tanh",
       }));
   return kElementWiseOps->count(node.op()) > 0 ||

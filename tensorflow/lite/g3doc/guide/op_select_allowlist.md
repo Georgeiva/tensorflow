@@ -75,26 +75,19 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.BitwiseAnd`
 *   `raw_ops.BitwiseOr`
 *   `raw_ops.BitwiseXor`
-*   `raw_ops.BoostedTreesBucketize`
-*   `raw_ops.BoostedTreesCreateQuantileStreamResource`
-*   `raw_ops.BoostedTreesFlushQuantileSummaries`
-*   `raw_ops.BoostedTreesMakeQuantileSummaries`
-*   `raw_ops.BoostedTreesQuantileStreamResourceAddSummaries`
-*   `raw_ops.BoostedTreesQuantileStreamResourceDeserialize`
-*   `raw_ops.BoostedTreesQuantileStreamResourceFlush`
-*   `raw_ops.BoostedTreesQuantileStreamResourceGetBucketBoundaries`
-*   `raw_ops.BoostedTreesQuantileStreamResourceHandleOp`
 *   `raw_ops.BroadcastArgs`
 *   `raw_ops.BroadcastGradientArgs`
 *   `raw_ops.BroadcastTo`
 *   `raw_ops.Bucketize`
 *   `raw_ops.CTCBeamSearchDecoder`
 *   `raw_ops.CTCGreedyDecoder`
+*   `raw_ops.Case`
 *   `raw_ops.Cast`
 *   `raw_ops.Ceil`
 *   `raw_ops.CheckNumerics`
 *   `raw_ops.CheckNumericsV2`
 *   `raw_ops.Cholesky`
+*   `raw_ops.ClipByValue`
 *   `raw_ops.CombinedNonMaxSuppression`
 *   `raw_ops.Complex`
 *   `raw_ops.ComplexAbs`
@@ -190,6 +183,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.FIFOQueue`
 *   `raw_ops.FIFOQueueV2`
 *   `raw_ops.Fill`
+*   `raw_ops.FilterDataset`
 *   `raw_ops.FinalizeDataset`
 *   `raw_ops.Fingerprint`
 *   `raw_ops.FlatMapDataset`
@@ -242,7 +236,6 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.IRFFT`
 *   `raw_ops.IRFFT2D`
 *   `raw_ops.IRFFT3D`
-*   `raw_ops.IsBoostedTreesQuantileStreamResourceInitialized`
 *   `raw_ops.IsFinite`
 *   `raw_ops.IsNan`
 *   `raw_ops.IsVariableInitialized`
@@ -359,6 +352,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.Print`
 *   `raw_ops.PrintV2`
 *   `raw_ops.Prod`
+*   `raw_ops.Qr`
 *   `raw_ops.QuantizedAdd`
 *   `raw_ops.QuantizedAvgPool`
 *   `raw_ops.QuantizedBatchNormWithGlobalNormalization`
@@ -412,6 +406,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.RandomUniformInt`
 *   `raw_ops.Range`
 *   `raw_ops.Rank`
+*   `raw_ops.ReadFile`
 *   `raw_ops.ReadVariableOp`
 *   `raw_ops.Real`
 *   `raw_ops.RealDiv`
@@ -564,6 +559,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.SparseFillEmptyRowsGrad`
 *   `raw_ops.SparseReduceSum`
 *   `raw_ops.SparseReshape`
+*   `raw_ops.SparseReorder`
 *   `raw_ops.SparseSegmentMean`
 *   `raw_ops.SparseSegmentMeanGrad`
 *   `raw_ops.SparseSegmentMeanWithNumSegments`
@@ -575,6 +571,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.SparseSegmentSumWithNumSegments`
 *   `raw_ops.SparseSlice`
 *   `raw_ops.SparseSoftmaxCrossEntropyWithLogits`
+*   `raw_ops.SparseTensorDenseMatMul`
 *   `raw_ops.SparseToDense`
 *   `raw_ops.SparseToSparseSetOperation`
 *   `raw_ops.Split`
@@ -594,6 +591,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.StackV2`
 *   `raw_ops.StatelessMultinomial`
 *   `raw_ops.StatelessRandomGammaV2`
+*   `raw_ops.StatelessRandomGammaV3`
 *   `raw_ops.StatelessRandomGetAlg`
 *   `raw_ops.StatelessRandomGetKeyCounter`
 *   `raw_ops.StatelessRandomGetKeyCounterAlg`
@@ -632,6 +630,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.Switch`
 *   `raw_ops.SymbolicGradient`
 *   `raw_ops.TakeDataset`
+*   `raw_ops.TakeWhileDataset`
 *   `raw_ops.Tan`
 *   `raw_ops.Tanh`
 *   `raw_ops.TanhGrad`
@@ -719,11 +718,13 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.UniqueWithCounts`
 *   `raw_ops.UniqueWithCountsV2`
 *   `raw_ops.Unpack`
+*   `raw_ops.UnsortedSegmentJoin`
 *   `raw_ops.UnsortedSegmentMax`
 *   `raw_ops.UnsortedSegmentMin`
 *   `raw_ops.UnsortedSegmentProd`
 *   `raw_ops.UnsortedSegmentSum`
 *   `raw_ops.UnwrapDatasetVariant`
+*   `raw_ops.UpperBound`
 *   `raw_ops.VarHandleOp`
 *   `raw_ops.Variable`
 *   `raw_ops.VariableShape`
@@ -731,6 +732,7 @@ supported by TensorFlow Lite runtime with the Select TensorFlow Ops feature.
 *   `raw_ops.VarIsInitializedOp`
 *   `raw_ops.Where`
 *   `raw_ops.WrapDatasetVariant`
+*   `raw_ops.WriteFile`
 *   `raw_ops.Xdivy`
 *   `raw_ops.Xlog1py`
 *   `raw_ops.Xlogy`
@@ -792,8 +794,7 @@ SentencePiece library into the final app or binary.
 
 ## User's defined Operators
 
-*Note: This feature is only available in tf-nightly and the upcoming v2.5.0
-version*
+*Note: This feature is only available from TensorFlow 2.5 version*
 
 If you
 [created your own TensorFlow operators](https://www.tensorflow.org/guide/create_op),
@@ -848,7 +849,7 @@ filegroup(
 )
 ```
 
-In order to find the relvant operator kernel source file under the
+In order to find the relevant operator kernel source file under the
 `tensorflow/core/kernels` directory, you can search the source code location,
 which contains the following kernel declaration with the operator name:
 
@@ -878,9 +879,9 @@ filegroup(
 (2) Add the operator name to the allowed list.
 
 The allowed list is defined in the
-`tensorflow/lite/delegates/flex/allowlisted_flex_ops.cc`. The TensorFlow core
-operator name is need to be listed in order to be allowed through the Select TF
-option.
+`tensorflow/compiler/mlir/lite/delegates/flex/allowlisted_flex_ops.cc`. The
+TensorFlow core operator name is need to be listed in order to be allowed
+through the Select TF option.
 
 ```
 static const std::set<std::string>* allowlisted_flex_ops =
