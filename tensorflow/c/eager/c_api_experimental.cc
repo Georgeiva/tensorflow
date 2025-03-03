@@ -15,22 +15,35 @@ limitations under the License.
 
 #include "tensorflow/c/eager/c_api_experimental.h"
 
+#include <cstdint>
+#include <memory>
+#include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/strings/match.h"
+#include "absl/time/time.h"
 #include "tensorflow/c/c_api.h"
 #include "tensorflow/c/eager/c_api_internal.h"
 #include "tensorflow/c/eager/tfe_context_internal.h"
 #include "tensorflow/c/eager/tfe_op_internal.h"
 #include "tensorflow/c/eager/tfe_tensorhandle_internal.h"
+#include "tensorflow/c/tf_status.h"
 #include "tensorflow/c/tf_status_helper.h"
+#include "xla/tsl/c/tsl_status_internal.h"
+#include "xla/tsl/distributed_runtime/coordination/coordination_service_agent.h"
+#include "xla/tsl/framework/cancellation.h"
 #include "tensorflow/core/common_runtime/composite_device.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/eager/eager_operation.h"
+#include "tensorflow/core/distributed_runtime/coordination/coordination_service_error_util.h"
+#include "tensorflow/core/framework/function.h"
+#include "tensorflow/core/framework/graph_debug_info.pb.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
 #include "tensorflow/core/lib/monitoring/gauge.h"
 #include "tensorflow/core/lib/monitoring/sampler.h"
 #include "tensorflow/core/platform/casts.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/strcat.h"
 
@@ -76,7 +89,7 @@ TFE_MonitoringCounter0* TFE_MonitoringNewCounter0(const char* name,
                                                   TF_Status* status,
                                                   const char* description) {
   auto* result = new TFE_MonitoringCounter0({name, description});
-  Set_TF_Status_from_Status(status, result->counter->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->counter->GetStatus());
   if (!result->counter->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -99,7 +112,7 @@ TFE_MonitoringCounter1* TFE_MonitoringNewCounter1(const char* name,
                                                   const char* description,
                                                   const char* label1) {
   auto* result = new TFE_MonitoringCounter1({name, description, label1});
-  Set_TF_Status_from_Status(status, result->counter->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->counter->GetStatus());
   if (!result->counter->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -124,7 +137,7 @@ TFE_MonitoringCounter2* TFE_MonitoringNewCounter2(const char* name,
                                                   const char* label2) {
   auto* result =
       new TFE_MonitoringCounter2({name, description, label1, label2});
-  Set_TF_Status_from_Status(status, result->counter->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->counter->GetStatus());
   if (!result->counter->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -155,7 +168,7 @@ TFE_MonitoringIntGauge0* TFE_MonitoringNewIntGauge0(const char* name,
                                                     TF_Status* status,
                                                     const char* description) {
   auto* result = new TFE_MonitoringIntGauge0({name, description});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -178,7 +191,7 @@ TFE_MonitoringIntGauge1* TFE_MonitoringNewIntGauge1(const char* name,
                                                     const char* description,
                                                     const char* label1) {
   auto* result = new TFE_MonitoringIntGauge1({name, description, label1});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -203,7 +216,7 @@ TFE_MonitoringIntGauge2* TFE_MonitoringNewIntGauge2(const char* name,
                                                     const char* label2) {
   auto* result =
       new TFE_MonitoringIntGauge2({name, description, label1, label2});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -241,7 +254,7 @@ const void TFE_MonitoringStringGaugeCellValue(
 TFE_MonitoringStringGauge0* TFE_MonitoringNewStringGauge0(
     const char* name, TF_Status* status, const char* description) {
   auto* result = new TFE_MonitoringStringGauge0({name, description});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -263,7 +276,7 @@ TFE_MonitoringStringGauge1* TFE_MonitoringNewStringGauge1(
     const char* name, TF_Status* status, const char* description,
     const char* label1) {
   auto* result = new TFE_MonitoringStringGauge1({name, description, label1});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -286,7 +299,7 @@ TFE_MonitoringStringGauge2* TFE_MonitoringNewStringGauge2(
     const char* label1, const char* label2) {
   auto* result =
       new TFE_MonitoringStringGauge2({name, description, label1, label2});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -309,7 +322,7 @@ TFE_MonitoringStringGauge3* TFE_MonitoringNewStringGauge3(
     const char* label1, const char* label2, const char* label3) {
   auto* result = new TFE_MonitoringStringGauge3(
       {name, description, label1, label2, label3});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -334,7 +347,7 @@ TFE_MonitoringStringGauge4* TFE_MonitoringNewStringGauge4(
     const char* label4) {
   auto* result = new TFE_MonitoringStringGauge4(
       {name, description, label1, label2, label3, label4});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -366,7 +379,7 @@ TFE_MonitoringBoolGauge0* TFE_MonitoringNewBoolGauge0(const char* name,
                                                       TF_Status* status,
                                                       const char* description) {
   auto* result = new TFE_MonitoringBoolGauge0({name, description});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -389,7 +402,7 @@ TFE_MonitoringBoolGauge1* TFE_MonitoringNewBoolGauge1(const char* name,
                                                       const char* description,
                                                       const char* label1) {
   auto* result = new TFE_MonitoringBoolGauge1({name, description, label1});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -414,7 +427,7 @@ TFE_MonitoringBoolGauge2* TFE_MonitoringNewBoolGauge2(const char* name,
                                                       const char* label2) {
   auto* result =
       new TFE_MonitoringBoolGauge2({name, description, label1, label2});
-  Set_TF_Status_from_Status(status, result->gauge->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->gauge->GetStatus());
   if (!result->gauge->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -468,7 +481,7 @@ TFE_MonitoringSampler0* TFE_MonitoringNewSampler0(
     const char* description) {
   auto* result = new TFE_MonitoringSampler0(
       {name, buckets->create_buckets(), description});
-  Set_TF_Status_from_Status(status, result->sampler->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->sampler->GetStatus());
   if (!result->sampler->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -491,7 +504,7 @@ TFE_MonitoringSampler1* TFE_MonitoringNewSampler1(
     const char* description, const char* label1) {
   auto* result = new TFE_MonitoringSampler1(
       {name, buckets->create_buckets(), description, label1});
-  Set_TF_Status_from_Status(status, result->sampler->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->sampler->GetStatus());
   if (!result->sampler->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -514,7 +527,7 @@ TFE_MonitoringSampler2* TFE_MonitoringNewSampler2(
     const char* description, const char* label1, const char* label2) {
   auto* result = new TFE_MonitoringSampler2(
       {name, buckets->create_buckets(), description, label1, label2});
-  Set_TF_Status_from_Status(status, result->sampler->GetStatus());
+  tsl::Set_TF_Status_from_Status(status, result->sampler->GetStatus());
   if (!result->sampler->GetStatus().ok()) {
     delete result;
     return nullptr;
@@ -536,11 +549,6 @@ void TFE_ContextOptionsSetTfrt(TFE_ContextOptions* options, bool use_tfrt) {
   options->use_tfrt = use_tfrt;
 }
 
-void TFE_ContextOptionsSetTfrtDistributedRuntime(
-    TFE_ContextOptions* options, bool use_tfrt_distributed_runtime) {
-  options->use_tfrt_distributed_runtime = use_tfrt_distributed_runtime;
-}
-
 TFE_CancellationManager* TFE_NewCancellationManager() {
   return tensorflow::wrap(new tensorflow::CancellationManager);
 }
@@ -555,6 +563,39 @@ bool TFE_CancellationManagerIsCancelled(
   return tensorflow::unwrap(cancellation_manager)->IsCancelled();
 }
 
+bool TFE_CancellationManagerIsCancelling(
+    TFE_CancellationManager* cancellation_manager) {
+  return tensorflow::unwrap(cancellation_manager)->IsCancelling();
+}
+
+TFE_CancellationToken TFE_CancellationManagerGetToken(
+    TFE_CancellationManager* cancellation_manager) {
+  return tensorflow::unwrap(cancellation_manager)->get_cancellation_token();
+}
+
+bool TFE_CancellationManagerRegisterCallback(
+    TFE_CancellationManager* cancellation_manager, TFE_CancellationToken token,
+    const TFE_CancelCallback* c_callback, const char* callback_name) {
+  tensorflow::CancelCallback callback = [callback = c_callback->callback,
+                                         context = c_callback->context]() {
+    callback(context);
+  };
+  return tensorflow::unwrap(cancellation_manager)
+      ->RegisterCallbackWithErrorLogging(token, callback, callback_name);
+}
+
+bool TFE_CancellationManagerDeregisterCallback(
+    TFE_CancellationManager* cancellation_manager,
+    TFE_CancellationToken token) {
+  return tensorflow::unwrap(cancellation_manager)->DeregisterCallback(token);
+}
+
+bool TFE_CancellationManagerTryDeregisterCallback(
+    TFE_CancellationManager* cancellation_manager,
+    TFE_CancellationToken token) {
+  return tensorflow::unwrap(cancellation_manager)->TryDeregisterCallback(token);
+}
+
 void TFE_DeleteCancellationManager(
     TFE_CancellationManager* cancellation_manager) {
   delete tensorflow::unwrap(cancellation_manager);
@@ -565,11 +606,13 @@ void TFE_OpSetCancellationManager(TFE_Op* op,
                                   TF_Status* status) {
   tensorflow::unwrap(op)->SetCancellationManager(
       tensorflow::unwrap(cancellation_manager));
-  status->status = tensorflow::Status::OK();
+  status->status = absl::OkStatus();
 }
 
-TFE_Executor* TFE_NewExecutor(bool is_async) {
-  return new TFE_Executor(is_async);
+TFE_Executor* TFE_NewExecutor(bool is_async, bool enable_streaming_enqueue,
+                              int in_flight_nodes_limit) {
+  return new TFE_Executor(is_async, enable_streaming_enqueue,
+                          in_flight_nodes_limit);
 }
 
 void TFE_DeleteExecutor(TFE_Executor* executor) { delete executor; }
@@ -624,15 +667,39 @@ void TFE_ContextGetFunctionDef(TFE_Context* ctx, const char* function_name,
   buf->data_deallocator = [](void* data, size_t length) {
     tensorflow::port::Free(data);
   };
-  status->status = tensorflow::Status::OK();
+  status->status = absl::OkStatus();
+}
+
+void TFE_ContextGetGraphDebugInfo(TFE_Context* ctx, const char* function_name,
+                                  TF_Buffer* buf, TF_Status* status) {
+  auto function_record = tensorflow::unwrap(ctx)->FindRecord(function_name);
+  if (function_record == nullptr) {
+    status->status = tensorflow::errors::NotFound(
+        "Unable to find function with name: ", function_name);
+    return;
+  }
+
+  tensorflow::GraphDebugInfo debug_info =
+      tensorflow::StackTracesMapToGraphDebugInfo(
+          function_record->stack_traces());
+
+  string str = debug_info.SerializeAsString();
+  void* data = tensorflow::port::Malloc(str.length());
+  str.copy(static_cast<char*>(data), str.length(), 0);
+  buf->data = data;
+  buf->length = str.length();
+  buf->data_deallocator = [](void* data, size_t length) {
+    tensorflow::port::Free(data);
+  };
+  status->status = absl::OkStatus();
 }
 
 TF_Tensor* TFE_AllocateHostTensor(TFE_Context* ctx, TF_DataType dtype,
                                   const int64_t* dims, int num_dims,
                                   TF_Status* status) {
-  std::vector<tensorflow::int64> dimvec(num_dims);
+  std::vector<int64_t> dimvec(num_dims);
   for (int i = 0; i < num_dims; ++i) {
-    dimvec[i] = static_cast<tensorflow::int64>(dims[i]);
+    dimvec[i] = static_cast<int64_t>(dims[i]);
   }
 
   if (ctx == nullptr) {
@@ -702,6 +769,16 @@ void TFE_ContextSetLogDevicePlacement(TFE_Context* ctx, unsigned char enable,
   tensorflow::unwrap(ctx)->SetLogDevicePlacement(enable);
 }
 
+void TFE_ContextSetRunEagerOpAsFunction(TFE_Context* ctx, unsigned char enable,
+                                        TF_Status* status) {
+  tensorflow::unwrap(ctx)->SetRunEagerOpAsFunction(enable);
+}
+
+void TFE_ContextSetJitCompileRewrite(TFE_Context* ctx, unsigned char enable,
+                                     TF_Status* status) {
+  tensorflow::unwrap(ctx)->SetJitCompileRewrite(enable);
+}
+
 const char* TFE_TensorHandleDeviceType(TFE_TensorHandle* h, TF_Status* status) {
   if (h == nullptr) {
     status->status = tensorflow::errors::InvalidArgument("Invalid handle");
@@ -716,6 +793,11 @@ int TFE_TensorHandleDeviceID(TFE_TensorHandle* h, TF_Status* status) {
     return -1;
   }
   return tensorflow::unwrap(h)->DeviceId(&status->status);
+}
+
+TF_CAPI_EXPORT extern void TFE_TensorHandleGetStatus(TFE_TensorHandle* h,
+                                                     TF_Status* status) {
+  status->status = tensorflow::unwrap(h)->TensorHandleStatus();
 }
 
 void TFE_GetExecutedOpNames(TFE_Context* ctx, TF_Buffer* buf,
@@ -735,7 +817,7 @@ void TFE_GetExecutedOpNames(TFE_Context* ctx, TF_Buffer* buf,
   buf->data_deallocator = [](void* data, size_t length) {
     tensorflow::port::Free(data);
   };
-  status->status = tensorflow::Status::OK();
+  status->status = absl::OkStatus();
 }
 
 void TFE_SetLogicalCpuDevices(TFE_Context* ctx, int num_cpus,
@@ -761,4 +843,151 @@ void TFE_SetLogicalCpuDevices(TFE_Context* ctx, int num_cpus,
   }
 
   status->status = tensorflow::unwrap(ctx)->AddDevices(std::move(devices));
+}
+
+void TFE_InsertConfigKeyValue(TFE_Context* ctx, const char* key,
+                              const char* value, TF_Status* status) {
+  tensorflow::ImmediateExecutionDistributedManager* dist_mgr =
+      tensorflow::unwrap(ctx)->GetDistributedManager();
+  tsl::CoordinationServiceAgent* coord_agent =
+      dist_mgr->GetCoordinationServiceAgent();
+  if (coord_agent == nullptr) {
+    status->status = tensorflow::errors::FailedPrecondition(
+        "Coordination service agent is not enabled.");
+    return;
+  }
+  status->status = coord_agent->InsertKeyValue(key, value);
+}
+
+void TFE_GetConfigKeyValue(TFE_Context* ctx, const char* key,
+                           int64_t timeout_in_ms, TF_Buffer* value_buf,
+                           TF_Status* status) {
+  tensorflow::ImmediateExecutionDistributedManager* dist_mgr =
+      tensorflow::unwrap(ctx)->GetDistributedManager();
+  tsl::CoordinationServiceAgent* coord_agent =
+      dist_mgr->GetCoordinationServiceAgent();
+  if (coord_agent == nullptr) {
+    status->status = tensorflow::errors::FailedPrecondition(
+        "Coordination service is not enabled.");
+    return;
+  }
+  absl::Duration timeout;
+  if (timeout_in_ms > 0) {
+    timeout = absl::Milliseconds(timeout_in_ms);
+  } else {
+    // Block until the key-value is set or the worker shuts down.
+    timeout = absl::InfiniteDuration();
+  }
+  auto status_or_value = coord_agent->GetKeyValue(key, timeout);
+  status->status = status_or_value.status();
+  if (!status_or_value.ok()) return;
+
+  const std::string& value_string = status_or_value.value();
+  void* data = tensorflow::port::Malloc(value_string.length());
+  value_string.copy(static_cast<char*>(data), value_string.length(), 0);
+  value_buf->data = data;
+  value_buf->length = value_string.length();
+  value_buf->data_deallocator = [](void* data, size_t length) {
+    tensorflow::port::Free(data);
+  };
+}
+
+void TFE_DeleteConfigKeyValue(TFE_Context* ctx, const char* key,
+                              TF_Status* status) {
+  tensorflow::ImmediateExecutionDistributedManager* dist_mgr =
+      tensorflow::unwrap(ctx)->GetDistributedManager();
+  tsl::CoordinationServiceAgent* coord_agent =
+      dist_mgr->GetCoordinationServiceAgent();
+  if (coord_agent == nullptr) {
+    status->status = tensorflow::errors::FailedPrecondition(
+        "Coordination service is not enabled.");
+    return;
+  }
+  status->status = coord_agent->DeleteKeyValue(key);
+}
+
+void TFE_ReportErrorToCluster(TFE_Context* ctx, int error_code,
+                              const char* error_message, TF_Status* status) {
+  tensorflow::ImmediateExecutionDistributedManager* dist_mgr =
+      tensorflow::unwrap(ctx)->GetDistributedManager();
+  tsl::CoordinationServiceAgent* coord_agent =
+      dist_mgr->GetCoordinationServiceAgent();
+  if (coord_agent == nullptr) {
+    status->status = tensorflow::errors::FailedPrecondition(
+        "Coordination service is not enabled.");
+    return;
+  }
+  absl::Status s(static_cast<absl::StatusCode>(error_code), error_message);
+  status->status = coord_agent->ReportError(s);
+}
+
+void TFE_GetTaskStates(TFE_Context* ctx, const TF_Buffer& tasks, void* states,
+                       TF_Status* status) {
+  tensorflow::ImmediateExecutionDistributedManager* dist_mgr =
+      tensorflow::unwrap(ctx)->GetDistributedManager();
+  tsl::CoordinationServiceAgent* coord_agent =
+      dist_mgr->GetCoordinationServiceAgent();
+  if (coord_agent == nullptr) {
+    status->status = tensorflow::errors::FailedPrecondition(
+        "Coordination service is not enabled.");
+    return;
+  }
+  std::vector<tensorflow::CoordinatedTask> task_vec(tasks.length);
+  auto* task_iter = static_cast<const tensorflow::CoordinatedTask*>(tasks.data);
+  for (size_t i = 0; i < tasks.length; ++i) {
+    task_vec[i].set_job_name(task_iter->job_name());
+    task_vec[i].set_task_id(task_iter->task_id());
+    ++task_iter;
+  }
+  auto results = coord_agent->GetTaskState(task_vec);
+  if (!results.ok()) {
+    status->status = results.status();
+    return;
+  }
+  auto* state_iter = static_cast<TF_Status*>(states);
+  for (size_t i = 0; i < tasks.length; ++i) {
+    const auto& result = (*results)[i];
+    TF_Status s;
+    TF_SetStatus(&s, static_cast<TF_Code>(result.error_code()),
+                 std::string(result.error_message()).data());
+    if (TF_GetCode(&s) != TF_Code::TF_OK) {
+      tensorflow::CoordinationServiceError error;
+      *error.mutable_source_task() = result.error_payload().source_task();
+      TF_SetPayload(&s, tensorflow::CoordinationErrorPayloadKey().data(),
+                    error.SerializeAsString().c_str());
+    }
+    *state_iter = std::move(s);
+    ++state_iter;
+  }
+  status->status = absl::OkStatus();
+}
+
+void TFE_WaitAtBarrier(TFE_Context* ctx, const char* barrier_id,
+                       int64_t barrier_timeout_in_ms, TF_Status* status) {
+  tensorflow::ImmediateExecutionDistributedManager* dist_mgr =
+      tensorflow::unwrap(ctx)->GetDistributedManager();
+  tsl::CoordinationServiceAgent* coord_agent =
+      dist_mgr->GetCoordinationServiceAgent();
+  if (coord_agent == nullptr) {
+    status->status = tensorflow::errors::FailedPrecondition(
+        "Coordination service is not enabled.");
+    return;
+  }
+  status->status = coord_agent->WaitAtBarrier(
+      barrier_id, absl::Milliseconds(barrier_timeout_in_ms), {});
+}
+
+void TFE_InitializeLocalOnlyContext(TFE_Context* ctx, int keep_alive_secs,
+                                    const void* proto, size_t proto_len,
+                                    TF_Status* status) {
+  tensorflow::ServerDef server_def;
+  if (!server_def.ParseFromArray(proto, proto_len)) {
+    status->status = tensorflow::errors::InvalidArgument(
+        "Invalid tensorflow.ServerDef protocol buffer");
+    return;
+  }
+  status->status =
+      tensorflow::unwrap(ctx)
+          ->GetDistributedManager()
+          ->InitializeLocalOnlyContext(server_def, keep_alive_secs);
 }

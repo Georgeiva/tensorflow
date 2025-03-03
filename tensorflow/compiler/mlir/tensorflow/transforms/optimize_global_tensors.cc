@@ -17,10 +17,11 @@ limitations under the License.
 
 #include <cstddef>
 #include <map>
-#include <set>
+#include <memory>
+#include <vector>
 
 #include "llvm/ADT/DenseMap.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
@@ -40,8 +41,11 @@ limitations under the License.
 namespace mlir {
 namespace tf_saved_model {
 namespace {
+
+#define GEN_PASS_DEF_OPTIMIZEGLOBALTENSORSPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_savedmodel_passes.h.inc"
 struct OptimizeGlobalTensorsPass
-    : public PassWrapper<OptimizeGlobalTensorsPass, OperationPass<ModuleOp>> {
+    : public impl::OptimizeGlobalTensorsPassBase<OptimizeGlobalTensorsPass> {
   void runOnOperation() override;
 };
 
@@ -49,7 +53,7 @@ struct OptimizeGlobalTensorsPass
 // This struct tracks which funcs (and which argument to that func) the global
 // tensor is bound to.
 struct GlobalTensorUse {
-  mutable FuncOp func;
+  mutable func::FuncOp func;
   size_t arg_index;
 };
 
@@ -60,7 +64,7 @@ bool IsImmutable(GlobalTensorOp global_tensor,
                  ArrayRef<GlobalTensorUse> global_tensor_uses,
                  const TF::ResourceAnalyzer& resource_analyzer) {
   // Global tensor is already known to be immutable.
-  if (!global_tensor.is_mutable()) {
+  if (!global_tensor.getIsMutable()) {
     return false;
   }
   // An exported global tensor that is not already known to be immutable might
@@ -83,7 +87,7 @@ GlobalTensorUsesMap CreateGlobalTensorUsesMap(ModuleOp module) {
   GlobalTensorUsesMap global_tensor_uses;
 
   SymbolTable symbol_table(module);
-  for (auto func : module.getOps<FuncOp>()) {
+  for (auto func : module.getOps<func::FuncOp>()) {
     for (size_t i = 0, e = func.getNumArguments(); i < e; i++) {
       auto sym =
           func.getArgAttrOfType<SymbolRefAttr>(i, "tf_saved_model.bound_input");
@@ -91,7 +95,7 @@ GlobalTensorUsesMap CreateGlobalTensorUsesMap(ModuleOp module) {
         continue;
       }
       auto global_tensor = symbol_table.lookup<GlobalTensorOp>(
-          sym.cast<FlatSymbolRefAttr>().getValue());
+          mlir::cast<FlatSymbolRefAttr>(sym).getValue());
       if (!global_tensor) {
         continue;
       }
@@ -134,12 +138,12 @@ void EraseUnusedGlobalTensors(ModuleOp module,
 }
 
 void EraseUnusedBoundInputs(ModuleOp module) {
-  for (auto func : module.getOps<FuncOp>()) {
-    SmallVector<unsigned, 4> args_to_erase;
+  for (auto func : module.getOps<func::FuncOp>()) {
+    llvm::BitVector args_to_erase(func.getNumArguments());
     for (int i = 0, e = func.getNumArguments(); i < e; i++) {
       if (func.getArgAttr(i, "tf_saved_model.bound_input") &&
           func.getArgument(i).use_empty()) {
-        args_to_erase.push_back(i);
+        args_to_erase.set(i);
       }
     }
     func.eraseArguments(args_to_erase);
@@ -162,11 +166,6 @@ void OptimizeGlobalTensorsPass::runOnOperation() {
 
   EraseUnusedGlobalTensors(module, global_tensor_uses);
 }
-
-// For "opt" to pick up this pass.
-PassRegistration<OptimizeGlobalTensorsPass> pass(
-    "tf-saved-model-optimize-global-tensors",
-    "Optimize tf_saved_model.global_tensor's.");
 
 }  // namespace
 

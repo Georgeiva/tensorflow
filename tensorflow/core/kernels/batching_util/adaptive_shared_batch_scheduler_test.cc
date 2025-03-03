@@ -39,14 +39,16 @@ class FakeTask : public BatchTask {
  private:
   size_t size_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(FakeTask);
+  FakeTask(const FakeTask&) = delete;
+  void operator=(const FakeTask&) = delete;
 };
 
 // Creates a FakeTask of size 'task_size', and calls 'scheduler->Schedule()' on
 // that task. Returns the resulting status.
-Status ScheduleTask(size_t task_size, BatchScheduler<FakeTask>* scheduler) {
+absl::Status ScheduleTask(size_t task_size,
+                          BatchScheduler<FakeTask>* scheduler) {
   std::unique_ptr<FakeTask> task(new FakeTask(task_size));
-  Status status = scheduler->Schedule(&task);
+  absl::Status status = scheduler->Schedule(&task);
   // Schedule() should have consumed 'task' iff it returned Status::OK.
   CHECK_EQ(status.ok(), task == nullptr);
   return status;
@@ -469,7 +471,7 @@ TEST(AdaptiveSharedBatchSchedulerTest, TruncateBatches) {
           output_tasks->emplace_back(new FakeTask(task_size));
           remaining_size -= task_size;
         }
-        return Status::OK();
+        return absl::OkStatus();
       };
   TF_ASSERT_OK(scheduler->AddQueue(queue_options, queue_callback, &queue));
   TF_ASSERT_OK(ScheduleTask(30, queue.get()));
@@ -479,6 +481,41 @@ TEST(AdaptiveSharedBatchSchedulerTest, TruncateBatches) {
   while (true) {
     mutex_lock l(mu);
     if (processed_batches == 4) break;
+  }
+}
+
+TEST(AdaptiveSharedBatchSchedulerTest, MaxTasksPerBatch) {
+  mutex mu;
+  int processed_batches = 0;
+  auto queue_callback =
+      [&mu, &processed_batches](std::unique_ptr<Batch<FakeTask>> batch) {
+        ASSERT_TRUE(batch->IsClosed());
+        mutex_lock l(mu);
+        ++processed_batches;
+      };
+  std::shared_ptr<AdaptiveSharedBatchScheduler<FakeTask>> scheduler;
+  TF_ASSERT_OK(AdaptiveSharedBatchScheduler<FakeTask>::Create({}, &scheduler));
+  std::unique_ptr<BatchScheduler<FakeTask>> queue;
+
+  AdaptiveSharedBatchScheduler<FakeTask>::QueueOptions queue_options;
+  queue_options.max_batch_size = 100;
+  queue_options.batch_timeout_micros = 1000000;
+  queue_options.max_tasks_per_batch = 2;
+  TF_ASSERT_OK(scheduler->AddQueue(queue_options, queue_callback, &queue));
+  TF_ASSERT_OK(ScheduleTask(10, queue.get()));
+  // Only one task in the batch, so batch not processed yet.
+  EXPECT_EQ(queue->NumEnqueuedTasks(), 1);
+  TF_ASSERT_OK(ScheduleTask(10, queue.get()));
+  // Two tasks were added to the batch, so batch was processed.
+  EXPECT_EQ(queue->NumEnqueuedTasks(), 0);
+  TF_ASSERT_OK(ScheduleTask(10, queue.get()));
+  TF_ASSERT_OK(ScheduleTask(10, queue.get()));
+  TF_ASSERT_OK(ScheduleTask(10, queue.get()));
+  TF_ASSERT_OK(ScheduleTask(10, queue.get()));
+  // We get 3 batches since only two tasks are allowed per batch.
+  while (true) {
+    mutex_lock l(mu);
+    if (processed_batches == 3) break;
   }
 }
 }  // namespace anonymous

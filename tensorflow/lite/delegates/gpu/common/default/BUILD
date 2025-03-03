@@ -1,4 +1,5 @@
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:public"],
     licenses = ["notice"],
 )
@@ -9,8 +10,7 @@ cc_library(
     hdrs = ["//tensorflow/lite/delegates/gpu/common:custom_parsers.h"],
     deps = [
         "//tensorflow/lite/delegates/gpu/common:operation_parser",
-        "//tensorflow/lite/delegates/gpu/common:shape",
-        "//tensorflow/lite/delegates/gpu/common:status",
+        "//tensorflow/lite/delegates/gpu/common:unimplemented_operation_parser",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:any",

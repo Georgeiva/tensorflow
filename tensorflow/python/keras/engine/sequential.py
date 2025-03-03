@@ -34,9 +34,8 @@ from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.module import module
 from tensorflow.python.ops.numpy_ops import np_arrays
 from tensorflow.python.platform import tf_logging as logging
-from tensorflow.python.training.tracking import base as trackable
+from tensorflow.python.trackable import base as trackable
 from tensorflow.python.util import nest
-from tensorflow.python.util.tf_export import keras_export
 
 
 SINGLE_LAYER_OUTPUT_ERROR_MSG = ('All layers in a Sequential model should have '
@@ -44,7 +43,6 @@ SINGLE_LAYER_OUTPUT_ERROR_MSG = ('All layers in a Sequential model should have '
                                  'layers, use the functional API.')
 
 
-@keras_export('keras.Sequential', 'keras.models.Sequential')
 class Sequential(functional.Functional):
   """`Sequential` groups a linear stack of layers into a `tf.keras.Model`.
 
@@ -113,7 +111,6 @@ class Sequential(functional.Functional):
     # Skip the init in FunctionalModel since model doesn't have input/output yet
     super(functional.Functional, self).__init__(  # pylint: disable=bad-super-call
         name=name, autocast=False)
-    base_layer.keras_api_gauge.get_cell('Sequential').set(True)
     self.supports_masking = True
     self._compute_output_and_mask_jointly = True
     self._auto_track_sub_layers = False

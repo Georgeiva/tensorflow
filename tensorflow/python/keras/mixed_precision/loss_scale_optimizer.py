@@ -15,30 +15,33 @@
 """Contains the loss scaling optimizer class."""
 
 from tensorflow.python.distribute import collective_all_reduce_strategy
-from tensorflow.python.distribute import distribution_strategy_context
+from tensorflow.python.distribute import distribute_lib
 from tensorflow.python.distribute import mirrored_strategy
 from tensorflow.python.distribute import one_device_strategy
 from tensorflow.python.distribute import tpu_strategy
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import smart_cond
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.keras import backend
 from tensorflow.python.keras import optimizers
 from tensorflow.python.keras.mixed_precision import loss_scale as keras_loss_scale_module
 from tensorflow.python.keras.optimizer_v2 import optimizer_v2
 from tensorflow.python.keras.optimizer_v2 import utils as optimizer_utils
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
-from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import variable_v1
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import tf_logging
+from tensorflow.python.trackable import base as trackable
+from tensorflow.python.trackable import base_delegate
 from tensorflow.python.training.experimental import loss_scale as loss_scale_module
 from tensorflow.python.training.experimental import mixed_precision
-from tensorflow.python.training.tracking import base as trackable
 from tensorflow.python.util import nest
-from tensorflow.python.util.tf_export import keras_export
 
 
 class _UnwrapPreventer(object):
@@ -59,128 +62,15 @@ class _UnwrapPreventer(object):
     self.value = value
 
 
-class _DelegatingTrackableMixin(object):
-  """A mixin that delegates all Trackable methods to another trackable object.
-
-  This class must be used with multiple inheritance. A class that subclasses
-  Trackable can also subclass this class, which causes all Trackable methods to
-  be delegated to the trackable object passed in the constructor.
-
-  A subclass can use this mixin to appear as if it were the trackable passed to
-  the constructor, from a Checkpoint's perspective. LossScaleOptimizer uses this
-  mixin, so that the checkpoint format for a LossScaleOptimizer is identical to
-  the checkpoint format for a normal optimizer. This allows a model to be saved
-  with a normal Optimizer and restored with a LossScaleOptimizer, or vice versa.
-  The only difference in checkpoint format is that the loss scale is also saved
-  with a LossScaleOptimizer.
-  """
-
-  def __init__(self, trackable_obj):
-    self._trackable = trackable_obj
-
-  # pylint: disable=protected-access
-  @property
-  def _setattr_tracking(self):
-    return self._trackable._setattr_tracking
-
-  @_setattr_tracking.setter
-  def _setattr_tracking(self, value):
-    self._trackable._setattr_tracking = value
-
-  @property
-  def _update_uid(self):
-    return self._trackable._update_uid
-
-  @_update_uid.setter
-  def _update_uid(self, value):
-    self._trackable._update_uid = value
-
-  @property
-  def _unconditional_checkpoint_dependencies(self):
-    return self._trackable._unconditional_checkpoint_dependencies
-
-  @property
-  def _unconditional_dependency_names(self):
-    return self._trackable._unconditional_dependency_names
-
-  @property
-  def _name_based_restores(self):
-    return self._trackable._name_based_restores
-
-  def _maybe_initialize_trackable(self):
-    return self._trackable._maybe_initialize_trackable()
-
-  @property
-  def _object_identifier(self):
-    return self._trackable._object_identifier
-
-  @property
-  def _tracking_metadata(self):
-    return self._trackable._tracking_metadata
-
-  def _no_dependency(self, value):
-    return self._trackable._no_dependency(value)
-
-  def _name_based_attribute_restore(self, checkpoint):
-    return self._trackable._name_based_attribute_restore(checkpoint)
-
-  @property
-  def _checkpoint_dependencies(self):
-    return self._trackable._checkpoint_dependencies
-
-  @property
-  def _deferred_dependencies(self):
-    return self._trackable._deferred_dependencies
-
-  def _lookup_dependency(self, name):
-    self._trackable._lookup_dependency(name)
-
-  def _add_variable_with_custom_getter(self,
-                                       name,
-                                       shape=None,
-                                       dtype=dtypes.float32,
-                                       initializer=None,
-                                       getter=None,
-                                       overwrite=False,
-                                       **kwargs_for_getter):
-    return self._trackable._add_variable_with_custom_getter(
-        name, shape, dtype, initializer, getter, overwrite, **kwargs_for_getter)
-
-  def _preload_simple_restoration(self, name):
-    return self._trackable._preload_simple_restoration(name)
-
-  def _track_trackable(self, trackable, name, overwrite=False):  # pylint: disable=redefined-outer-name
-    return self._trackable._track_trackable(trackable, name, overwrite)
-
-  def _handle_deferred_dependencies(self, name, trackable):  # pylint: disable=redefined-outer-name
-    return self._trackable._handle_deferred_dependencies(name, trackable)
-
-  def _restore_from_checkpoint_position(self, checkpoint_position):
-    return self._trackable._restore_from_checkpoint_position(
-        checkpoint_position)
-
-  def _single_restoration_from_checkpoint_position(self, checkpoint_position,
-                                                   visit_queue):
-    return self._trackable._single_restoration_from_checkpoint_position(
-        checkpoint_position, visit_queue)
-
-  def _gather_saveables_for_checkpoint(self):
-    return self._trackable._gather_saveables_for_checkpoint()
-
-  def _list_extra_dependencies_for_serialization(self, serialization_cache):
-    return self._trackable._list_extra_dependencies_for_serialization(
-        serialization_cache)
-
-  def _list_functions_for_serialization(self, serialization_cache):
-    return self._trackable._list_functions_for_serialization(
-        serialization_cache)
-  # pylint: enable=protected-access
-
-
 def _is_all_finite(grads):
   """Returns a scalar boolean tensor indicating if all gradients are finite."""
+  def raw_values(g):
+    return g.values if isinstance(g, indexed_slices.IndexedSlices) else g
+
   is_finite_per_grad = [
-      math_ops.reduce_all(math_ops.is_finite(g)) for g in grads if g is not None
+      math_ops.reduce_all(math_ops.is_finite(raw_values(g)))
+      for g in grads
+      if g is not None
   ]
   return math_ops.reduce_all(is_finite_per_grad)
 
@@ -204,7 +94,7 @@ def _op_in_graph_mode(tensor):
 
 def _assign_if_finite(var, value):
   """Assigns a value to a variable if the value is finite."""
-  return control_flow_ops.cond(
+  return cond.cond(
       math_ops.is_finite(value), lambda: _op_in_graph_mode(var.assign(value)),
       control_flow_ops.no_op)
 
@@ -247,7 +137,7 @@ class _DynamicLossScaleState(trackable.Trackable):
     Raises:
       RuntimeError: If a weight with `name` has already been added.
     """
-    variable = variable_scope.variable(
+    variable = variable_v1.VariableV1(
         initial_value=initial_value,
         name=name,
         dtype=dtype,
@@ -269,20 +159,23 @@ class _DynamicLossScaleState(trackable.Trackable):
     backend.track_variable(variable)
     return variable
 
-  @property
-  def _checkpoint_dependencies(self):
+  def _trackable_children(self,
+                          save_type=trackable.SaveType.CHECKPOINT,
+                          **kwargs):
     """From Trackable. Gather graph-specific weights to save."""
     if context.executing_eagerly():
       graph_key = None
     else:
       graph = ops.get_default_graph()
       graph_key = graph._graph_key  # pylint: disable=protected-access
-    weights = []
+    weights = {}
     for (name, g), v in sorted(self._weights.items(), key=lambda i: i[0][0]):
       if g == graph_key:
-        weights.append(trackable.TrackableReference(name=name, ref=v))
-    return (super(_DynamicLossScaleState, self)._checkpoint_dependencies +
-            weights)
+        weights[name] = v
+    weights.update(
+        super(_DynamicLossScaleState,
+              self)._trackable_children(save_type, **kwargs))
+    return weights
 
   def _lookup_dependency(self, name):
     """From Trackable. Find a weight in the current graph."""
@@ -320,7 +213,9 @@ class _DynamicLossScaleState(trackable.Trackable):
 
   def __call__(self):
     """Returns the current loss scale as a scalar `float32` tensor."""
-    return ops.convert_to_tensor_v2_with_dispatch(self._current_loss_scale)
+    return tensor_conversion.convert_to_tensor_v2_with_dispatch(
+        self._current_loss_scale
+    )
 
   def update(self, grads):
     """Updates the value of the loss scale.
@@ -337,9 +232,9 @@ class _DynamicLossScaleState(trackable.Trackable):
         step.
     """
     grads = nest.flatten(grads)
-    if distribution_strategy_context.has_strategy(
-    ) and distribution_strategy_context.in_cross_replica_context():
-      distribution = distribution_strategy_context.get_strategy()
+    if distribute_lib.has_strategy(
+    ) and distribute_lib.in_cross_replica_context():
+      distribution = distribute_lib.get_strategy()
       is_finite_per_replica = distribution.extended.call_for_each_replica(
           _is_all_finite, args=(grads,))
       # Each replica computed the same `is_finite` value, since `grads` is
@@ -359,7 +254,7 @@ class _DynamicLossScaleState(trackable.Trackable):
             _assign_if_finite(self.current_loss_scale, new_loss_scale),
             self.counter.assign(0))
 
-      return control_flow_ops.cond(
+      return cond.cond(
           self.counter + 1 >= self.growth_steps,
           incr_loss_scale,
           lambda: _op_in_graph_mode(self.counter.assign_add(1)))
@@ -373,8 +268,8 @@ class _DynamicLossScaleState(trackable.Trackable):
           self.counter.assign(0),
           self.current_loss_scale.assign(new_loss_scale))
 
-    update_op = control_flow_ops.cond(is_finite, update_if_finite_grads,
-                                      update_if_not_finite_grads)
+    update_op = cond.cond(is_finite, update_if_finite_grads,
+                          update_if_not_finite_grads)
     should_apply_gradients = is_finite
     return update_op, should_apply_gradients
 
@@ -385,8 +280,8 @@ _DEFAULT_GROWTH_STEPS = 2000
 
 
 # pylint: disable=g-classes-have-attributes
-@keras_export('keras.mixed_precision.LossScaleOptimizer')
-class LossScaleOptimizer(_DelegatingTrackableMixin, optimizer_v2.OptimizerV2):
+class LossScaleOptimizer(base_delegate.DelegatingTrackableMixin,
+                         optimizer_v2.OptimizerV2):
   """An optimizer that applies loss scaling to prevent numeric underflow.
 
   Loss scaling is a technique to prevent numeric underflow in intermediate
@@ -538,7 +433,7 @@ class LossScaleOptimizer(_DelegatingTrackableMixin, optimizer_v2.OptimizerV2):
 
     # We don't call super().__init__, since we do not want to call OptimizerV2's
     # constructor.
-    _DelegatingTrackableMixin.__init__(self, self._optimizer)
+    base_delegate.DelegatingTrackableMixin.__init__(self, self._optimizer)
 
     if dynamic:
       if initial_scale is None:
@@ -570,10 +465,13 @@ class LossScaleOptimizer(_DelegatingTrackableMixin, optimizer_v2.OptimizerV2):
   def loss_scale(self):
     """The current loss scale as a float32 scalar tensor."""
     if isinstance(self._loss_scale, _DynamicLossScaleState):
-      return ops.convert_to_tensor_v2_with_dispatch(
-          self._loss_scale.current_loss_scale)
+      return tensor_conversion.convert_to_tensor_v2_with_dispatch(
+          self._loss_scale.current_loss_scale
+      )
     else:
-      return ops.convert_to_tensor_v2_with_dispatch(self._loss_scale)
+      return tensor_conversion.convert_to_tensor_v2_with_dispatch(
+          self._loss_scale
+      )
 
   @property
   def dynamic_counter(self):
@@ -704,7 +602,7 @@ class LossScaleOptimizer(_DelegatingTrackableMixin, optimizer_v2.OptimizerV2):
                       grads_and_vars,
                       name=None,
                       experimental_aggregate_gradients=True):
-    if distribution_strategy_context.in_cross_replica_context():
+    if distribute_lib.in_cross_replica_context():
       raise ValueError('apply_gradients() must be called in a replica context.')
     # We check for the strategy here despite already checking in the constructor
     # as frequently the optimizer is created outside the strategy's scope.
@@ -770,7 +668,7 @@ class LossScaleOptimizer(_DelegatingTrackableMixin, optimizer_v2.OptimizerV2):
         maybe_apply_op = smart_cond.smart_cond(should_apply_grads, apply_fn,
                                                do_not_apply_fn)
         return control_flow_ops.group(maybe_apply_op, loss_scale_update_op)
-      return distribution_strategy_context.get_replica_context().merge_call(
+      return distribute_lib.get_replica_context().merge_call(
           _apply_gradients_cross_replica,
           args=(grads, wrapped_vars, name))
 
@@ -825,7 +723,7 @@ class LossScaleOptimizer(_DelegatingTrackableMixin, optimizer_v2.OptimizerV2):
 
   def _raise_if_strategy_unsupported(self):
     if not strategy_supports_loss_scaling():
-      strategy = distribution_strategy_context.get_strategy()
+      strategy = distribute_lib.get_strategy()
       if isinstance(strategy,
                     (tpu_strategy.TPUStrategy, tpu_strategy.TPUStrategyV1,
                      tpu_strategy.TPUStrategyV2)):
@@ -987,7 +885,6 @@ class LossScaleOptimizer(_DelegatingTrackableMixin, optimizer_v2.OptimizerV2):
   # optimizer being used.
 
 
-@keras_export('keras.mixed_precision.experimental.LossScaleOptimizer')
 class LossScaleOptimizerV1(LossScaleOptimizer):
   """An deprecated optimizer that applies loss scaling.
 
@@ -1008,7 +905,7 @@ class LossScaleOptimizerV1(LossScaleOptimizer):
   examples of converting the use of the experimental class to the equivalent
   non-experimental class.
 
-  >>> # In all of the the examples below, `opt1` and `opt2` are identical
+  >>> # In all of the examples below, `opt1` and `opt2` are identical
   >>> opt1 = tf.keras.mixed_precision.experimental.LossScaleOptimizer(
   ...     tf.keras.optimizers.SGD(), loss_scale='dynamic')
   >>> opt2 = tf.keras.mixed_precision.LossScaleOptimizer(
@@ -1208,8 +1105,8 @@ mixed_precision.register_loss_scale_wrapper(optimizer_v2.OptimizerV2,
 def _multiply_gradient(gradient, scale):
   """Multiply a (possibly sparse) gradient by the given scale factor."""
   scale = math_ops.cast(scale, gradient.dtype)
-  if isinstance(gradient, ops.IndexedSlices):
-    return ops.IndexedSlices(
+  if isinstance(gradient, indexed_slices.IndexedSlices):
+    return indexed_slices.IndexedSlices(
         gradient.values * scale,
         gradient.indices,
         dense_shape=gradient.dense_shape)
@@ -1219,9 +1116,9 @@ def _multiply_gradient(gradient, scale):
 
 def strategy_supports_loss_scaling():
   """Returns True if the current Strategy supports loss scaling."""
-  if not distribution_strategy_context.has_strategy():
+  if not distribute_lib.has_strategy():
     return True
-  strategy = distribution_strategy_context.get_strategy()
+  strategy = distribute_lib.get_strategy()
   # Strategies are supported if either there is only one replica or if variables
   # are replicated per device. Otherwise, the current model.fit() implementation
   # and most custom training loops incorrectly unscale the gradients. Currently,

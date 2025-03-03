@@ -17,8 +17,11 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
+#include "tensorflow/core/common_runtime/test_collective_executor_mgr.h"
 #include "tensorflow/core/distributed_runtime/device_resolver_distributed.h"
 #include "tensorflow/core/distributed_runtime/test_utils.h"
+#include "tensorflow/core/distributed_runtime/worker.h"
+#include "tensorflow/core/distributed_runtime/worker_env.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
@@ -36,7 +39,7 @@ static std::unique_ptr<Device> NewDevice(const string& type,
   class FakeDevice : public Device {
    public:
     explicit FakeDevice(const DeviceAttributes& attr) : Device(nullptr, attr) {}
-    Status Sync() override { return Status::OK(); }
+    absl::Status Sync() override { return absl::OkStatus(); }
     Allocator* GetAllocator(AllocatorAttributes) override { return nullptr; }
   };
   DeviceAttributes attr;
@@ -44,46 +47,8 @@ static std::unique_ptr<Device> NewDevice(const string& type,
   attr.set_device_type(type);
   attr.mutable_locality()->set_numa_node(3);  // a non-default value
   attr.set_incarnation(random::New64());
-  return absl::make_unique<FakeDevice>(attr);
+  return std::make_unique<FakeDevice>(attr);
 }
-
-class FakeWorker : public TestWorkerInterface {
- public:
-  FakeWorker(const string& name, DeviceMgr* dev_mgr,
-             CollectiveParamResolverDistributed* cpres)
-      : name_(name), device_mgr_(dev_mgr), param_resolver_(cpres) {}
-
-  void GetStatusAsync(CallOptions* opts, const GetStatusRequest* request,
-                      GetStatusResponse* response, bool fail_fast,
-                      StatusCallback done) override {
-    std::vector<DeviceAttributes> dev_attr;
-    device_mgr_->ListDeviceAttributes(&dev_attr);
-    for (const auto& da : dev_attr) {
-      *response->add_device_attributes() = da;
-    }
-    done(Status::OK());
-  }
-
-  void CompleteGroupAsync(CallOptions* opts,
-                          const CompleteGroupRequest* request,
-                          CompleteGroupResponse* response,
-                          StatusCallback done) override {
-    param_resolver_->CompleteGroupAsync(request, response, &cm_, done);
-  }
-
-  void CompleteInstanceAsync(CallOptions* ops,
-                             const CompleteInstanceRequest* request,
-                             CompleteInstanceResponse* response,
-                             StatusCallback done) override {
-    param_resolver_->CompleteInstanceAsync(request, response, &cm_, done);
-  }
-
- private:
-  string name_;
-  DeviceMgr* device_mgr_;
-  CancellationManager cm_;
-  CollectiveParamResolverDistributed* param_resolver_;
-};
 
 class FakeCache : public TestWorkerCache {
  public:
@@ -110,7 +75,7 @@ class FakeCache : public TestWorkerCache {
     WorkerInterface* wi = it->second;
     GetStatusRequest req;
     GetStatusResponse resp;
-    Status status = wi->GetStatus(&req, &resp);
+    absl::Status status = wi->GetStatus(&req, &resp);
     if (!status.ok()) {
       done(status);
       return;
@@ -118,12 +83,25 @@ class FakeCache : public TestWorkerCache {
     for (const auto& it : resp.device_attributes()) {
       if (it.name() == device) {
         *locality = it.locality();
-        done(Status::OK());
+        done(absl::OkStatus());
         return;
       }
     }
     done(errors::Internal("device not found: ", device));
   }
+};
+
+class FakeNcclCommunicator : public NcclCommunicatorInterface {
+ public:
+  // We only need to define GenerateCommunicatorKey().
+  string GenerateCommunicatorKey() override { return "mock-communicator-key"; }
+
+  void Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
+               StatusCallback done) override {
+    done(absl::OkStatus());
+  }
+
+  void StartAbort(const absl::Status& s) override {}
 };
 
 class DeviceResDistTest : public ::testing::Test {
@@ -157,21 +135,27 @@ class DeviceResDistTest : public ::testing::Test {
           strings::StrCat(worker_name, "/device:", device_type, ":", i)));
     }
     device_mgrs_[worker_name] =
-        absl::make_unique<StaticDeviceMgr>(std::move(devices));
+        std::make_unique<StaticDeviceMgr>(std::move(devices));
     std::vector<string>* dv = &dev_by_task_[worker_name];
     dv->clear();
     for (auto* d : device_mgrs_[worker_name]->ListDevices()) {
       dv->push_back(d->name());
     }
-    dev_resolvers_[worker_name] = absl::make_unique<DeviceResolverDistributed>(
+    dev_resolvers_[worker_name] = std::make_unique<DeviceResolverDistributed>(
         device_mgrs_[worker_name].get());
     cp_resolvers_[worker_name] =
-        absl::make_unique<CollectiveParamResolverDistributed>(
+        std::make_unique<CollectiveParamResolverDistributed>(
             config, device_mgrs_[worker_name].get(),
-            dev_resolvers_[worker_name].get(), &wc_, worker_name);
-    workers_[worker_name] = absl::make_unique<FakeWorker>(
-        worker_name, device_mgrs_[worker_name].get(),
-        cp_resolvers_[worker_name].get());
+            dev_resolvers_[worker_name].get(), &nccl_communicator_, &wc_,
+            worker_name);
+    auto worker_env = std::make_unique<WorkerEnv>();
+    worker_env->env = Env::Default();
+    worker_env->device_mgr = device_mgrs_[worker_name].get();
+    worker_env->collective_executor_mgr =
+        std::make_unique<TestCollectiveExecutorMgr>(
+            cp_resolvers_[worker_name].get(), /*rma=*/nullptr);
+    workers_[worker_name] = std::make_unique<Worker>(worker_env.get());
+    worker_envs_[worker_name] = std::move(worker_env);
     wc_.AddWorker(worker_name, workers_[worker_name].get());
   }
 
@@ -236,7 +220,7 @@ class DeviceResDistTest : public ::testing::Test {
     CHECK(cp_res);
     cp_res->CompleteParamsAsync(
         device->attributes(), cp, &cm_,
-        [this, device_name, group_size](const Status& s) {
+        [this, device_name, group_size](const absl::Status& s) {
           status_[device_name] = s;
           {
             mutex_lock l(mu_);
@@ -267,18 +251,19 @@ class DeviceResDistTest : public ::testing::Test {
         int idx = wi * num_devices + di;
         TF_ASSERT_OK(status_[device_name]);
         EXPECT_EQ(cp_[device_name]->default_rank, idx);
-        EXPECT_EQ(cp_[device_name]->group.device_names.size(), dev_count);
-        EXPECT_EQ(cp_[device_name]->group.device_names[idx], device_name);
-        EXPECT_EQ(cp_[device_name]->group.task_names[idx], task_name);
+        EXPECT_EQ(cp_[device_name]->group.members.size(), dev_count);
+        EXPECT_EQ(cp_[device_name]->group.members[idx].device.name(),
+                  device_name);
+        EXPECT_EQ(cp_[device_name]->group.members[idx].task, task_name);
         ValidateDeviceResolver(*cp_[device_name], task_name);
         if (idx > 0) {
           EXPECT_EQ(cp_[dev0]->group.runtime_details.communicator_key,
                     cp_[device_name]->group.runtime_details.communicator_key);
           for (int i = 0; i < dev_count; ++i) {
-            EXPECT_EQ(cp_[dev0]->group.device_names[i],
-                      cp_[device_name]->group.device_names[i]);
-            EXPECT_EQ(cp_[dev0]->group.task_names[i],
-                      cp_[device_name]->group.task_names[i]);
+            EXPECT_EQ(cp_[dev0]->group.members[i].device.name(),
+                      cp_[device_name]->group.members[i].device.name());
+            EXPECT_EQ(cp_[dev0]->group.members[i].task,
+                      cp_[device_name]->group.members[i].task);
           }
         }
       }
@@ -286,10 +271,10 @@ class DeviceResDistTest : public ::testing::Test {
   }
 
   void ValidateDeviceResolver(const CollectiveParams& cp, const string& task) {
-    for (const string& device_name : cp.group.device_names) {
+    for (const CollGroupMember& member : cp.group.members) {
       DeviceAttributes attributes;
-      TF_ASSERT_OK(
-          dev_resolvers_[task]->GetDeviceAttributes(device_name, &attributes));
+      TF_ASSERT_OK(dev_resolvers_[task]->GetDeviceAttributes(
+          member.device.name(), &attributes));
     }
   }
 
@@ -313,6 +298,7 @@ class DeviceResDistTest : public ::testing::Test {
   }
 
   FakeCache wc_;
+  FakeNcclCommunicator nccl_communicator_;
   CancellationManager cm_;
   // Below are keyed by task names.
   absl::flat_hash_map<string, std::unique_ptr<DeviceMgr>> device_mgrs_;
@@ -322,10 +308,11 @@ class DeviceResDistTest : public ::testing::Test {
                       std::unique_ptr<CollectiveParamResolverDistributed>>
       cp_resolvers_;
   absl::flat_hash_map<string, std::vector<string>> dev_by_task_;
-  absl::flat_hash_map<string, std::unique_ptr<FakeWorker>> workers_;
+  absl::flat_hash_map<string, std::unique_ptr<WorkerEnv>> worker_envs_;
+  absl::flat_hash_map<string, std::unique_ptr<Worker>> workers_;
   // Below are keyed by device names;
   absl::flat_hash_map<string, CollectiveParams*> cp_;
-  absl::flat_hash_map<string, Status> status_;
+  absl::flat_hash_map<string, absl::Status> status_;
   mutex mu_;
   int num_done_ TF_GUARDED_BY(mu_);
   condition_variable done_;
@@ -383,34 +370,6 @@ TEST_F(DeviceResDistTest, BroadcastSourceRank3) {
   IssueRequests(num_workers, num_devices);
   ValidateCollectiveParams(num_workers, num_devices);
 }
-
-#if !GOOGLE_CUDA && !TENSORFLOW_USE_ROCM
-namespace {
-// A mock NcclReducer for testing group runtime details initialization with CPU
-// builds.  The only meaningful function in this class is
-// `InitializeCollectiveGroupRuntimeDetails`.
-class MockNcclReducer : public CollectiveImplementationInterface {
- public:
-  MockNcclReducer() = default;
-
-  Status InitializeCollectiveParams(CollectiveParams*) override {
-    return Status::OK();
-  }
-  Status InitializeCollectiveContext(
-      std::shared_ptr<CollectiveContext>) override {
-    return Status::OK();
-  }
-  Status InitializeCollectiveGroupRuntimeDetails(
-      CollGroupRuntimeDetails* col_group_runtime_details) override {
-    col_group_runtime_details->communicator_key = "mock-communicator-key";
-    return Status::OK();
-  }
-  void Run(StatusCallback done) override {}
-};
-}  // namespace
-
-REGISTER_COLLECTIVE(NcclReduce, MockNcclReducer);
-#endif
 
 TEST_F(DeviceResDistTest, Workers4Devices3) {
   const int num_workers = 4;

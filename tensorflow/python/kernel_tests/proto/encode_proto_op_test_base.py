@@ -19,10 +19,6 @@ It tests that encode_proto is a lossless inverse of decode_proto
 (for the specified fields).
 """
 # Python3 readiness boilerplate
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
@@ -59,7 +55,7 @@ class EncodeProtoOpTestBase(test_base.ProtoOpTestBase, parameterized.TestCase):
     else:
       expected_error = (ValueError,
                         r'Shape must be at least rank 2 but is rank 0')
-    with self.assertRaisesRegexp(*expected_error):
+    with self.assertRaisesRegex(*expected_error):
       self.evaluate(
           self._encode_module.encode_proto(
               sizes=1,

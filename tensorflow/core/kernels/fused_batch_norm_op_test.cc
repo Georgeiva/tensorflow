@@ -156,6 +156,27 @@ TEST_F(FusedBatchNormOpTest, InferenceIgnoreAvgFactor) {
   test::ExpectTensorNear<float>(expected, *GetOutput(0), 0.01);
 }
 
+TEST_F(FusedBatchNormOpTest, EmptyInput) {
+  TF_EXPECT_OK(NodeDefBuilder("batch_norm_op", "FusedBatchNorm")
+                   .Input(FakeInput(DT_FLOAT))
+                   .Input(FakeInput(DT_FLOAT))
+                   .Input(FakeInput(DT_FLOAT))
+                   .Input(FakeInput(DT_FLOAT))
+                   .Input(FakeInput(DT_FLOAT))
+                   .Attr("epsilon", 0.001)
+                   .Attr("is_training", true)
+                   .Finalize(node_def()));
+  TF_EXPECT_OK(InitOp());
+  AddInputFromArray<float>(TensorShape({1, 1, 0, 0}), {});
+  AddInputFromArray<float>(TensorShape({0}), {});
+  AddInputFromArray<float>(TensorShape({0}), {});
+  AddInputFromArray<float>(TensorShape({0}), {});
+  AddInputFromArray<float>(TensorShape({0}), {});
+
+  TF_ASSERT_OK(RunOpKernel());
+  EXPECT_EQ(GetOutput(0)->shape(), TensorShape({1, 1, 0, 0}));
+}
+
 class FusedBatchNormGradOpTest : public OpsTestBase {};
 
 TEST_F(FusedBatchNormGradOpTest, Simple) {
@@ -198,6 +219,7 @@ TEST_F(FusedBatchNormGradOpTest, Simple) {
 
 using fp32 = float;
 using fp16 = Eigen::half;
+using bf16 = bfloat16;
 
 template <typename T>
 static Graph* FusedBatchNormInference(int n, int h, int w, int c,
@@ -303,9 +325,11 @@ static Graph* FusedBatchNormGrad(int n, int h, int w, int c, bool is_training,
 
 BM_FusedBatchNorm(64, 14, 14, 256, fp32, false, NHWC, cpu);
 BM_FusedBatchNorm(64, 14, 14, 256, fp16, false, NHWC, cpu);
+BM_FusedBatchNorm(64, 14, 14, 256, bf16, false, NHWC, cpu);
 
 BM_FusedBatchNorm(64, 14, 14, 256, fp32, true, NHWC, cpu);
 BM_FusedBatchNorm(64, 14, 14, 256, fp16, true, NHWC, cpu);
+BM_FusedBatchNorm(64, 14, 14, 256, bf16, true, NHWC, cpu);
 
 #ifdef GOOGLE_CUDA
 BM_FusedBatchNorm(64, 14, 14, 256, fp32, false, NHWC, gpu);
@@ -354,6 +378,8 @@ BM_FusedBatchNorm(64, 14, 14, 256, fp16, true, NCHW, gpu);
 
 BM_FusedBatchNormGradResnetShapes(fp32, true, NHWC, cpu);
 BM_FusedBatchNormGradResnetShapes(fp32, false, NHWC, cpu);
+BM_FusedBatchNormGradResnetShapes(bf16, true, NHWC, cpu);
+BM_FusedBatchNormGradResnetShapes(bf16, false, NHWC, cpu);
 
 #ifdef GOOGLE_CUDA
 BM_FusedBatchNormGradResnetShapes(fp32, true, NHWC, gpu);

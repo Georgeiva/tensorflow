@@ -16,7 +16,9 @@ limitations under the License.
 // This pass folds the tf.Identity op if the operation has the same device as
 // its operand.
 
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include <memory>
+
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
@@ -25,8 +27,8 @@ limitations under the License.
 #include "mlir/IR/OperationSupport.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
 #include "mlir/Pass/PassOptions.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/transforms/passes_detail.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
 
 namespace mlir {
@@ -37,20 +39,38 @@ namespace {
 constexpr const char *kDeviceAttr = "device";
 constexpr const char *kTFDeviceAttr = "tf.device";
 
+#define GEN_PASS_DEF_TENSORDEVICECOPYCONVERSIONPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_passes.h.inc"
+
 struct TensorDeviceCopyConversionPass
-    : public TensorDeviceCopyConversionPassBase<
+    : public impl::TensorDeviceCopyConversionPassBase<
           TensorDeviceCopyConversionPass> {
-  void runOnFunction() override;
+  void runOnOperation() override;
 };
 
 // Folds tf.IdentityOp and tf.IdentityNOp if op device and the argument devices
 // from the defining ops match.
-void TensorDeviceCopyConversionPass::runOnFunction() {
-  FuncOp func_op = getFunction();
+void TensorDeviceCopyConversionPass::runOnOperation() {
+  func::FuncOp func_op = getOperation();
 
-  auto should_fold_op_func = [&func_op](const mlir::Value &arg,
+  auto should_fold_op_func = [&func_op](const Value &arg,
                                         const StringAttr &op_device) {
-    if (BlockArgument block_arg = arg.dyn_cast<BlockArgument>()) {
+    // In TFRT TPU, tensor transfer is handled specifically by D2H and
+    // H2D transfer kernels. So fold the tf.Identity op if:
+    // * the identity op is placed on TPU, and
+    // * the arg to the identity op is produced by a TPUExecuteOp.
+    if (op_device && op_device.getValue().contains("TPU")) {
+      return true;
+    }
+
+    Operation *def_op = arg.getDefiningOp();
+    // If the arg to this identity op is the arg of a function, there's no
+    // defining op.
+    if (def_op != nullptr &&
+        (isa<TF::TPUExecuteOp, TF::TPUExecuteAndUpdateVariablesOp>(def_op))) {
+      return true;
+    }
+    if (BlockArgument block_arg = mlir::dyn_cast<BlockArgument>(arg)) {
       // Skip the folding logic if the block argument is not from the function
       // arguments. This can happen when the argument is from a while loop.
       if (block_arg.getParentRegion() != &func_op.getRegion()) {
@@ -64,9 +84,8 @@ void TensorDeviceCopyConversionPass::runOnFunction() {
                    kDeviceAttr)) {
       return op_device == attr;
     }
-    // when arg device is not defined, fold op if op device is not defined
-    // either.
-    return !op_device;
+    // Fold tf.Identity when arg device is not defined.
+    return true;
   };
 
   func_op.walk([&should_fold_op_func](TF::IdentityOp op) {
@@ -81,8 +100,7 @@ void TensorDeviceCopyConversionPass::runOnFunction() {
   func_op.walk([&should_fold_op_func](TF::IdentityNOp op) {
     StringAttr op_device = op->getAttrOfType<StringAttr>(kDeviceAttr);
     bool should_fold = llvm::all_of(
-        op.getOperands(),
-        [&op_device, &should_fold_op_func](const mlir::Value &arg) {
+        op.getOperands(), [&op_device, &should_fold_op_func](const Value &arg) {
           return should_fold_op_func(arg, op_device);
         });
     if (should_fold) {
@@ -95,7 +113,7 @@ void TensorDeviceCopyConversionPass::runOnFunction() {
 
 }  // namespace
 
-std::unique_ptr<OperationPass<mlir::FuncOp>>
+std::unique_ptr<OperationPass<func::FuncOp>>
 CreateTensorDeviceCopyConversionPass() {
   return std::make_unique<TensorDeviceCopyConversionPass>();
 }

@@ -51,7 +51,7 @@ class CollectiveAdapter {
   virtual Tensor TempChunk(int i) const = 0;
 
   // Bytes in chunk i
-  virtual int64 ChunkBytes(int i) const = 0;
+  virtual int64_t ChunkBytes(int i) const = 0;
 
   // Generate a CPU RAM scalar tensor of the same DataType as the
   // backing tensor with the given integer value.
@@ -75,8 +75,8 @@ class CollectiveAdapter {
   // need to pick a chunk size that preserves it.  Note than in extreme
   // cases (impractical, but possible with very small tensors) one or
   // more tail chunks can end up emptby.
-  static int64 AlignedChunkElts(int64 elt_bytes, int64 total_elts,
-                                int64 num_chunks);
+  static int64_t AlignedChunkElts(int64_t elt_bytes, int64_t total_elts,
+                                  int64_t num_chunks);
 };
 
 // Create a CollectiveAdaptor wrapping 'output', specialized to its
@@ -96,7 +96,7 @@ CollectiveAdapter* MakeCollectiveAdapter(Tensor* output, int num_chunks,
 class BaseCollectiveExecutor : public CollectiveExecutor {
  public:
   BaseCollectiveExecutor(CollectiveExecutorMgrInterface* cem,
-                         CollectiveRemoteAccess* remote_access, int64 step_id,
+                         CollectiveRemoteAccess* remote_access, int64_t step_id,
                          const DeviceMgr* dev_mgr,
                          std::shared_ptr<UnboundedWorkQueue> work_queue)
       : CollectiveExecutor(cem),
@@ -107,7 +107,7 @@ class BaseCollectiveExecutor : public CollectiveExecutor {
 
   ~BaseCollectiveExecutor() override;
 
-  void StartAbort(const Status& s) override TF_LOCKS_EXCLUDED(status_mu_);
+  void StartAbort(const absl::Status& s) override TF_LOCKS_EXCLUDED(status_mu_);
 
   void ExecuteAsync(OpKernelContext* ctx, const CollectiveParams* col_params,
                     const string& exec_key, StatusCallback done) override;
@@ -135,7 +135,7 @@ class BaseCollectiveExecutor : public CollectiveExecutor {
   void UnblockDependencies(const CollectiveParams& col_params) override;
 
  protected:
-  const int64 step_id_;
+  const int64_t step_id_;
   const DeviceMgr* dev_mgr_;  // Not owned.
   std::unique_ptr<CollectiveRemoteAccess> remote_access_;
   // Ownership of `work_queue_` is shared between `this` and
@@ -147,17 +147,17 @@ class BaseCollectiveExecutor : public CollectiveExecutor {
   // been launched.
   std::unordered_map<int32, int32> launched_ TF_GUARDED_BY(launch_mu_);
   mutex status_mu_;
-  Status status_ TF_GUARDED_BY(status_mu_);
+  absl::Status status_ TF_GUARDED_BY(status_mu_);
 
  private:
-  Status CreateCollective(const CollectiveParams& col_params,
-                          CollectiveImplementationInterface** col_impl);
+  absl::Status CreateCollective(const CollectiveParams& col_params,
+                                CollectiveImplementationInterface** col_impl);
   // Check if all ops on which this collective depends on have launched.
   bool CheckDependencies(const CollectiveParams& col_params)
       TF_EXCLUSIVE_LOCKS_REQUIRED(launch_mu_);
   // Tries to return the status that is the original error. It returns the
   // aborted status if the collective executor is aborted.
-  Status GetStatus(const Status& s) TF_LOCKS_EXCLUDED(status_mu_);
+  absl::Status GetStatus(const absl::Status& s) TF_LOCKS_EXCLUDED(status_mu_);
 };
 
 }  // namespace tensorflow

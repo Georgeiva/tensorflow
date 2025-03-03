@@ -12,8 +12,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef TENSORFLOW_CORE_KERNELS_THREADPOOL_DATASET_OP_H_
-#define TENSORFLOW_CORE_KERNELS_THREADPOOL_DATASET_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_DATA_EXPERIMENTAL_THREADPOOL_DATASET_OP_H_
+#define TENSORFLOW_CORE_KERNELS_DATA_EXPERIMENTAL_THREADPOOL_DATASET_OP_H_
+
+#include <cstdint>
 
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/platform/platform.h"
@@ -32,7 +34,7 @@ class MaxIntraOpParallelismDatasetOp : public UnaryDatasetOpKernel {
   // Executes the logic of the MaxIntraOpParallelismDatasetOp directly (as
   // opposed to through executing the MaxIntraOpParallelismDatasetOp op kernel).
   static void MakeDatasetFromOptions(OpKernelContext* ctx, DatasetBase* input,
-                                     int32 max_intra_op_parallelism,
+                                     int32_t max_intra_op_parallelism,
                                      DatasetBase** output);
 
   explicit MaxIntraOpParallelismDatasetOp(OpKernelConstruction* ctx)
@@ -54,7 +56,7 @@ class PrivateThreadPoolDatasetOp : public UnaryDatasetOpKernel {
   // Executes the logic of the PrivateThreadpoolDatasetOp directly (as
   // opposed to through executing the PrivateThreadpoolDatasetOp op kernel).
   static void MakeDatasetFromOptions(OpKernelContext* ctx, DatasetBase* input,
-                                     int32 num_threads, DatasetBase** output);
+                                     int32_t num_threads, DatasetBase** output);
 
   explicit PrivateThreadPoolDatasetOp(OpKernelConstruction* ctx)
       : UnaryDatasetOpKernel(ctx) {}
@@ -71,4 +73,4 @@ class PrivateThreadPoolDatasetOp : public UnaryDatasetOpKernel {
 }  // namespace data
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_KERNELS_THREADPOOL_DATASET_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_DATA_EXPERIMENTAL_THREADPOOL_DATASET_OP_H_

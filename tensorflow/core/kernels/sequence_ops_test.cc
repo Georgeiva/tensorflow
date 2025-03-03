@@ -68,6 +68,21 @@ TEST_F(RangeOpTest, Simple_D32) {
   test::ExpectTensorEqual<int32>(expected, *GetOutput(0));
 }
 
+TEST_F(RangeOpTest, Simple_Half) {
+  MakeOp(DT_HALF);
+
+  // Feed and run
+  AddInputFromList<Eigen::half, float>(TensorShape({}), {0.5});
+  AddInputFromList<Eigen::half, float>(TensorShape({}), {2});
+  AddInputFromList<Eigen::half, float>(TensorShape({}), {0.3});
+  TF_ASSERT_OK(RunOpKernel());
+
+  // Check the output
+  Tensor expected(allocator(), DT_HALF, TensorShape({5}));
+  test::FillValues<Eigen::half, float>(&expected, {0.5, 0.8, 1.1, 1.4, 1.7});
+  test::ExpectTensorEqual<Eigen::half>(expected, *GetOutput(0));
+}
+
 TEST_F(RangeOpTest, Simple_Float) {
   MakeOp(DT_FLOAT);
 
@@ -95,9 +110,21 @@ TEST_F(RangeOpTest, Large_Double) {
   // Check the output
   Tensor expected(allocator(), DT_DOUBLE, TensorShape({20000}));
   std::vector<double> result;
-  for (int32 i = 0; i < 20000; ++i) result.push_back(i * 0.5);
-  test::FillValues<double>(&expected, gtl::ArraySlice<double>(result));
+  for (int32_t i = 0; i < 20000; ++i) result.push_back(i * 0.5);
+  test::FillValues<double>(&expected, absl::Span<const double>(result));
   test::ExpectTensorEqual<double>(expected, *GetOutput(0));
+}
+
+TEST_F(RangeOpTest, Range_Size_Overflow) {
+  MakeOp(DT_INT64);
+
+  AddInputFromArray<int64>(TensorShape({}), {static_cast<int64_t>(5e18)});
+  AddInputFromArray<int64>(TensorShape({}), {static_cast<int64_t>(-5e18)});
+  AddInputFromArray<int64>(TensorShape({}), {-1});
+
+  EXPECT_EQ(absl::StrCat("Requires ((limit - start) / delta) <= ",
+                         std::numeric_limits<int64_t>::max()),
+            RunOpKernel().message());
 }
 
 TEST_F(LinSpaceOpTest, Simple_D32) {
@@ -142,7 +169,7 @@ TEST_F(LinSpaceOpTest, Single_D64) {
   // Feed and run
   AddInputFromArray<float>(TensorShape({}), {9.0});
   AddInputFromArray<float>(TensorShape({}), {100.0});
-  AddInputFromArray<int64>(TensorShape({}), {1});
+  AddInputFromArray<int64_t>(TensorShape({}), {1});
   TF_ASSERT_OK(RunOpKernel());
 
   // Check the output

@@ -79,17 +79,18 @@ MemoryType MTypeFromDTypeIntsOnDevice(const DataType dtype) {
   return DataTypeAlwaysOnHost(dtype) ? HOST_MEMORY : DEVICE_MEMORY;
 }
 
-Status MemoryTypesForNode(const OpRegistryInterface* op_registry,
-                          const DeviceType& device_type, const NodeDef& ndef,
-                          MemoryTypeVector* inp_mtypes,
-                          MemoryTypeVector* out_mtypes) {
+absl::Status MemoryTypesForNode(const OpRegistryInterface* op_registry,
+                                const DeviceType& device_type,
+                                const NodeDef& ndef,
+                                MemoryTypeVector* inp_mtypes,
+                                MemoryTypeVector* out_mtypes) {
   // Look up the Op registered for this op name.
   const OpDef* op_def;
   TF_RETURN_IF_ERROR(op_registry->LookUpOpDef(ndef.op(), &op_def));
 
   // Look up the Kernel registered for this node def.
   const KernelDef* kdef = nullptr;
-  Status status =
+  absl::Status status =
       FindKernelDef(device_type, ndef, &kdef, nullptr /* kernel_class_name */);
 
   DataTypeVector inp_dtypes;
@@ -156,7 +157,7 @@ Status MemoryTypesForNode(const OpRegistryInterface* op_registry,
 
   std::vector<int32> hostmem_attr;
   if (TryGetNodeAttr(ndef, "_input_hostmem", &hostmem_attr)) {
-    for (int32 i : hostmem_attr) {
+    for (int32_t i : hostmem_attr) {
       if (0 <= i && i < inp_mtypes->size()) {
         (*inp_mtypes)[i] = HOST_MEMORY;
       }
@@ -164,14 +165,14 @@ Status MemoryTypesForNode(const OpRegistryInterface* op_registry,
   }
   hostmem_attr.clear();
   if (TryGetNodeAttr(ndef, "_output_hostmem", &hostmem_attr)) {
-    for (int32 i : hostmem_attr) {
+    for (int32_t i : hostmem_attr) {
       if (0 <= i && i < out_mtypes->size()) {
         (*out_mtypes)[i] = HOST_MEMORY;
       }
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

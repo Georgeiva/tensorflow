@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for tf.compat.v1.test.compute_gradient and tf.compute_gradient_error."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.framework import constant_op
@@ -105,7 +101,7 @@ class GradientCheckerTest(test.TestCase):
       index_values = [1, 3]
       y_shape = [2, 2]
       params = constant_op.constant(
-          np.arange(p_size).astype(np.float), shape=p_shape, name="p")
+          np.arange(p_size).astype(np.float64), shape=p_shape, name="p")
       indices = constant_op.constant(index_values, name="i")
       y = array_ops.gather(params, indices, name="y")
 
@@ -125,7 +121,7 @@ class GradientCheckerTest(test.TestCase):
       y2_shape = [2, 2]
 
       params = constant_op.constant(
-          np.arange(p_size).astype(np.float), shape=p_shape, name="p")
+          np.arange(p_size).astype(np.float64), shape=p_shape, name="p")
       indices = constant_op.constant(index_values, name="i")
       y = array_ops.gather(params, indices, name="y")
       indices2 = constant_op.constant(index_values2, name="i2")
@@ -196,7 +192,8 @@ class GradientCheckerTest(test.TestCase):
           error = gradient_checker.compute_gradient_error(x, (), y, ())
           # Typical test would assert error < max_err, so assert this test would
           # raise AssertionError, since NaN is not < 1.0.
-          with self.assertRaisesRegex(AssertionError, "False is not true"):
+          error_msg = "(False|np.False_) is not true"
+          with self.assertRaisesRegex(AssertionError, error_msg):
             self.assertTrue(error < 1.0)
 
 

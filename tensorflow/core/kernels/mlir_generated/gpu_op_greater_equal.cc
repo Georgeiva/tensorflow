@@ -13,9 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <complex>
-
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/mlir_generated/base_gpu_op.h"
 
 namespace tensorflow {
@@ -27,5 +26,9 @@ GENERATE_AND_REGISTER_BINARY_GPU_KERNEL2(GreaterEqual, DT_INT8, DT_BOOL);
 GENERATE_AND_REGISTER_BINARY_GPU_KERNEL2(GreaterEqual, DT_INT16, DT_BOOL);
 // TODO(b/25387198): We cannot use a regular GPU kernel for int32.
 GENERATE_AND_REGISTER_BINARY_GPU_KERNEL2(GreaterEqual, DT_INT64, DT_BOOL);
+GENERATE_AND_REGISTER_BINARY_GPU_KERNEL2(GreaterEqual, DT_UINT8, DT_BOOL);
+GENERATE_AND_REGISTER_BINARY_GPU_KERNEL2(GreaterEqual, DT_UINT16, DT_BOOL);
+GENERATE_AND_REGISTER_BINARY_GPU_KERNEL2(GreaterEqual, DT_UINT32, DT_BOOL);
+GENERATE_AND_REGISTER_BINARY_GPU_KERNEL2(GreaterEqual, DT_UINT64, DT_BOOL);
 
 }  // namespace tensorflow

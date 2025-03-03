@@ -1,26 +1,16 @@
-load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_test",
 )
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility =
         [
-            "//tensorflow/cc/experimental/libtf:__subpackages__",
-            "//tensorflow/cc/saved_model:__subpackages__",
             "//tensorflow/python/saved_model:__subpackages__",
         ],
     licenses = ["notice"],
-)
-
-cc_library(
-    name = "constants",
-    srcs = ["constants.cc"],
-    hdrs = ["constants.h"],
-    deps = [
-        "//tensorflow/core/platform:macros",
-    ],
 )
 
 cc_library(
@@ -57,8 +47,9 @@ cc_library(
         "//tensorflow/core/platform:errors",
         "//tensorflow/core/platform:path",
         "//tensorflow/core/platform:protobuf",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
+        "//tensorflow/core/platform:statusor",
+        "//tensorflow/core/util/tensor_bundle",
+        "@com_google_absl//absl/container:flat_hash_map",
     ],
 )
 
@@ -72,31 +63,5 @@ tf_cc_test(
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
         "//tensorflow/core/platform:path",
-    ],
-)
-
-cc_library(
-    name = "metrics",
-    srcs = ["metrics.cc"],
-    hdrs = ["metrics.h"],
-    visibility = [
-        "//tensorflow/cc/saved_model:__subpackages__",
-        "//tensorflow/python:__pkg__",
-        "//tensorflow/python/saved_model:__subpackages__",
-    ],
-    deps = [
-        "//tensorflow/core:lib",
-    ],
-)
-
-tf_cc_test(
-    name = "metrics_test",
-    size = "small",
-    srcs = ["metrics_test.cc"],
-    deps = [
-        ":metrics",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:test",
-        "//tensorflow/core:test_main",
     ],
 )

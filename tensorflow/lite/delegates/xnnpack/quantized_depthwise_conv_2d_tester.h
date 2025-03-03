@@ -20,12 +20,18 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h"
+#include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace xnnpack {
 
+// Creates a model with a single DEPTHWISE_CONV_2D operator with quantized
+// input, output, and weights, runs this model in two TensorFlow Lite
+// interpreters, one with the delegate applied, and the other without, and
+// compares the results.
 class QuantizedDepthwiseConv2DTester {
  public:
   QuantizedDepthwiseConv2DTester() = default;
@@ -157,20 +163,28 @@ class QuantizedDepthwiseConv2DTester {
   }
 
   inline QuantizedDepthwiseConv2DTester& InputZeroPoint(
-      int8_t input_zero_point) {
+      int32_t input_zero_point) {
     input_zero_point_ = input_zero_point;
     return *this;
   }
 
-  inline int8_t InputZeroPoint() const { return input_zero_point_; }
+  inline int32_t InputZeroPoint() const { return input_zero_point_; }
 
   inline QuantizedDepthwiseConv2DTester& OutputZeroPoint(
-      int8_t output_zero_point) {
+      int32_t output_zero_point) {
     output_zero_point_ = output_zero_point;
     return *this;
   }
 
-  inline int8_t OutputZeroPoint() const { return output_zero_point_; }
+  inline int32_t OutputZeroPoint() const { return output_zero_point_; }
+
+  inline QuantizedDepthwiseConv2DTester& KernelZeroPoint(
+      int32_t kernel_zero_point) {
+    kernel_zero_point_ = kernel_zero_point;
+    return *this;
+  }
+
+  inline int32_t KernelZeroPoint() const { return kernel_zero_point_; }
 
   inline QuantizedDepthwiseConv2DTester& InputScale(float input_scale) {
     input_scale_ = input_scale;
@@ -184,7 +198,26 @@ class QuantizedDepthwiseConv2DTester {
     return *this;
   }
 
-  inline float KernelScale() const { return kernel_scale_; }
+  inline float KernelScale() const {
+    EXPECT_FALSE(ChannelWise());
+    return kernel_scale_;
+  }
+
+  inline QuantizedDepthwiseConv2DTester& KernelScales(
+      const std::vector<float>& kernel_scales) {
+    EXPECT_GT(kernel_scales.size(), 0);
+    kernel_scales_ = kernel_scales;
+    return *this;
+  }
+
+  inline const std::vector<float>& KernelScales() const {
+    EXPECT_TRUE(ChannelWise());
+    return kernel_scales_;
+  }
+
+  inline bool Unsigned() const { return kernel_zero_point_ != 0; }
+
+  inline bool ChannelWise() const { return !kernel_scales_.empty(); }
 
   inline QuantizedDepthwiseConv2DTester& OutputScale(float output_scale) {
     output_scale_ = output_scale;
@@ -218,6 +251,16 @@ class QuantizedDepthwiseConv2DTester {
     return *this;
   }
 
+  inline QuantizedDepthwiseConv2DTester& WeightsCache(
+      TfLiteXNNPackDelegateWeightsCache* weights_cache) {
+    weights_cache_ = weights_cache;
+    return *this;
+  }
+
+  template <class T>
+  void Test(Interpreter* delegate_interpreter,
+            Interpreter* default_interpreter) const;
+
   void Test(TfLiteDelegate* delegate) const;
 
  private:
@@ -240,14 +283,17 @@ class QuantizedDepthwiseConv2DTester {
   int32_t stride_width_ = 1;
   int32_t dilation_height_ = 1;
   int32_t dilation_width_ = 1;
-  int8_t input_zero_point_ = 0;
-  int8_t output_zero_point_ = 0;
+  int32_t input_zero_point_ = 0;
+  int32_t output_zero_point_ = 0;
+  int32_t kernel_zero_point_ = 0;
   float input_scale_ = 0.8f;
   float kernel_scale_ = 0.75f;
+  std::vector<float> kernel_scales_;
   float output_scale_ = 1.5f;
   ::tflite::Padding padding_ = ::tflite::Padding_VALID;
   ::tflite::ActivationFunctionType activation_ =
       ::tflite::ActivationFunctionType_NONE;
+  TfLiteXNNPackDelegateWeightsCache* weights_cache_ = nullptr;
 };
 
 }  // namespace xnnpack

@@ -43,7 +43,7 @@ struct ConstantFoldingOptions {
       nullptr;  // not owned
   // The maximum size of each constant created during constant folding
   // optimization.
-  int64 max_constant_size_in_bytes = 10 * 1024 * 1024;
+  int64_t max_constant_size_in_bytes = 10 * 1024 * 1024;
 
   // A generator for the name suffix of constant folded nodes. A
   // default id generator that monotonically increases is used if nullptr is
@@ -60,10 +60,10 @@ struct ConstantFoldingOptions {
 // Sets `was_mutated` to true if and only if "graph" has been mutated.
 // The status is only set to a non-OK state if an unexpected error is hit
 // running the graph.
-Status ConstantFold(const ConstantFoldingOptions& opts,
-                    FunctionLibraryRuntime* function_library, Env* env,
-                    const Device* partition_device, Graph* graph,
-                    bool* was_mutated);
+absl::Status ConstantFold(const ConstantFoldingOptions& opts,
+                          FunctionLibraryRuntime* function_library, Env* env,
+                          const Device* partition_device, Graph* graph,
+                          bool* was_mutated);
 
 }  // namespace tensorflow
 

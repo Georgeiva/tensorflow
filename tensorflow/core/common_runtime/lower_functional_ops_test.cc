@@ -40,7 +40,7 @@ typedef FunctionDefHelper FDH;
 constexpr const char* const kLowerUsingSwitchMergeAttr =
     LowerFunctionalOpsPass::kLowerUsingSwitchMergeAttr;
 
-static void AssertHasSubstr(StringPiece s, StringPiece expected) {
+static void AssertHasSubstr(absl::string_view s, absl::string_view expected) {
   ASSERT_TRUE(absl::StrContains(s, expected))
       << "'" << s << "' does not contain '" << expected << "'";
 }
@@ -53,7 +53,7 @@ SessionOptions SessionOptionsWithInlining() {
   return session_options;
 }
 
-Status Rewrite(std::unique_ptr<Graph>* graph) {
+absl::Status Rewrite(std::unique_ptr<Graph>* graph) {
   FunctionLibraryDefinition flib_def((*graph)->flib_def());
   GraphOptimizationPassOptions opt_options;
   SessionOptions session_options = SessionOptionsWithInlining();
@@ -65,7 +65,7 @@ Status Rewrite(std::unique_ptr<Graph>* graph) {
 }
 
 // (counter:int32, pred:bool, x:int32) -> counter < N
-FunctionDef WhileWithIfCond(int32 N) {
+FunctionDef WhileWithIfCond(int32_t N) {
   const Tensor kN = test::AsScalar<int32>(N);
   return FDH::Define(
       // Name

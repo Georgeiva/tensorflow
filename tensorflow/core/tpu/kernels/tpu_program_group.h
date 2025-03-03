@@ -16,29 +16,29 @@ limitations under the License.
 #define TENSORFLOW_CORE_TPU_KERNELS_TPU_PROGRAM_GROUP_H_
 
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
-#include "absl/types/optional.h"
 #include "tensorflow/compiler/tf2xla/host_compute_metadata.pb.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
-#include "tensorflow/compiler/xla/client/compile_only_client.h"
-#include "tensorflow/compiler/xla/service/computation_placer.h"
-#include "tensorflow/compiler/xla/service/hlo.pb.h"
-#include "tensorflow/compiler/xrt/xrt.pb.h"
+#include "xla/client/compile_only_client.h"
+#include "xla/service/computation_placer.h"
+#include "xla/service/hlo.pb.h"
+#include "xla/stream_executor/tpu/tpu_ops_c_api.h"
+#include "xla/stream_executor/tpu/tpu_platform_interface.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/tpu/kernels/tpu_compile_op_support.h"
 #include "tensorflow/core/tpu/kernels/tpu_executable_info.pb.h"
 #include "tensorflow/core/tpu/kernels/tpu_mesh_state_interface.h"
 #include "tensorflow/core/tpu/kernels/tpu_program_group_interface.h"
-#include "tensorflow/core/tpu/tpu_ops_c_api.h"
-#include "tensorflow/stream_executor/tpu/tpu_platform_interface.h"
 
 namespace tensorflow {
 namespace tpu {
 
 class TpuAotCompilationOptions : public xla::AotCompilationOptions {
  public:
-  explicit TpuAotCompilationOptions(int64 replica_count)
+  explicit TpuAotCompilationOptions(int64_t replica_count)
       : num_cores_(0), replica_count_(replica_count) {}
 
   // Returns the ID of the platform to which these options apply.
@@ -47,9 +47,9 @@ class TpuAotCompilationOptions : public xla::AotCompilationOptions {
     return nullptr;
   };
 
-  void set_num_cores(int64 tpu_cores) { num_cores_ = tpu_cores; }
-  int64 replica_count() const override { return replica_count_; }
-  int64 num_cores() const override { return num_cores_; }
+  void set_num_cores(int64_t tpu_cores) { num_cores_ = tpu_cores; }
+  int64_t replica_count() const override { return replica_count_; }
+  int64_t num_cores() const override { return num_cores_; }
 
   void set_allow_separate_sharding_programs(bool allow) {
     allow_separate_sharding_programs_ = allow;
@@ -58,7 +58,7 @@ class TpuAotCompilationOptions : public xla::AotCompilationOptions {
     return allow_separate_sharding_programs_;
   }
 
-  const std::vector<xla::HloModuleConfig::ShardableValueUpdatePair>
+  std::vector<xla::HloModuleConfig::ShardableValueUpdatePair>
   shardable_value_update_pairs() const {
     return shardable_value_update_pairs_;
   }
@@ -68,8 +68,8 @@ class TpuAotCompilationOptions : public xla::AotCompilationOptions {
   }
 
  private:
-  int64 num_cores_;
-  int64 replica_count_;
+  int64_t num_cores_;
+  int64_t replica_count_;
 
   // Whether to allow the compiler to create separte sharding and unsharding
   // programs, and modify the original program's input/output sharded size. This
@@ -86,7 +86,7 @@ class TpuAotCompilationOptions : public xla::AotCompilationOptions {
 
 class TpuProgramGroup : public TpuProgramGroupInterface {
  public:
-  using Status = ::stream_executor::port::Status;
+  using Status = absl::Status;
 
   // Compiles Mlir or TF function computation by lowering into HLO IR and
   // returns TPU programs ready for execution.
@@ -95,11 +95,6 @@ class TpuProgramGroup : public TpuProgramGroupInterface {
       const XLA_TpuMeshState* mesh_state,
       TpuProgramGroupInterface* tpu_program_group_interface);
 
-  // Compiles HLO IR and returns TPU programs ready for execution.
-  static Status CompileAndBuild(
-      const xrt::XLAComputation& xrt_computation_proto,
-      const XLA_TpuMeshState* mesh_state,
-      TpuProgramGroupInterface* tpu_program_group_interface);
 
   // Initializes `TpuProgramGroup` object with `xla_tpu_programs`.
   void Initialize(absl::Span<XLA_TpuProgram* const> xla_tpu_programs);
@@ -118,15 +113,14 @@ class TpuProgramGroup : public TpuProgramGroupInterface {
 
   void UnloadAndDestroyPrograms() override;
 
-  Status LogCompilationStats(const TpuCompilationCacheKey& key,
-                             absl::Duration duration) override;
-
   const std::vector<bool>& may_modify_variables_list() const override;
   void set_may_modify_variables(const std::vector<bool>& may_modify_variables);
   bool may_modify_variables(int index) const override;
 
   const std::vector<std::string>& fingerprints() const;
   void set_fingerprints();
+
+  const std::string& fingerprint(int index) const override;
 
   const std::vector<XLA_TpuProgram*>& tpu_programs() const;
   std::vector<XLA_TpuProgram*> tpu_programs(TpuProgramShardingType type) const;
@@ -185,7 +179,8 @@ class TpuProgramGroup : public TpuProgramGroupInterface {
   std::vector<xla::HloProto> hlo_metadatas_;  // Owned.
   std::vector<const xla::HloProto*> hlo_metadatas_ptrs_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(TpuProgramGroup);
+  TpuProgramGroup(const TpuProgramGroup&) = delete;
+  void operator=(const TpuProgramGroup&) = delete;
 };
 
 }  // namespace tpu

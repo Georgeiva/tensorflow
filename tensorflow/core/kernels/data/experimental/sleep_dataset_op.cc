@@ -28,9 +28,9 @@ class SleepDatasetOp : public UnaryDatasetOpKernel {
 
   void MakeDataset(OpKernelContext* ctx, DatasetBase* input,
                    DatasetBase** output) override {
-    int64 sleep_microseconds;
-    OP_REQUIRES_OK(ctx, ParseScalarArgument<int64>(ctx, "sleep_microseconds",
-                                                   &sleep_microseconds));
+    int64_t sleep_microseconds;
+    OP_REQUIRES_OK(ctx, ParseScalarArgument<int64_t>(ctx, "sleep_microseconds",
+                                                     &sleep_microseconds));
 
     OP_REQUIRES(ctx, sleep_microseconds >= 0,
                 errors::InvalidArgument("`sleep_microseconds` must be >= 0"));
@@ -42,7 +42,7 @@ class SleepDatasetOp : public UnaryDatasetOpKernel {
   class Dataset : public DatasetBase {
    public:
     Dataset(OpKernelContext* ctx, const DatasetBase* input,
-            int64 sleep_microseconds)
+            int64_t sleep_microseconds)
         : DatasetBase(DatasetContext(ctx)),
           input_(input),
           sleep_microseconds_(sleep_microseconds) {
@@ -53,7 +53,7 @@ class SleepDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return absl::make_unique<Iterator>(
+      return std::make_unique<Iterator>(
           Iterator::Params{this, strings::StrCat(prefix, "::Sleep")});
     }
 
@@ -66,22 +66,24 @@ class SleepDatasetOp : public UnaryDatasetOpKernel {
 
     string DebugString() const override { return "SleepDatasetOp::Dataset"; }
 
-    int64 Cardinality() const override { return input_->Cardinality(); }
-
-    Status InputDatasets(
-        std::vector<const DatasetBase*>* inputs) const override {
-      inputs->push_back(input_);
-      return Status::OK();
+    int64_t CardinalityInternal(CardinalityOptions options) const override {
+      return input_->Cardinality(options);
     }
 
-    Status CheckExternalState() const override {
+    absl::Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      inputs->push_back(input_);
+      return absl::OkStatus();
+    }
+
+    absl::Status CheckExternalState() const override {
       return input_->CheckExternalState();
     }
 
    protected:
-    Status AsGraphDefInternal(SerializationContext* ctx,
-                              DatasetGraphDefBuilder* b,
-                              Node** output) const override {
+    absl::Status AsGraphDefInternal(SerializationContext* ctx,
+                                    DatasetGraphDefBuilder* b,
+                                    Node** output) const override {
       Node* input_graph_node = nullptr;
       TF_RETURN_IF_ERROR(b->AddInputDataset(ctx, input_, &input_graph_node));
 
@@ -113,7 +115,7 @@ class SleepDatasetOp : public UnaryDatasetOpKernel {
         }
       }
 
-      Status Initialize(IteratorContext* ctx) override {
+      absl::Status Initialize(IteratorContext* ctx) override {
         TF_RETURN_IF_ERROR(RegisterCancellationCallback(
             ctx->cancellation_manager(),
             [this]() {
@@ -125,9 +127,9 @@ class SleepDatasetOp : public UnaryDatasetOpKernel {
                                                &input_impl_);
       }
 
-      Status GetNextInternal(IteratorContext* ctx,
-                             std::vector<Tensor>* out_tensors,
-                             bool* end_of_sequence) override {
+      absl::Status GetNextInternal(IteratorContext* ctx,
+                                   std::vector<Tensor>* out_tensors,
+                                   bool* end_of_sequence) override {
         mutex_lock l(mu_);
         RecordStop(ctx);
         bool cancelled = mu_.AwaitWithDeadline(
@@ -148,13 +150,13 @@ class SleepDatasetOp : public UnaryDatasetOpKernel {
                                          /*ratio=*/1);
       }
 
-      Status SaveInternal(SerializationContext* ctx,
-                          IteratorStateWriter* writer) override {
+      absl::Status SaveInternal(SerializationContext* ctx,
+                                IteratorStateWriter* writer) override {
         return SaveInput(ctx, writer, input_impl_);
       }
 
-      Status RestoreInternal(IteratorContext* ctx,
-                             IteratorStateReader* reader) override {
+      absl::Status RestoreInternal(IteratorContext* ctx,
+                                   IteratorStateReader* reader) override {
         return RestoreInput(ctx, reader, input_impl_);
       }
 
@@ -166,7 +168,7 @@ class SleepDatasetOp : public UnaryDatasetOpKernel {
 
     const DatasetBase* const input_;
     // TODO(b/117612213): Investigate autotuning for this value.
-    const int64 sleep_microseconds_;
+    const int64_t sleep_microseconds_;
   };
 };
 

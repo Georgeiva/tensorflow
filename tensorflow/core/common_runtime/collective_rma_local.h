@@ -27,7 +27,7 @@ class CollectiveRemoteAccessLocal : public CollectiveRemoteAccess {
  public:
   CollectiveRemoteAccessLocal(const DeviceMgr* dev_mgr,
                               DeviceResolverInterface* dev_resolver,
-                              int64 step_id)
+                              int64_t step_id)
       : dev_mgr_(dev_mgr),
         dev_resolver_(dev_resolver),
         buf_rendezvous_(step_id, dev_mgr),
@@ -35,7 +35,7 @@ class CollectiveRemoteAccessLocal : public CollectiveRemoteAccess {
 
   ~CollectiveRemoteAccessLocal() override = default;
 
-  void StartAbort(const Status& s) override;
+  void StartAbort(const absl::Status& s) override;
 
   void RecvFromPeer(const string& peer_device, const string& peer_task,
                     bool peer_is_local, const string& key, Device* to_device,
@@ -55,7 +55,7 @@ class CollectiveRemoteAccessLocal : public CollectiveRemoteAccess {
                   CancellationManager* cancellation_manager,
                   const StatusCallback& done) override;
 
-  void CheckPeerHealth(const string& peer_task, int64 timeout_in_ms,
+  void CheckPeerHealth(const string& peer_task, int64_t timeout_in_ms,
                        const StatusCallback& done) override;
 
   BufRendezvous* buf_rendezvous() override { return &buf_rendezvous_; }
@@ -75,7 +75,7 @@ class CollectiveRemoteAccessLocal : public CollectiveRemoteAccess {
   const DeviceMgr* dev_mgr_;               // not owned
   DeviceResolverInterface* dev_resolver_;  // not owned
   BufRendezvous buf_rendezvous_;
-  int64 step_id_;
+  int64_t step_id_;
 };
 
 }  // namespace tensorflow

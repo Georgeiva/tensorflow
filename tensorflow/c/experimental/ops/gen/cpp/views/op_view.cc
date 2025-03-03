@@ -14,9 +14,14 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/c/experimental/ops/gen/cpp/views/op_view.h"
 
-#include "tensorflow/c/experimental/ops/gen/common/renderer_util.h"
+#include <vector>
+
+#include "absl/log/check.h"
+#include "tensorflow/c/experimental/ops/gen/common/view_util.h"
 #include "tensorflow/c/experimental/ops/gen/cpp/views/arg_view.h"
 #include "tensorflow/c/experimental/ops/gen/cpp/views/attr_view.h"
+#include "tensorflow/c/experimental/ops/gen/cpp/views/op_argument_view.h"
+#include "tensorflow/c/experimental/ops/gen/model/op_spec.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/logging.h"
 
@@ -37,10 +42,12 @@ OpView::OpView(OpSpec op)
   for (const auto& arg : op_.Outputs()) {
     all_arguments_.push_back(OpArgumentView(arg));
   }
-  all_arguments_.push_back(OpArgumentView("const char*", "name"));
   for (const auto& attr : op.Attributes()) {
     all_arguments_.push_back(OpArgumentView(attr));
   }
+  all_arguments_.push_back(OpArgumentView("const char*", "name", "nullptr"));
+  all_arguments_.push_back(
+      OpArgumentView("const char*", "raw_device_name", "nullptr"));
 }
 
 const std::vector<ArgView>& OpView::Inputs() const { return input_args_; }
@@ -83,8 +90,7 @@ string OpView::Summary() const { return op_.summary(); }
 
 // Context
 bool OpView::IsListOp() const {
-  return NumInputs() == 1 && OnlyInput().IsList() && NumOutputs() == 1 &&
-         OnlyOutput().IsList();
+  return NumOutputs() == 1 && OnlyOutput().IsList();
 }
 
 }  // namespace cpp

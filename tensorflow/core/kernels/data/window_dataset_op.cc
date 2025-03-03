@@ -14,10 +14,28 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/window_dataset_op.h"
 
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "xla/tsl/platform/errors.h"
 #include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/framework/dataset.h"
+#include "tensorflow/core/framework/dataset_options.pb.h"
+#include "tensorflow/core/framework/model.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/data/window_dataset.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/strcat.h"
 #include "tensorflow/core/platform/stringprintf.h"
+#include "tensorflow/core/platform/tstring.h"
+#include "tensorflow/core/platform/types.h"
+#include "tsl/platform/thread_annotations.h"
 
 namespace tensorflow {
 namespace data {
@@ -43,8 +61,8 @@ constexpr char kErrorMessage[] = ".error_message";
 
 class WindowDatasetOp::Dataset : public DatasetBase {
  public:
-  Dataset(OpKernelContext* ctx, const DatasetBase* input, int64 window_size,
-          int64 window_shift, int64 window_stride, bool drop_remainder)
+  Dataset(OpKernelContext* ctx, const DatasetBase* input, int64_t window_size,
+          int64_t window_shift, int64_t window_stride, bool drop_remainder)
       : DatasetBase(DatasetContext(ctx)),
         input_(input),
         window_size_(window_size),
@@ -67,7 +85,7 @@ class WindowDatasetOp::Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, name_utils::IteratorPrefix(kDatasetType, prefix)});
   }
 
@@ -86,18 +104,18 @@ class WindowDatasetOp::Dataset : public DatasetBase {
     return name_utils::DatasetDebugString(kDatasetType, params);
   }
 
-  int64 Cardinality() const override {
-    int64 n = input_->Cardinality();
+  int64_t CardinalityInternal(CardinalityOptions options) const override {
+    int64_t n = input_->Cardinality(options);
     if (n == kInfiniteCardinality || n == kUnknownCardinality) {
       return n;
     }
-    int64 cardinality = 0;
+    int64_t cardinality = 0;
     if (drop_remainder_) {
       // Compute rest_elements, the number of elements after the last element
       // of the initial window. If it is negative, we know that the
       // cardinality is 0. Otherwise, it will be the number of valid shifts
       // over the rest_elements.
-      int64 rest_elements = n - ((window_size_ - 1) * window_stride_ + 1);
+      int64_t rest_elements = n - ((window_size_ - 1) * window_stride_ + 1);
       cardinality = rest_elements < 0 ? 0 : rest_elements / window_shift_ + 1;
     } else {
       cardinality = n / window_shift_ + (n % window_shift_ == 0 ? 0 : 1);
@@ -105,19 +123,20 @@ class WindowDatasetOp::Dataset : public DatasetBase {
     return cardinality;
   }
 
-  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+  absl::Status InputDatasets(
+      std::vector<const DatasetBase*>* inputs) const override {
     inputs->push_back(input_);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status CheckExternalState() const override {
+  absl::Status CheckExternalState() const override {
     return input_->CheckExternalState();
   }
 
  protected:
-  Status AsGraphDefInternal(SerializationContext* ctx,
-                            DatasetGraphDefBuilder* b,
-                            Node** output) const override {
+  absl::Status AsGraphDefInternal(SerializationContext* ctx,
+                                  DatasetGraphDefBuilder* b,
+                                  Node** output) const override {
     Node* input_graph_node = nullptr;
     TF_RETURN_IF_ERROR(b->AddInputDataset(ctx, input_, &input_graph_node));
     Node* window_size_node = nullptr;
@@ -133,7 +152,7 @@ class WindowDatasetOp::Dataset : public DatasetBase {
                       {input_graph_node, window_size_node, window_shift_node,
                        window_stride_node, drop_remainder_node},
                       output));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
  private:
@@ -142,18 +161,18 @@ class WindowDatasetOp::Dataset : public DatasetBase {
     explicit Iterator(const Params& params)
         : DatasetIterator<Dataset>(params) {}
 
-    Status Initialize(IteratorContext* ctx) override {
+    absl::Status Initialize(IteratorContext* ctx) override {
       return dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_);
     }
 
-    Status GetNextInternal(IteratorContext* ctx,
-                           std::vector<Tensor>* out_tensors,
-                           bool* end_of_sequence) override {
-      const int64 window_size = dataset()->window_size_;
-      const int64 window_shift = dataset()->window_shift_;
-      const int64 window_stride = dataset()->window_stride_;
+    absl::Status GetNextInternal(IteratorContext* ctx,
+                                 std::vector<Tensor>* out_tensors,
+                                 bool* end_of_sequence) override {
+      const int64_t window_size = dataset()->window_size_;
+      const int64_t window_shift = dataset()->window_shift_;
+      const int64_t window_stride = dataset()->window_stride_;
       std::vector<std::vector<Tensor>> window_elements;
-      Status status = Status::OK();
+      absl::Status status = absl::OkStatus();
       {
         const size_t target_size = TargetBufferSize(window_size, window_stride);
 
@@ -162,7 +181,7 @@ class WindowDatasetOp::Dataset : public DatasetBase {
             (buffer_.empty() ||
              (dataset()->drop_remainder_ && buffer_.size() < target_size))) {
           *end_of_sequence = true;
-          return Status::OK();
+          return absl::OkStatus();
         }
 
         // Add elements to the buffer.
@@ -171,7 +190,7 @@ class WindowDatasetOp::Dataset : public DatasetBase {
           for (size_t i = buffer_.size(); i < target_size && !*end_of_sequence;
                ++i) {
             std::vector<Tensor> element;
-            Status status =
+            absl::Status status =
                 input_impl_->GetNext(ctx, &element, end_of_sequence);
             if (!*end_of_sequence) {
               RecordBufferEnqueue(ctx, element);
@@ -187,7 +206,7 @@ class WindowDatasetOp::Dataset : public DatasetBase {
         if (buffer_.empty() ||
             (dataset()->drop_remainder_ && buffer_.size() < target_size)) {
           DCHECK(*end_of_sequence);
-          return Status::OK();
+          return absl::OkStatus();
         }
 
         int num_elements = 1 + (buffer_.size() - 1) / window_stride;
@@ -230,7 +249,7 @@ class WindowDatasetOp::Dataset : public DatasetBase {
 
       // Construct output tensors.
       const size_t num_tuple_components = window_elements[0].size();
-      const int64 num_window_elements = window_elements.size();
+      const int64_t num_window_elements = window_elements.size();
       *end_of_sequence = false;
       for (size_t idx = 0; idx < num_tuple_components; ++idx) {
         DatasetBase* window_dataset;
@@ -246,14 +265,13 @@ class WindowDatasetOp::Dataset : public DatasetBase {
         DataTypeVector output_types({dataset()->input_->output_dtypes()[idx]});
         std::vector<PartialTensorShape> output_shapes(
             {dataset()->input_->output_shapes()[idx]});
-        TF_RETURN_IF_ERROR(NewWindowDataset(window_component_elements,
-                                            output_types, output_shapes,
-                                            &window_dataset));
+        TF_RETURN_IF_ERROR(NewWindow(window_component_elements, output_types,
+                                     output_shapes, &window_dataset));
         out_tensors->emplace_back(DT_VARIANT, TensorShape({}));
         TF_RETURN_IF_ERROR(
             StoreDatasetInVariantTensor(window_dataset, &out_tensors->back()));
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
    protected:
@@ -263,58 +281,59 @@ class WindowDatasetOp::Dataset : public DatasetBase {
                                        dataset()->window_shift_);
     }
 
-    Status SaveInternal(SerializationContext* ctx,
-                        IteratorStateWriter* writer) override {
+    absl::Status SaveInternal(SerializationContext* ctx,
+                              IteratorStateWriter* writer) override {
       mutex_lock l(mu_);
       if (!input_impl_) {
-        TF_RETURN_IF_ERROR(writer->WriteScalar(full_name(kInputImplEmpty), ""));
+        TF_RETURN_IF_ERROR(writer->WriteScalar(prefix(), kInputImplEmpty, ""));
       } else {
         TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
       }
       // Save buffer.
       TF_RETURN_IF_ERROR(
-          writer->WriteScalar(full_name(kBufferSize), buffer_.size()));
-      for (int64 i = 0; i < buffer_.size(); i++) {
+          writer->WriteScalar(prefix(), kBufferSize, buffer_.size()));
+      for (int64_t i = 0; i < buffer_.size(); i++) {
         TF_RETURN_IF_ERROR(WriteStatusLocked(writer, i, buffer_[i].status));
         TF_RETURN_IF_ERROR(writer->WriteScalar(
-            full_name(strings::StrCat(kBuffer, "[", i, "]", kSizeSuffix)),
+            prefix(), strings::StrCat(kBuffer, "[", i, "]", kSizeSuffix),
             buffer_[i].result.size()));
-        for (int64 j = 0; j < buffer_[i].result.size(); j++) {
+        for (int64_t j = 0; j < buffer_[i].result.size(); j++) {
           TF_RETURN_IF_ERROR(writer->WriteTensor(
-              full_name(strings::StrCat(kBuffer, "[", i, "][", j, "]")),
+              prefix(), strings::StrCat(kBuffer, "[", i, "][", j, "]"),
               buffer_[i].result[j]));
         }
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
-    Status RestoreInternal(IteratorContext* ctx,
-                           IteratorStateReader* reader) override {
+    absl::Status RestoreInternal(IteratorContext* ctx,
+                                 IteratorStateReader* reader) override {
       mutex_lock l(mu_);
-      if (!reader->Contains(full_name(kInputImplEmpty))) {
+      if (!reader->Contains(prefix(), kInputImplEmpty)) {
         TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
       } else {
         input_impl_.reset();
       }
       // Restore buffer.
-      int64 buffer_size = 0;
+      int64_t buffer_size = 0;
       TF_RETURN_IF_ERROR(
-          reader->ReadScalar(full_name(kBufferSize), &buffer_size));
+          reader->ReadScalar(prefix(), kBufferSize, &buffer_size));
       buffer_.resize(buffer_size);
-      for (int64 i = 0; i < buffer_size; i++) {
-        int64 vector_size;
+      for (int64_t i = 0; i < buffer_size; i++) {
+        int64_t vector_size;
         TF_RETURN_IF_ERROR(ReadStatusLocked(reader, i, &buffer_[i].status));
         TF_RETURN_IF_ERROR(reader->ReadScalar(
-            full_name(strings::StrCat(kBuffer, "[", i, "]", kSizeSuffix)),
+            prefix(), strings::StrCat(kBuffer, "[", i, "]", kSizeSuffix),
             &vector_size));
         buffer_[i].result.resize(vector_size);
-        for (int64 j = 0; j < vector_size; j++) {
-          TF_RETURN_IF_ERROR(reader->ReadTensor(
-              full_name(strings::StrCat(kBuffer, "[", i, "][", j, "]")),
-              &buffer_[i].result[j]));
+        for (int64_t j = 0; j < vector_size; j++) {
+          TF_RETURN_IF_ERROR(
+              reader->ReadTensor(ctx->flr(), prefix(),
+                                 strings::StrCat(kBuffer, "[", i, "][", j, "]"),
+                                 &buffer_[i].result[j]));
         }
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
     TraceMeMetadata GetTraceMeMetadata() const override {
@@ -324,52 +343,53 @@ class WindowDatasetOp::Dataset : public DatasetBase {
    private:
     struct InvocationResult {
       InvocationResult() = default;
-      InvocationResult(std::vector<Tensor>&& result, const Status& status)
+      InvocationResult(std::vector<Tensor>&& result, const absl::Status& status)
           : result(result), status(status) {}
 
       std::vector<Tensor> result;
-      Status status;
+      absl::Status status;
     };
 
-    Status WriteStatusLocked(IteratorStateWriter* writer, size_t index,
-                             const Status& status)
+    absl::Status WriteStatusLocked(IteratorStateWriter* writer, size_t index,
+                                   const absl::Status& status)
         TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
       TF_RETURN_IF_ERROR(writer->WriteScalar(
-          CodeKey(index), static_cast<int64>(status.code())));
+          prefix(), CodeKey(index), static_cast<int64_t>(status.code())));
       if (!status.ok()) {
-        TF_RETURN_IF_ERROR(writer->WriteScalar(ErrorMessageKey(index),
-                                               status.error_message()));
+        TF_RETURN_IF_ERROR(writer->WriteScalar(prefix(), ErrorMessageKey(index),
+                                               std::string(status.message())));
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
-    Status ReadStatusLocked(IteratorStateReader* reader, size_t index,
-                            Status* status) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-      int64 code_int;
-      TF_RETURN_IF_ERROR(reader->ReadScalar(CodeKey(index), &code_int));
-      error::Code code = static_cast<error::Code>(code_int);
+    absl::Status ReadStatusLocked(IteratorStateReader* reader, size_t index,
+                                  absl::Status* status)
+        TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+      int64_t code_int;
+      TF_RETURN_IF_ERROR(
+          reader->ReadScalar(prefix(), CodeKey(index), &code_int));
+      absl::StatusCode code = static_cast<absl::StatusCode>(code_int);
 
-      if (code != error::Code::OK) {
+      if (code != absl::StatusCode::kOk) {
         tstring error_message;
-        TF_RETURN_IF_ERROR(
-            reader->ReadScalar(ErrorMessageKey(index), &error_message));
-        *status = Status(code, error_message);
+        TF_RETURN_IF_ERROR(reader->ReadScalar(prefix(), ErrorMessageKey(index),
+                                              &error_message));
+        *status = absl::Status(code, error_message);
       } else {
-        *status = Status::OK();
+        *status = absl::OkStatus();
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
     string CodeKey(size_t index) {
-      return full_name(strings::StrCat(kBuffer, "[", index, "]", kCodeSuffix));
+      return strings::StrCat(kBuffer, "[", index, "]", kCodeSuffix);
     }
 
     string ErrorMessageKey(size_t index) {
-      return full_name(
-          strings::StrCat(kBuffer, "[", index, "]", kErrorMessage));
+      return strings::StrCat(kBuffer, "[", index, "]", kErrorMessage);
     }
 
-    size_t TargetBufferSize(int64 window_size, int64 window_stride) {
+    size_t TargetBufferSize(int64_t window_size, int64_t window_stride) {
       return (window_size - 1) * window_stride + 1;
     }
 
@@ -379,9 +399,9 @@ class WindowDatasetOp::Dataset : public DatasetBase {
   };
 
   const DatasetBase* const input_;
-  const int64 window_size_;
-  const int64 window_shift_;
-  const int64 window_stride_;
+  const int64_t window_size_;
+  const int64_t window_shift_;
+  const int64_t window_stride_;
   const bool drop_remainder_;
   const DataTypeVector output_dtypes_;
   const std::vector<PartialTensorShape> output_shapes_;
@@ -393,20 +413,21 @@ WindowDatasetOp::WindowDatasetOp(OpKernelConstruction* ctx)
 
 void WindowDatasetOp::MakeDataset(OpKernelContext* ctx, DatasetBase* input,
                                   DatasetBase** output) {
-  int64 window_size = 0;
-  OP_REQUIRES_OK(ctx, ParseScalarArgument<int64>(ctx, kSize, &window_size));
+  int64_t window_size = 0;
+  OP_REQUIRES_OK(ctx, ParseScalarArgument<int64_t>(ctx, kSize, &window_size));
   OP_REQUIRES(
       ctx, window_size > 0,
       errors::InvalidArgument("Window size must be greater than zero."));
 
-  int64 window_shift = 0;
-  OP_REQUIRES_OK(ctx, ParseScalarArgument<int64>(ctx, kShift, &window_shift));
+  int64_t window_shift = 0;
+  OP_REQUIRES_OK(ctx, ParseScalarArgument<int64_t>(ctx, kShift, &window_shift));
   OP_REQUIRES(
       ctx, window_shift > 0,
       errors::InvalidArgument("Window shift must be greater than zero."));
 
-  int64 window_stride = 0;
-  OP_REQUIRES_OK(ctx, ParseScalarArgument<int64>(ctx, kStride, &window_stride));
+  int64_t window_stride = 0;
+  OP_REQUIRES_OK(ctx,
+                 ParseScalarArgument<int64_t>(ctx, kStride, &window_stride));
   OP_REQUIRES(
       ctx, window_stride > 0,
       errors::InvalidArgument("Window stride must be greater than zero."));

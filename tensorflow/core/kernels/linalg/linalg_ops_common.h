@@ -19,8 +19,9 @@ limitations under the License.
 // module. Supports batch computation on several matrices at once, sharding the
 // computations across different threads if necessary.
 #include <algorithm>
+#include <cstdint>
 
-#include "third_party/eigen3/Eigen/Core"
+#include "Eigen/Core"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -43,7 +44,7 @@ class LinearAlgebraOp : public OpKernel {
   void Compute(OpKernelContext* context) override;
 
  protected:
-  using TensorShapes = gtl::InlinedVector<TensorShape, 4>;
+  using TensorShapes = absl::InlinedVector<TensorShape, 4UL>;
   // Returns the number of leading inputs that are to be treated as matrix
   // inputs. By default this is all the inputs. Derived classes can override
   // this to tell the base class to ignore one or more trailing inputs.
@@ -96,12 +97,13 @@ class LinearAlgebraOp : public OpKernel {
   // in core/util/work_sharder.cc. Many linear algebra ops take roughly max(m,n)
   // * min(m,n)^2, where the first input matrix is m-by-n. We provide that as a
   // default implementation for convenience.
-  virtual int64 GetCostPerUnit(const TensorShapes& input_matrix_shapes) const {
+  virtual int64_t GetCostPerUnit(
+      const TensorShapes& input_matrix_shapes) const {
     double m = static_cast<double>(input_matrix_shapes[0].dim_size(0));
     double n = static_cast<double>(input_matrix_shapes[0].dim_size(1));
     double cost = std::max(m, n) * std::min(m, n) * std::min(m, n);
     return cost >= static_cast<double>(kint64max) ? kint64max
-                                                  : static_cast<int64>(cost);
+                                                  : static_cast<int64_t>(cost);
   }
 
   // Returns true if it is safe to forward (alias) input to output buffer
@@ -151,8 +153,8 @@ class LinearAlgebraOp : public OpKernel {
                              OutputMatrixMaps* outputs) = 0;
 
  private:
-  using TensorInputs = gtl::InlinedVector<const Tensor*, 4>;
-  using TensorOutputs = gtl::InlinedVector<Tensor*, 4>;
+  using TensorInputs = absl::InlinedVector<const Tensor*, 4UL>;
+  using TensorOutputs = absl::InlinedVector<Tensor*, 4UL>;
   // This function maps 2-d slices (matrices) of the input and output tensors
   // using Eigen::Map and calls ComputeMatrix implemented in terms of the
   // Eigen::MatrixBase API by the derived class.
@@ -170,7 +172,7 @@ class LinearAlgebraOp : public OpKernel {
   //   matrix_index * output_matrix_shapes[i].num_elements().
   // for i in 0...outputs.size()-1.
   //
-  void ComputeTensorSlice(OpKernelContext* context, int64 matrix_index,
+  void ComputeTensorSlice(OpKernelContext* context, int64_t matrix_index,
                           const TensorInputs& inputs,
                           const TensorShapes& input_matrix_shapes,
                           const TensorOutputs& outputs,
@@ -187,7 +189,8 @@ class LinearAlgebraOp : public OpKernel {
 };
 
 // Declare LinearAlgebraOp, which is explicitly instantiated in
-// linalg_ops_common.cc for float, double, complex64, and complex128.
+// linalg_ops_common.cc for half,float, double, complex64, and complex128.
+extern template class LinearAlgebraOp<Eigen::half>;
 extern template class LinearAlgebraOp<float>;
 extern template class LinearAlgebraOp<double>;
 extern template class LinearAlgebraOp<complex64>;

@@ -20,30 +20,38 @@ namespace tensorflow {
 REGISTER6(BinaryOp, CPU, "Div", functor::div, float, Eigen::half, double,
           bfloat16, complex64, complex128);
 REGISTER8(BinaryOp, CPU, "Div", functor::safe_div, uint8, uint16, uint32,
-          uint64, int8, int16, int32, int64);
+          uint64, int8, int16, int32, int64_t);
 REGISTER8(BinaryOp, CPU, "TruncateDiv", functor::safe_div, uint8, uint16,
-          uint32, uint64, int8, int16, int32, int64);
+          uint32, uint64, int8, int16, int32, int64_t);
+REGISTER4(BinaryOp, CPU, "TruncateDiv", functor::truncate_div_real, Eigen::half,
+          bfloat16, float, double);
 REGISTER6(BinaryOp, CPU, "RealDiv", functor::div, float, Eigen::half, double,
           bfloat16, complex64, complex128);
-REGISTER5(BinaryOp, CPU, "DivNoNan", functor::div_no_nan, Eigen::half, float,
-          double, complex64, complex128);
+REGISTER6(BinaryOp, CPU, "DivNoNan", functor::div_no_nan, Eigen::half, float,
+          double, bfloat16, complex64, complex128);
+
+REGISTER_KERNEL_BUILDER(Name("Div")
+                            .Device(DEVICE_DEFAULT)
+                            .HostMemory("x")
+                            .HostMemory("y")
+                            .HostMemory("z")
+                            .TypeConstraint<int32>("T"),
+                        BinaryOp<CPUDevice, functor::safe_div<int32>>);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
-REGISTER7(BinaryOp, GPU, "Div", functor::div, float, Eigen::half, double, int16,
-          int64, complex64, complex128);
+REGISTER9(BinaryOp, GPU, "Div", functor::div, float, Eigen::half, double, uint8,
+          uint16, int16, int64, complex64, complex128);
+REGISTER4(BinaryOp, GPU, "TruncateDiv", functor::div, uint8, uint16, int16,
+          int64);
 REGISTER5(BinaryOp, GPU, "RealDiv", functor::div, float, Eigen::half, double,
           complex64, complex128);
-REGISTER2(BinaryOp, GPU, "TruncateDiv", functor::div, int16, int64);
-#endif
-REGISTER2(BinaryOp, GPU, "Div", functor::div, uint8, uint16);
-REGISTER2(BinaryOp, GPU, "TruncateDiv", functor::div, uint8, uint16);
-
-#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED) || \
-    !defined(MLIR_GENERATED_EXPERIMENTAL_KERNELS_ENABLED)
 REGISTER5(BinaryOp, GPU, "DivNoNan", functor::div_no_nan, Eigen::half, float,
           double, complex64, complex128);
 #endif
+REGISTER(BinaryOp, GPU, "Div", functor::div, bfloat16);
+REGISTER(BinaryOp, GPU, "RealDiv", functor::div, bfloat16);
+REGISTER(BinaryOp, GPU, "DivNoNan", functor::div_no_nan, bfloat16);
 
 // A special GPU kernel for int32.
 // TODO(b/25387198): Also enable int32 in device memory. This kernel

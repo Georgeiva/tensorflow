@@ -58,15 +58,21 @@ class RaggedGatherOpBase : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Get the input Tensors.
+
     OpInputList params_nested_splits_in;
     OP_REQUIRES_OK(context, context->input_list("params_nested_splits",
                                                 &params_nested_splits_in));
+    OP_REQUIRES(
+        context, params_nested_splits_in.size() > 0,
+        errors::InvalidArgument("params_nested_splits must be non empty"));
+
     const Tensor& params_dense_values_in =
         context->input(params_nested_splits_in.size());
     const Tensor& indices_in =
         context->input(params_nested_splits_in.size() + 1);
 
-    DCHECK_GT(params_nested_splits_in.size(), 0);  // Enforced by REGISTER_OP.
+    OP_REQUIRES(context, params_nested_splits_in[0].dims() > 0,
+                errors::InvalidArgument("Split tensors must not be scalars"));
     SPLITS_TYPE num_params = params_nested_splits_in[0].dim_size(0) - 1;
     OP_REQUIRES_OK(context, ValidateIndices(indices_in, num_params));
 
@@ -94,8 +100,8 @@ class RaggedGatherOpBase : public OpKernel {
   using ConstFlatType = typename TTypes<SPLITS_TYPE>::ConstFlat;
 
   // Check if any indices are out-of-bounds.
-  ::tensorflow::Status ValidateIndices(const Tensor& indices_in,
-                                       SPLITS_TYPE num_params) {
+  absl::Status ValidateIndices(const Tensor& indices_in,
+                               SPLITS_TYPE num_params) {
     const auto& indices = indices_in.flat<INDEX_TYPE>();
     for (SPLITS_TYPE i = 0; i < indices.size(); ++i) {
       SPLITS_TYPE index = indices(i);
@@ -105,14 +111,14 @@ class RaggedGatherOpBase : public OpKernel {
             " is not in [0, ", num_params, ")");
       }
     }
-    return ::tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
   // Construct the `splits` output tensors, encoded using a nested vector.
   // Also find the slices of values that need to be copied, and store them
   // in `value_slices`.  The total number of values that will be copied (which
   // we need for allocating the output values tensor) is stored in `num_values`.
-  ::tensorflow::Status MakeSplits(
+  absl::Status MakeSplits(
       const Tensor& indices_in, const OpInputList& params_nested_splits_in,
       SPLITS_TYPE num_params_dense_values,
       std::vector<std::vector<SPLITS_TYPE>>* out_splits,
@@ -182,10 +188,10 @@ class RaggedGatherOpBase : public OpKernel {
         *num_values += limit - start;
       }
     }
-    return ::tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
-  ::tensorflow::Status ValidateSplits(
+  absl::Status ValidateSplits(
       const std::vector<ConstFlatType>& params_nested_splits,
       SPLITS_TYPE num_params_dense_values) {
     // Validate
@@ -210,10 +216,10 @@ class RaggedGatherOpBase : public OpKernel {
         }
       }
     }
-    return ::tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
-  ::tensorflow::Status WriteSplits(
+  absl::Status WriteSplits(
       const std::vector<std::vector<SPLITS_TYPE>>& out_splits,
       OpKernelContext* context) {
     OpOutputList splits_out;
@@ -228,10 +234,10 @@ class RaggedGatherOpBase : public OpKernel {
       std::copy_n(out_splits[i].data(), out_splits[i].size(),
                   splits_flat.data());
     }
-    return ::tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
-  ::tensorflow::Status WriteValues(
+  absl::Status WriteValues(
       const Tensor& params_dense_values_in,
       const std::vector<std::pair<SPLITS_TYPE, SPLITS_TYPE>>& value_slices,
       int values_index, SPLITS_TYPE num_values,
@@ -247,7 +253,7 @@ class RaggedGatherOpBase : public OpKernel {
                           : (num_elements / params_dense_values_in.dim_size(0));
     CallWriteValueSlices(params_dense_values_in, value_slices, value_size,
                          values_out);
-    return ::tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
  protected:
@@ -286,11 +292,11 @@ class RaggedGatherOp : public RaggedGatherOpBase<INDEX_TYPE, SPLITS_TYPE> {
           .TypeConstraint<value_type>("Tvalues")                    \
           .TypeConstraint<splits_type>("Tsplits"),                  \
       RaggedGatherOp<index_type, value_type, splits_type>);
-#define REGISTER_CPU_KERNEL(value_type)                         \
-  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int32, value_type, int32) \
-  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int64, value_type, int32) \
-  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int32, value_type, int64) \
-  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int64, value_type, int64)
+#define REGISTER_CPU_KERNEL(value_type)                           \
+  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int32, value_type, int32)   \
+  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int64_t, value_type, int32) \
+  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int32, value_type, int64_t) \
+  REGISTER_CPU_KERNEL_WITH_INDEX_TYPE(int64_t, value_type, int64_t)
 TF_CALL_POD_TYPES(REGISTER_CPU_KERNEL);
 TF_CALL_tstring(REGISTER_CPU_KERNEL);
 TF_CALL_QUANTIZED_TYPES(REGISTER_CPU_KERNEL);

@@ -5,6 +5,12 @@ load(
     "clean_dep",
 )
 
+# Dependencies for the bzl_library rule for this file.
+# This should include bzl_library targets for the bzl files loaded by the "load" statements above.
+SPECIAL_RULES_DEPS = [
+    "//tensorflow:tensorflow_bzl",
+]
+
 def tflite_portable_test_suite(**kwargs):
     """This is a no-op outside of Google."""
     _ignore = [kwargs]
@@ -26,9 +32,15 @@ def ios_visibility_allowlist():
 
 def internal_visibility_allowlist():
     """Grant public visibility to internal targets so that other repos can depend on them."""
-    return [
-        "//visibility:public",
-    ]
+    return ["//visibility:public"]
+
+def jni_utils_visibility_allowlist():
+    """Returns a list of packages that can depend on tensorflow/lite/java/src/main/native:jni_utils."""
+    return ["//tensorflow/lite:__subpackages__"]
+
+def nonportable_visibility_allowlist():
+    """Grant public visibility to nonportable targets so that other repos can depend on them."""
+    return ["//visibility:public"]
 
 def op_resolver_internal_visibility_allowlist():
     """Returns a list of packages that can depend on tensorflow/lite/core/api:op_resolver_internal.
@@ -36,14 +48,44 @@ def op_resolver_internal_visibility_allowlist():
     This is a no-op outside of Google."""
     return []
 
-def nnapi_plugin_impl_visibility_allowlist():
-    """Returns a list of packages that can depend on tensorflow/lite/experimental/acceleration/configuration:nnapi_plugin_impl.
+def c_api_opaque_internal_visibility_allowlist():
+    """Returns a list of packages that can depend on tensorflow/lite/c:c_api_opaque_internal.
 
     This is a no-op outside of Google."""
     return []
 
-def nnapi_sl_headers_visibility_allowlist():
+def nnapi_plugin_impl_visibility_allowlist():
+    """Returns a list of packages that can depend on tensorflow/lite/acceleration/configuration:nnapi_plugin_impl.
+
+    This is a no-op outside of Google."""
+    return []
+
+def nnapi_sl_visibility_allowlist():
     """Returns a list of packages that can depend on tensorflow/lite/nnapi/sl:nnapi_support_library_headers.
+
+    This is a no-op outside of Google."""
+    return []
+
+def nnapi_native_srcs_visibility_allowlist():
+    """Returns a list of packages that can depend on tensorflow/lite/delegates/nnapi/java/src/main/native:native_srcs
+
+    This is a no-op outside of Google."""
+    return []
+
+def verifier_internal_visibility_allowlist():
+    """Returns a list of packages that can depend on tensorflow/lite/tools:verifier_internal.
+
+    This is a no-op outside of Google."""
+    return []
+
+def xnnpack_plugin_impl_visibility_allowlist():
+    """Returns a list of packages that can depend on tensorflow/lite/core/acceleration/configuration:xnnpack_plugin.
+
+    This is a no-op outside of Google."""
+    return []
+
+def tflite_internal_cc_3p_api_deps_src_all_visibility_allowlist():
+    """Returns a list of packages that can depend on tensorflow/lite:tflite_internal_cc_3p_api_deps_src_all.
 
     This is a no-op outside of Google."""
     return []
@@ -107,9 +149,12 @@ def flex_portable_tensorflow_deps():
 
     return [
         "//third_party/fft2d:fft2d_headers",
-        "//third_party/eigen3",
-        "@com_google_absl//absl/types:optional",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:optional",
+        "@eigen_archive//:eigen3",
         "@gemmlowp",
         "@icu//:common",
         "//third_party/icu/data:conversion_data",
@@ -117,4 +162,8 @@ def flex_portable_tensorflow_deps():
 
 def tflite_copts_extra():
     """Defines extra compile time flags for tflite_copts(). Currently empty."""
+    return []
+
+def tflite_extra_arm_config_settings():
+    """Defines extra ARM CPU config_setting targets. Currently empty."""
     return []

@@ -15,8 +15,13 @@ limitations under the License.
 
 #include "tensorflow/core/profiler/internal/tfprof_show_multi.h"
 
+#include <algorithm>
+#include <map>
 #include <memory>
 #include <set>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -38,9 +43,9 @@ const MultiGraphNodeProto& TFMultiShow::Show(const string& prefix,
       absl::PrintF("%s%s", prefix, ret->formatted_str);
       fflush(stdout);
     } else if (opts.output_type == kOutput[2]) {
-      Status s = WriteStringToFile(Env::Default(),
-                                   opts.output_options.at(kFileOpts[0]),
-                                   prefix + ret->formatted_str);
+      absl::Status s = WriteStringToFile(Env::Default(),
+                                         opts.output_options.at(kFileOpts[0]),
+                                         prefix + ret->formatted_str);
       if (!s.ok()) {
         absl::FPrintF(stderr, "%s\n", s.ToString());
       }
@@ -163,11 +168,11 @@ string TFMultiShow::FormatLegend(const Options& opts) const {
 
 string TFMultiShow::FormatInputShapes(const MultiGraphNodeProto& proto) const {
   // input_shape string -> (static defined count, run count, run_micros)
-  std::map<string, std::tuple<int64, int64, int64>> input_shapes_attr;
+  std::map<string, std::tuple<int64_t, int64_t, int64_t>> input_shapes_attr;
   for (int i = 0; i < proto.graph_nodes_size(); ++i) {
     const GraphNodeProto& gnode = proto.graph_nodes(i);
     // Convert and sort by input_idx.
-    std::map<int, std::vector<int64>> input_shapes;
+    std::map<int, std::vector<int64_t>> input_shapes;
     for (const auto& inp : gnode.input_shapes()) {
       input_shapes[inp.first] = ShapeProtoToVec(inp.second);
     }
@@ -197,19 +202,19 @@ string TFMultiShow::FormatInputShapes(const MultiGraphNodeProto& proto) const {
     return "";
   }
 
-  std::vector<std::pair<string, std::tuple<int64, int64, int64>>>
+  std::vector<std::pair<string, std::tuple<int64_t, int64_t, int64_t>>>
       shape_count_vec(input_shapes_attr.begin(), input_shapes_attr.end());
-  std::sort(
+  std::stable_sort(
       shape_count_vec.begin(), shape_count_vec.end(),
-      [](const std::pair<const string, std::tuple<int64, int64, int64>>& a,
-         const std::pair<const string, std::tuple<int64, int64, int64>>& b) {
-        return std::get<1>(a.second) > std::get<1>(b.second);
-      });
+      [](const std::pair<const string, std::tuple<int64_t, int64_t, int64_t>>&
+             a,
+         const std::pair<const string, std::tuple<int64_t, int64_t, int64_t>>&
+             b) { return std::get<1>(a.second) > std::get<1>(b.second); });
 
   std::vector<string> input_types;
   input_types.reserve(shape_count_vec.size());
   for (const auto& s : shape_count_vec) {
-    std::tuple<int64, int64, int64> t = s.second;
+    std::tuple<int64_t, int64_t, int64_t> t = s.second;
     input_types.push_back(absl::StrFormat(
         "%s\t(run*%d|defined*%d)\texec_time: %s", s.first, std::get<1>(t),
         std::get<0>(t), FormatTime(std::get<2>(t))));

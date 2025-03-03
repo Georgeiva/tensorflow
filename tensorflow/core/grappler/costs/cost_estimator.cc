@@ -27,9 +27,12 @@ Costs CombineCosts(const Costs& left, const Costs& right) {
   result.execution_time += right.execution_time;
   result.compute_time += right.compute_time;
   result.memory_time += right.memory_time;
+  result.network_time += right.network_time;
   result.intermediate_memory_time += right.intermediate_memory_time;
   result.intermediate_memory_read_time += right.intermediate_memory_read_time;
   result.intermediate_memory_write_time += right.intermediate_memory_write_time;
+  result.hbm_read_time += right.hbm_read_time;
+  result.hbm_write_time += right.hbm_write_time;
 
   if (right.max_per_op_buffers != kMemoryUnknown) {
     result.max_per_op_buffers =
@@ -54,7 +57,7 @@ Costs CombineCosts(const Costs& left, const Costs& right) {
 
 // Multiplies Costs by a scalar.
 // Equivalent to applying CombineCosts "multiplier" times.
-// Note the field regarding num_ops are not multiplied.
+// Note the field regarding num_ops and max_memory are not multiplied.
 Costs MultiplyCosts(const Costs& costs, int multiplier) {
   CHECK_GE(multiplier, 0);
   if (multiplier == 0) {
@@ -68,12 +71,12 @@ Costs MultiplyCosts(const Costs& costs, int multiplier) {
   result.execution_time *= multiplier;
   result.compute_time *= multiplier;
   result.memory_time *= multiplier;
+  result.hbm_read_time *= multiplier;
+  result.hbm_write_time *= multiplier;
+  result.network_time *= multiplier;
   result.intermediate_memory_time *= multiplier;
   result.intermediate_memory_read_time *= multiplier;
   result.intermediate_memory_write_time *= multiplier;
-  if (result.max_memory != kMemoryUnknown) {
-    result.max_memory *= multiplier;
-  }
   return result;
 }
 

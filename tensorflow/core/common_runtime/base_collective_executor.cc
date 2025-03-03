@@ -35,9 +35,9 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/refcount.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/profiler/lib/connected_traceme.h"
+#include "tensorflow/core/profiler/lib/scoped_memory_debug_annotation.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 
 #define VALUE_IN_DEBUG_STRING false
@@ -52,10 +52,11 @@ bool IsCancelled(CancellationManager* cancel_mgr) {
 }  // namespace
 
 /*static*/
-int64 CollectiveAdapter::AlignedChunkElts(int64 elt_bytes, int64 total_elts,
-                                          int64 num_chunks) {
+int64_t CollectiveAdapter::AlignedChunkElts(int64_t elt_bytes,
+                                            int64_t total_elts,
+                                            int64_t num_chunks) {
   DCHECK_GT(num_chunks, 0);
-  int64 base_chunk_elts = (total_elts + (num_chunks - 1)) / num_chunks;
+  int64_t base_chunk_elts = (total_elts + (num_chunks - 1)) / num_chunks;
   if (EIGEN_MAX_ALIGN_BYTES == 0) return base_chunk_elts;
   if (EIGEN_MAX_ALIGN_BYTES <= elt_bytes) {
     // Tolerate weird small values of EIGEN_MAX_ALIGN_BYTES
@@ -69,8 +70,8 @@ int64 CollectiveAdapter::AlignedChunkElts(int64 elt_bytes, int64 total_elts,
       << " EIGEN_MAX_ALIGN_BYTES=" << EIGEN_MAX_ALIGN_BYTES
       << " elt_bytes=" << elt_bytes;
   // Round bytes per chunk up to the next multiple of EIGEN_MAX_ALIGN_BYTES.
-  int64 chunk_bytes = base_chunk_elts * elt_bytes;
-  int64 diff =
+  int64_t chunk_bytes = base_chunk_elts * elt_bytes;
+  int64_t diff =
       (chunk_bytes < EIGEN_MAX_ALIGN_BYTES)
           ? (EIGEN_MAX_ALIGN_BYTES - chunk_bytes)
           : (EIGEN_MAX_ALIGN_BYTES - (chunk_bytes % EIGEN_MAX_ALIGN_BYTES));
@@ -89,8 +90,8 @@ class CollectiveAdapterImpl : public CollectiveAdapter {
  public:
   // Takes ownership of output and prepares to properly alias its chunks.
   // Ownership is taken because the shape may temporarily change.
-  CollectiveAdapterImpl(Tensor* output, int64 num_chunks, Allocator* allocator,
-                        bool align_chunks)
+  CollectiveAdapterImpl(Tensor* output, int64_t num_chunks,
+                        Allocator* allocator, bool align_chunks)
       : output_(std::move(*output)),
         dt_(output_.dtype()),
         old_shape_(output_.shape()),
@@ -129,19 +130,19 @@ class CollectiveAdapterImpl : public CollectiveAdapter {
   }
 
   // Number of T elements in a particular chunk.
-  inline int64 ChunkElts(int i) const {
+  inline int64_t ChunkElts(int i) const {
     DCHECK_LT(i, num_chunks_);
     const T* chunk_start = std::min(data_end_, data_start_ + i * chunk_elts_);
     const T* chunk_end = std::min(data_end_, chunk_start + chunk_elts_);
     return chunk_end - chunk_start;
   }
 
-  int64 ChunkBytes(int i) const override { return sizeof(T) * ChunkElts(i); }
+  int64_t ChunkBytes(int i) const override { return sizeof(T) * ChunkElts(i); }
 
   // Returns a new Tensor that aliases the required chunk.
   Tensor ChunkAlias(int i) override {
-    int64 start = chunk_elts_ * i;
-    int64 num_elts = ChunkElts(i);
+    int64_t start = chunk_elts_ * i;
+    int64_t num_elts = ChunkElts(i);
     // If this chunk is empty the prior chunk might also be short
     // so always take an empty slice from the front of the tensor
     // to avoid an illegal offset check failure somewhere.
@@ -151,21 +152,21 @@ class CollectiveAdapterImpl : public CollectiveAdapter {
 
   Tensor TempChunk(int i) const override {
     AllocationAttributes empty;
-    ScopedMemoryDebugAnnotation op_annotation(
+    tsl::profiler::ScopedMemoryDebugAnnotation op_annotation(
         "CollectiveAdapterImpl::TempChunk");
     return Tensor(allocator_, dt_, {ChunkElts(i)}, empty);
   }
 
   string DebugString() const override {
     return strings::StrCat(
-        "base addr ", reinterpret_cast<int64>(DMAHelper::base(&output_)),
+        "base addr ", reinterpret_cast<int64_t>(DMAHelper::base(&output_)),
         " num_chunks ", num_chunks_, " total_elts ", total_elts_, " chunk_elts",
         chunk_elts_, " value ",
         VALUE_IN_DEBUG_STRING ? output_.SummarizeValue(1024) : "<hidden>");
   }
 
   string TBounds(const Tensor& t) const override {
-    int64 base_addr = reinterpret_cast<int64>(DMAHelper::base(&t));
+    int64_t base_addr = reinterpret_cast<int64_t>(DMAHelper::base(&t));
     return strings::StrCat("(", base_addr, ", ", (base_addr + t.TotalBytes()),
                            ")");
   }
@@ -180,10 +181,10 @@ class CollectiveAdapterImpl : public CollectiveAdapter {
   Tensor output_;
   const DataType dt_;
   const TensorShape old_shape_;
-  const int64 num_chunks_;
+  const int64_t num_chunks_;
   Allocator* allocator_;
-  const int64 total_elts_;
-  const int64 chunk_elts_;
+  const int64_t total_elts_;
+  const int64_t chunk_elts_;
   const T* data_start_;
   const T* data_end_;
 };
@@ -215,8 +216,8 @@ CollectiveAdapter* MakeCollectiveAdapter(Tensor* output, int num_chunks,
                                               align_chunks);
       break;
     case DT_INT64:
-      return new CollectiveAdapterImpl<int64>(output, num_chunks, allocator,
-                                              align_chunks);
+      return new CollectiveAdapterImpl<int64_t>(output, num_chunks, allocator,
+                                                align_chunks);
       break;
     default:
       LOG(FATAL) << "Unsupported type " << DataTypeString(output->dtype())
@@ -227,8 +228,8 @@ CollectiveAdapter* MakeCollectiveAdapter(Tensor* output, int num_chunks,
 
 BaseCollectiveExecutor::~BaseCollectiveExecutor() {}
 
-void BaseCollectiveExecutor::StartAbort(const Status& s) {
-  Status status;
+void BaseCollectiveExecutor::StartAbort(const absl::Status& s) {
+  absl::Status status;
   {
     mutex_lock l(status_mu_);
     if (!status_.ok()) {
@@ -236,10 +237,10 @@ void BaseCollectiveExecutor::StartAbort(const Status& s) {
               << s;
       return;
     }
-    status_ = StatusGroup::MakeDerived(Status(
+    status_ = StatusGroup::MakeDerived(absl::Status(
         s.code(),
         absl::StrCat(
-            "Collective ops is aborted by: ", s.error_message(),
+            "Collective ops is aborted by: ", s.message(),
             "\nThe error could be from a previous operation. Restart your "
             "program to reset.")));
     status = status_;
@@ -252,7 +253,7 @@ void BaseCollectiveExecutor::StartAbort(const Status& s) {
   }
 }
 
-Status BaseCollectiveExecutor::GetStatus(const Status& s) {
+absl::Status BaseCollectiveExecutor::GetStatus(const absl::Status& s) {
   if (s.ok()) return s;
   mutex_lock l(status_mu_);
   // If the collective executor is already aborted, use the aborted status
@@ -273,7 +274,8 @@ void BaseCollectiveExecutor::ExecuteAsync(OpKernelContext* ctx,
                                           StatusCallback done) {
   // See CompleteParamsAsync() how done() and the timeout callback interacts.
   const auto is_callback_called = std::make_shared<std::atomic<bool>>(false);
-  auto done_safe = [this, done, ctx, is_callback_called](const Status& s) {
+  auto done_safe = [this, done, ctx,
+                    is_callback_called](const absl::Status& s) {
     bool called = is_callback_called->exchange(true);
     if (!called) {
       if (!s.ok() && !IsCancelled(ctx->cancellation_manager())) {
@@ -284,7 +286,7 @@ void BaseCollectiveExecutor::ExecuteAsync(OpKernelContext* ctx,
       done(GetStatus(s));
     }
   };
-  auto timeout_microseconds = static_cast<int64>(
+  auto timeout_microseconds = static_cast<int64_t>(
       col_params->instance.impl_details.timeout_seconds * 1'000'000);
   if (timeout_microseconds > 0) {
     // TODO(xldrx): Share the timeout watchdog thread among collectives.
@@ -292,8 +294,8 @@ void BaseCollectiveExecutor::ExecuteAsync(OpKernelContext* ctx,
         timeout_microseconds, [this, is_callback_called, done] {
           bool called = is_callback_called->exchange(true);
           if (!called) {
-            Status status(error::DEADLINE_EXCEEDED,
-                          "Collective has timed out during execution.");
+            absl::Status status(absl::StatusCode::kDeadlineExceeded,
+                                "Collective has timed out during execution.");
             StartAbort(status);
             done(status);
           }
@@ -301,15 +303,18 @@ void BaseCollectiveExecutor::ExecuteAsync(OpKernelContext* ctx,
   }
 
   Tensor* output = ctx->mutable_output(0);
-  const Tensor* input = (col_params->instance.type == REDUCTION_COLLECTIVE ||
-                         col_params->instance.type == GATHER_COLLECTIVE ||
-                         col_params->instance.type == PERMUTE_COLLECTIVE ||
-                         (col_params->instance.type == BROADCAST_COLLECTIVE &&
-                          col_params->is_source))
-                            ? &ctx->input(0)
-                            : nullptr;
+  const Tensor* input =
+      (col_params->instance.type == REDUCTION_COLLECTIVE ||
+       col_params->instance.type == GATHER_COLLECTIVE ||
+       col_params->instance.type == PERMUTE_COLLECTIVE ||
+       col_params->instance.type == ALL_TO_ALL_COLLECTIVE ||
+       col_params->instance.type == REDUCE_SCATTER_COLLECTIVE ||
+       (col_params->instance.type == BROADCAST_COLLECTIVE &&
+        col_params->is_source))
+          ? &ctx->input(0)
+          : nullptr;
   CollectiveImplementationInterface* col_impl = nullptr;
-  Status status = CreateCollective(*col_params, &col_impl);
+  absl::Status status = CreateCollective(*col_params, &col_impl);
   if (!status.ok()) {
     done_safe(status);
     DCHECK_EQ(nullptr, col_impl);
@@ -327,20 +332,28 @@ void BaseCollectiveExecutor::ExecuteAsync(OpKernelContext* ctx,
   // Run on an unbounded work queue that can handle blocking work so as to not
   // starve executor threads.
   col_impl->Ref();
-  profiler::TraceMeProducer producer("BaseCollectiveExecutor::ExecuteAsync");
+  tsl::profiler::TraceMeProducer producer(
+      "BaseCollectiveExecutor::ExecuteAsync");
   RunClosure([col_impl, col_ctx, done_safe, ctx,
               context_id = producer.GetContextId()]() {
     core::ScopedUnref unref(col_impl);
-    profiler::TraceMeConsumer consumer(
-        [ctx] {
-          string op = profiler::TraceMeOp(ctx->op_kernel().name_view(),
-                                          ctx->op_kernel().type_string_view());
-          return profiler::TraceMeEncode(std::move(op),
-                                         {{"id", ctx->step_id()}});
+    tsl::profiler::TraceMeConsumer consumer(
+        [ctx, col_ctx] {
+          string op =
+              tsl::profiler::TraceMeOp(ctx->op_kernel().name_view(),
+                                       ctx->op_kernel().type_string_view());
+          return tsl::profiler::TraceMeEncode(
+              std::move(op),
+              {{"step_id", ctx->step_id()},
+               {"iter_id", ctx->frame_iter().iter_id},
+               {"frame_id", ctx->frame_iter().frame_id},
+               {"instance_key", col_ctx->col_params->instance.instance_key},
+               {"group_key", col_ctx->col_params->group.group_key},
+               {"collective", col_ctx->col_params->instance.type}});
         },
         context_id);
     col_impl->Ref();
-    col_impl->Run([col_impl, col_ctx, done_safe](const Status& s) {
+    col_impl->Run([col_impl, col_ctx, done_safe](const absl::Status& s) {
       core::ScopedUnref unref(col_impl);
       done_safe(s);
     });
@@ -357,11 +370,15 @@ void BaseCollectiveExecutor::CompleteParamsAsync(
   // timeout callback executes, done_safe will become a no-op and the timeout
   // callback is responsible for invoking done() at the end.
   const auto is_callback_called = std::make_shared<std::atomic<bool>>(false);
-  auto trace_id =
-      profiler::TraceMe::ActivityStart("CollectiveExecutor::CompleteParams");
+  int64_t trace_id = tsl::profiler::TraceMe::ActivityStart([cp]() {
+    return tsl::profiler::TraceMeEncode("CollectiveExecutor::CompleteParams",
+                                        {{"group_key", cp->group.group_key},
+                                         {"group_size", cp->group.group_size}});
+  });
+
   auto done_safe = [this, is_callback_called, cancel_mgr, trace_id,
-                    done](const Status& s) {
-    profiler::TraceMe::ActivityEnd(trace_id);
+                    done](const absl::Status& s) {
+    tsl::profiler::TraceMe::ActivityEnd(trace_id);
     bool called = is_callback_called->exchange(true);
     if (!called) {
       if (!s.ok() && !IsCancelled(cancel_mgr)) {
@@ -372,16 +389,16 @@ void BaseCollectiveExecutor::CompleteParamsAsync(
       done(GetStatus(s));
     }
   };
-  auto timeout_microseconds =
-      static_cast<int64>(cp->instance.impl_details.timeout_seconds * 1'000'000);
+  auto timeout_microseconds = static_cast<int64_t>(
+      cp->instance.impl_details.timeout_seconds * 1'000'000);
   if (timeout_microseconds > 0) {
     // TODO(xldrx): Share the timeout watchdog thread among collectives.
     SchedNonBlockingClosureAfter(
         timeout_microseconds, [this, is_callback_called, done]() {
           bool called = is_callback_called->exchange(true);
           if (!called) {
-            Status status(
-                error::DEADLINE_EXCEEDED,
+            absl::Status status(
+                absl::StatusCode::kDeadlineExceeded,
                 "Collective has timed out waiting for other workers.");
             StartAbort(status);
             done(status);
@@ -392,7 +409,7 @@ void BaseCollectiveExecutor::CompleteParamsAsync(
                                                 done_safe);
 }
 
-Status BaseCollectiveExecutor::CreateCollective(
+absl::Status BaseCollectiveExecutor::CreateCollective(
     const CollectiveParams& col_params,
     CollectiveImplementationInterface** col_impl) {
   VLOG(2) << "CreateCollective type "
@@ -445,7 +462,7 @@ Status BaseCollectiveExecutor::CreateCollective(
 
 bool BaseCollectiveExecutor::CheckDependencies(
     const CollectiveParams& col_params) {
-  for (int32 instance : col_params.instance.impl_details.dependencies) {
+  for (int32_t instance : col_params.instance.impl_details.dependencies) {
     auto find_iter = launched_.find(instance);
     if (find_iter == launched_.end() || find_iter->second != 0) {
       VLOG(1) << "Collective " << col_params.ToString()
@@ -470,8 +487,8 @@ void BaseCollectiveExecutor::UnblockDependencies(
   mutex_lock l(launch_mu_);
   if (launched_.find(col_params.instance.instance_key) == launched_.end()) {
     const string& task_name =
-        col_params.group.task_names[col_params.default_rank];
-    const int32 num_devices =
+        col_params.group.members[col_params.default_rank].task;
+    const int32_t num_devices =
         col_params.group.num_devices_per_task.at(task_name);
     launched_[col_params.instance.instance_key] = num_devices;
   }

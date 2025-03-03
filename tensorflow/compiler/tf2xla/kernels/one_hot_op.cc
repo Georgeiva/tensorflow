@@ -15,10 +15,17 @@ limitations under the License.
 
 // XLA implementation of OneHot operator.
 
-#include "tensorflow/compiler/tf2xla/literal_util.h"
+#include <cstdint>
+
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -56,7 +63,7 @@ class OneHotOp : public XlaOpKernel {
     const int axis = (axis_ == -1) ? indices_dims : axis_;
 
     // The one-hot dimension.
-    int64 depth;
+    int64_t depth;
     OP_REQUIRES_OK(ctx, ctx->ConstantInputAsIntScalar(1, &depth));
     OP_REQUIRES(
         ctx, depth >= 0,
@@ -73,7 +80,8 @@ class OneHotOp : public XlaOpKernel {
  private:
   int32 axis_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(OneHotOp);
+  OneHotOp(const OneHotOp&) = delete;
+  void operator=(const OneHotOp&) = delete;
 };
 
 REGISTER_XLA_OP(Name("OneHot").CompileTimeConstantInput("depth"), OneHotOp);

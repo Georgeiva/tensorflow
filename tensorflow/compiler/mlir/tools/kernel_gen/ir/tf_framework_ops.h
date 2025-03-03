@@ -18,13 +18,20 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_IR_TF_FRAMEWORK_OPS_H_
 #define TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_IR_TF_FRAMEWORK_OPS_H_
 
+#include "absl/status/status.h"
+#include "mlir/Bytecode/BytecodeOpInterface.h"  // from @llvm-project
+#include "mlir/Dialect/Bufferization/IR/AllocationOpInterface.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Dialect.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/IR/OpDefinition.h"  // from @llvm-project
 #include "mlir/IR/OpImplementation.h"  // from @llvm-project
+#include "mlir/IR/TypeSupport.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/Interfaces/ControlFlowInterfaces.h"  // from @llvm-project
 #include "mlir/Interfaces/SideEffectInterfaces.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tools/kernel_gen/ir/tf_status.h.inc"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
 
@@ -38,9 +45,18 @@ class OpKernelContextType
     : public Type::TypeBase<OpKernelContextType, Type, TypeStorage> {
  public:
   using Base::Base;
+  static constexpr StringLiteral name =
+      "kernel_gen.tf_framework.op_kernel_context";
 };
 
-::tensorflow::error::Code ConvertAttrToEnumValue(ErrorCode error_code);
+class JITCallableType
+    : public Type::TypeBase<JITCallableType, Type, TypeStorage> {
+ public:
+  using Base::Base;
+  static constexpr StringLiteral name = "kernel_gen.tf_framework.jit_callable";
+};
+
+absl::StatusCode ConvertAttrToEnumValue(ErrorCode error_code);
 
 }  // namespace tf_framework
 }  // namespace kernel_gen

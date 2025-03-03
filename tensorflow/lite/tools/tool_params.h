@@ -94,7 +94,7 @@ class TypedToolParam : public ToolParam {
     has_value_set_ = true;
   }
 
-  T Get() const { return value_; }
+  const T& Get() const { return value_; }
 
   void Set(const ToolParam& other) override {
     Set(other.AsConstTyped<T>()->Get());
@@ -116,6 +116,8 @@ class ToolParams {
   void AddParam(const std::string& name, std::unique_ptr<ToolParam> value) {
     params_[name] = std::move(value);
   }
+
+  void RemoveParam(const std::string& name) { params_.erase(name); }
 
   bool HasParam(const std::string& name) const {
     return params_.find(name) != params_.end();

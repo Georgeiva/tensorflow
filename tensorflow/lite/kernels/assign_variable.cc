@@ -15,7 +15,7 @@ limitations under the License.
 
 #include <stdint.h>
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/core/subgraph.h"
 #include "tensorflow/lite/experimental/resource/resource_variable.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
@@ -23,7 +23,7 @@ limitations under the License.
 
 namespace tflite {
 namespace ops {
-namespace custom {
+namespace builtin {
 namespace assign_variable {
 
 constexpr int kInputVariableId = 0;
@@ -71,6 +71,6 @@ TfLiteRegistration* Register_ASSIGN_VARIABLE() {
   return &r;
 }
 
-}  // namespace custom
+}  // namespace builtin
 }  // namespace ops
 }  // namespace tflite

@@ -35,18 +35,13 @@ class HierarchicalTreeBroadcaster : public CollectiveImplementationInterface {
   // The first subdiv comprises one device per task which gets the tensor on
   // each task.  Subdiv i+1 corresponds to a task-local tree-broadcast for task
   // i.
-  Status InitializeCollectiveParams(CollectiveParams* col_params) override;
+  absl::Status InitializeCollectiveParams(
+      CollectiveParams* col_params) override;
 
   // Initializes members of CollectiveContext not yet initialized, i.e. device
   // and device_locality.  Also saves the CollectiveContext in this object.
-  Status InitializeCollectiveContext(
+  absl::Status InitializeCollectiveContext(
       std::shared_ptr<CollectiveContext> col_ctx) override;
-
-  // No-op for hierarchical tree broadcaster.
-  Status InitializeCollectiveGroupRuntimeDetails(
-      CollGroupRuntimeDetails*) override {
-    return Status::OK();
-  }
 
   // Begins async execution of the hierarchical tree broadcast.
   // Must be called in a blockable thread.
@@ -84,7 +79,7 @@ class HierarchicalTreeBroadcaster : public CollectiveImplementationInterface {
   std::shared_ptr<CollectiveContext> col_ctx_;
   const CollectiveParams* col_params_;  // Not owned
   StatusCallback done_;
-  Status status_;
+  absl::Status status_;
   bool is_source_;
 };
 

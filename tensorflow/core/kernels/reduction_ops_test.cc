@@ -90,9 +90,9 @@ static void ReduceToScalar(::testing::benchmark::State& state,
   test::Benchmark(device, ToScalar<T>(reduce, num_x, num_y),
                   /*old_benchmark_api*/ false)
       .Run(state);
-  state.SetItemsProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y);
-  state.SetBytesProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y * sizeof(T));
 }
 
@@ -102,9 +102,9 @@ static void DoRowReduce(::testing::benchmark::State& state,
   test::Benchmark(device, RowReduce(reduce, num_x, num_y),
                   /*old_benchmark_api*/ false)
       .Run(state);
-  state.SetItemsProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y);
-  state.SetBytesProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y * sizeof(float));
 }
 
@@ -114,9 +114,9 @@ static void DoColReduce(::testing::benchmark::State& state,
   test::Benchmark(device, ColReduce(reduce, num_x, num_y),
                   /*old_benchmark_api*/ false)
       .Run(state);
-  state.SetItemsProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y);
-  state.SetBytesProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y * sizeof(float));
 }
 
@@ -126,9 +126,9 @@ static void Do3DYReduce(::testing::benchmark::State& state,
   test::Benchmark(device, ThreeDYReduce(reduce, num_x, num_y),
                   /*old_benchmark_api*/ false)
       .Run(state);
-  state.SetItemsProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y);
-  state.SetBytesProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y * sizeof(float));
 }
 
@@ -138,9 +138,9 @@ static void Do3DXZReduce(::testing::benchmark::State& state,
   test::Benchmark(device, ThreeDXZReduce(reduce, num_x, num_y),
                   /*old_benchmark_api*/ false)
       .Run(state);
-  state.SetItemsProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y);
-  state.SetBytesProcessed(static_cast<int64>(state.iterations()) * num_x *
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * num_x *
                           num_y * sizeof(float));
 }
 
@@ -247,5 +247,13 @@ static void BM_Bool2DToScalarGPU(::testing::benchmark::State& state) {
   ReduceToScalar<bool>(state, "gpu", "All", num_x, num_y);
 }
 BENCHMARK(BM_Bool2DToScalarGPU)->RangePair(2048, 8192, 2048, 8192);
+
+static void BM_Mean2DToScalarCPUBF16(::testing::benchmark::State& state) {
+  const int num_x = state.range(0);
+  const int num_y = state.range(1);
+
+  ReduceToScalar<bfloat16>(state, "cpu", "Mean", num_x, num_y);
+}
+BENCHMARK(BM_Mean2DToScalarCPUBF16)->RangePair(2048, 8192, 2048, 8192);
 
 }  // end namespace tensorflow

@@ -32,9 +32,9 @@ namespace tensorflow {
 // so that we will always "hop" after each read (except first).
 class FixedLengthRecordReader : public ReaderBase {
  public:
-  FixedLengthRecordReader(const string& node_name, int64 header_bytes,
-                          int64 record_bytes, int64 footer_bytes,
-                          int64 hop_bytes, const string& encoding, Env* env)
+  FixedLengthRecordReader(const string& node_name, int64_t header_bytes,
+                          int64_t record_bytes, int64_t footer_bytes,
+                          int64_t hop_bytes, const string& encoding, Env* env)
       : ReaderBase(
             strings::StrCat("FixedLengthRecordReader '", node_name, "'")),
         header_bytes_(header_bytes),
@@ -48,7 +48,7 @@ class FixedLengthRecordReader : public ReaderBase {
   // On success:
   // * buffered_inputstream_ != nullptr,
   // * buffered_inputstream_->Tell() == header_bytes_
-  Status OnWorkStartedLocked() override {
+  absl::Status OnWorkStartedLocked() override {
     record_number_ = 0;
 
     lookahead_cache_.clear();
@@ -69,16 +69,16 @@ class FixedLengthRecordReader : public ReaderBase {
     // header_bytes_ is always skipped.
     TF_RETURN_IF_ERROR(buffered_inputstream_->SkipNBytes(header_bytes_));
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status OnWorkFinishedLocked() override {
+  absl::Status OnWorkFinishedLocked() override {
     buffered_inputstream_.reset(nullptr);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status ReadLocked(tstring* key, tstring* value, bool* produced,
-                    bool* at_end) override {
+  absl::Status ReadLocked(tstring* key, tstring* value, bool* produced,
+                          bool* at_end) override {
     // We will always "hop" the hop_bytes_ except the first record
     // where record_number_ == 0
     if (record_number_ != 0) {
@@ -90,29 +90,30 @@ class FixedLengthRecordReader : public ReaderBase {
         // If hop_bytes_ is larger than the cached data, we clean up
         // the cache, then skip hop_bytes_ - cache_size from the file
         // as the cache_size has been skipped through cache.
-        int64 cache_size = lookahead_cache_.size();
+        int64_t cache_size = lookahead_cache_.size();
         lookahead_cache_.clear();
-        Status s = buffered_inputstream_->SkipNBytes(hop_bytes_ - cache_size);
+        absl::Status s =
+            buffered_inputstream_->SkipNBytes(hop_bytes_ - cache_size);
         if (!s.ok()) {
           if (!errors::IsOutOfRange(s)) {
             return s;
           }
           *at_end = true;
-          return Status::OK();
+          return absl::OkStatus();
         }
       }
     }
 
     // Fill up lookahead_cache_ to record_bytes_ + footer_bytes_
     int bytes_to_read = record_bytes_ + footer_bytes_ - lookahead_cache_.size();
-    Status s = buffered_inputstream_->ReadNBytes(bytes_to_read, value);
+    absl::Status s = buffered_inputstream_->ReadNBytes(bytes_to_read, value);
     if (!s.ok()) {
       value->clear();
       if (!errors::IsOutOfRange(s)) {
         return s;
       }
       *at_end = true;
-      return Status::OK();
+      return absl::OkStatus();
     }
     lookahead_cache_.append(*value, 0, bytes_to_read);
     value->clear();
@@ -124,10 +125,10 @@ class FixedLengthRecordReader : public ReaderBase {
     *produced = true;
     ++record_number_;
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status ResetLocked() override {
+  absl::Status ResetLocked() override {
     record_number_ = 0;
     buffered_inputstream_.reset(nullptr);
     lookahead_cache_.clear();
@@ -138,10 +139,10 @@ class FixedLengthRecordReader : public ReaderBase {
 
  private:
   enum { kBufferSize = 256 << 10 /* 256 kB */ };
-  const int64 header_bytes_;
-  const int64 record_bytes_;
-  const int64 footer_bytes_;
-  const int64 hop_bytes_;
+  const int64_t header_bytes_;
+  const int64_t record_bytes_;
+  const int64_t footer_bytes_;
+  const int64_t hop_bytes_;
   // The purpose of lookahead_cache_ is to allows "one-pass" processing
   // without revisit previous processed data of the stream. This is needed
   // because certain compression like zlib does not allow random access
@@ -150,7 +151,7 @@ class FixedLengthRecordReader : public ReaderBase {
   // record_bytes_ + footer_bytes_
   string lookahead_cache_;
   Env* const env_;
-  int64 record_number_;
+  int64_t record_number_;
   string encoding_;
   // must outlive buffered_inputstream_
   std::unique_ptr<RandomAccessFile> file_;
@@ -163,8 +164,8 @@ class FixedLengthRecordReaderOp : public ReaderOpKernel {
  public:
   explicit FixedLengthRecordReaderOp(OpKernelConstruction* context)
       : ReaderOpKernel(context) {
-    int64 header_bytes = -1, record_bytes = -1, footer_bytes = -1,
-          hop_bytes = -1;
+    int64_t header_bytes = -1, record_bytes = -1, footer_bytes = -1,
+            hop_bytes = -1;
     OP_REQUIRES_OK(context, context->GetAttr("header_bytes", &header_bytes));
     OP_REQUIRES_OK(context, context->GetAttr("record_bytes", &record_bytes));
     OP_REQUIRES_OK(context, context->GetAttr("footer_bytes", &footer_bytes));

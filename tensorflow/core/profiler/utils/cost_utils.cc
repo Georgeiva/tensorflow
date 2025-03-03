@@ -19,12 +19,13 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/log.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
-#include "absl/types/optional.h"
+#include "xla/tsl/profiler/utils/tf_op_utils.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -33,7 +34,6 @@ limitations under the License.
 #include "tensorflow/core/grappler/costs/op_performance_data.pb.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/profiler/utils/tf_op_utils.h"
 #include "tensorflow/core/profiler/utils/xplane_schema.h"
 #include "tensorflow/core/profiler/utils/xplane_visitor.h"
 
@@ -86,14 +86,13 @@ grappler::DeviceInfo TfOpRoofLineCostEstimator::GetDeviceInfo(
 
 TfOpRoofLineCostEstimator::OpRoofLineStats TfOpRoofLineCostEstimator::Predict(
     const XEventVisitor& event) {
-  TfOp tf_op;
+  tsl::profiler::TfOp tf_op;
   absl::string_view tensor_shapes;
   event.ForEachStat([&](const XStatVisitor& stat) {
     if (!stat.Type().has_value()) return;
     switch (stat.Type().value()) {
       case StatType::kTfOp:
-      case StatType::kLevel0:  // old way to deliver tf_op info.
-        tf_op = ParseTfOpFullname(stat.StrOrRefValue());
+        tf_op = tsl::profiler::ParseTfOpFullname(stat.StrOrRefValue());
         break;
       case StatType::kTensorShapes:
         tensor_shapes = stat.StrOrRefValue();
@@ -109,7 +108,8 @@ TfOpRoofLineCostEstimator::OpRoofLineStats TfOpRoofLineCostEstimator::Predict(
   grappler::OpContext op_context;
   op_context.name = std::string(tf_op.type);
   op_context.op_info.set_op(op_context.name);
-  for (absl::string_view tensor : ParseTensorShapes(tensor_shapes)) {
+  for (absl::string_view tensor :
+       tsl::profiler::ParseTensorShapes(tensor_shapes)) {
     *op_context.op_info.add_inputs() = GetTensorProperties(tensor);
   }
   grappler::Costs costs = PredictCosts(op_context);

@@ -13,19 +13,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/c/eager/parallel_device/parallel_device.h"
-
 #include <array>
+#include <memory>
+#include <string>
+#include <vector>
 
+#include <gmock/gmock.h>
 #include "tensorflow/c/c_api.h"
 #include "tensorflow/c/c_api_experimental.h"
 #include "tensorflow/c/eager/c_api.h"
-#include "tensorflow/c/eager/c_api_experimental.h"
 #include "tensorflow/c/eager/immediate_execution_tensor_handle.h"
+#include "tensorflow/c/eager/parallel_device/parallel_device_lib.h"
 #include "tensorflow/c/eager/parallel_device/parallel_device_testlib.h"
 #include "tensorflow/c/eager/tfe_tensorhandle_internal.h"
+#include "tensorflow/c/tf_buffer.h"
+#include "tensorflow/c/tf_datatype.h"
+#include "tensorflow/c/tf_status.h"
 #include "tensorflow/c/tf_status_internal.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 
 // NOTE(allenl): These tests currently go through TFE_Execute and so are
@@ -185,10 +190,10 @@ TEST(PARALLEL_DEVICE, TestDifferentShapes) {
   std::array<TFE_TensorHandle*, 2> components{size_two.get(), size_three.get()};
   TensorHandlePtr combined_value = CreatePerDeviceValues(
       context.get(), components, device_name, status.get());
-  // We can create the handle, but fetching the shape is an error at the moment.
   ASSERT_EQ(TF_GetCode(status.get()), TF_OK) << TF_Message(status.get());
-  TFE_TensorHandleNumDims(combined_value.get(), status.get());
-  ASSERT_TRUE(TF_GetCode(status.get()) == TF_UNIMPLEMENTED);
+  int num_axes = TFE_TensorHandleNumDims(combined_value.get(), status.get());
+  ASSERT_EQ(TF_GetCode(status.get()), TF_OK) << TF_Message(status.get());
+  EXPECT_EQ(num_axes, 1);
 }
 
 TEST(PARALLEL_DEVICE, TestNestedParallelDevices) {

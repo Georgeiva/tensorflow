@@ -14,17 +14,11 @@
 # ==============================================================================
 """Tests for tf numpy array methods."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import itertools
 import operator
 import sys
 from absl.testing import parameterized
 import numpy as np
-from six.moves import range
-from six.moves import zip
 
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
@@ -86,7 +80,7 @@ class ArrayCreationTest(test.TestCase):
 
     self.all_types = [
         int, float, np.int16, np.int32, np.int64, np.float16, np.float32,
-        np.float64
+        np.float64, np.complex64, np.complex128
     ]
 
     source_array_data = [
@@ -302,7 +296,7 @@ class ArrayCreationTest(test.TestCase):
                                                    [True, False]):
       self.match(
           np_array_ops.array(a, dtype=dtype, ndmin=ndmin, copy=copy),
-          np.array(a, dtype=dtype, ndmin=ndmin, copy=copy))
+          np.array(a, dtype=dtype, ndmin=ndmin))
 
     zeros_list = np_array_ops.zeros(5)
 
@@ -553,6 +547,11 @@ class ArrayCreationTest(test.TestCase):
                                     [10, 3])
     self.assertAllEqual(expected, a)
 
+  def testVander(self):
+    tf_res = np_array_ops.vander([-1.0, 1.0], N=0, increasing=False)
+    np_res = np.vander(np.array([-1.0, 1.0]), N=0)
+    self.assertAllEqual(tf_res, np_res)
+
 
 class ArrayMethodsTest(test.TestCase):
 
@@ -601,7 +600,7 @@ class ArrayMethodsTest(test.TestCase):
           self.match(
               np_array_ops.compress(arg1, arg2, *args, **kwargs),
               np.compress(
-                  np.asarray(arg1).astype(np.bool), arg2, *args, **kwargs))
+                  np.asarray(arg1).astype(np.bool_), arg2, *args, **kwargs))
 
     run_test([True], 5)
     run_test([False], 5)
@@ -744,6 +743,62 @@ class ArrayMethodsTest(test.TestCase):
     run_test(
         np.arange(8).reshape((2, 2, 2)).tolist(), axis=(2, 0), keepdims=True)
     self.assertRaises(ValueError, np_array_ops.mean, np.ones([2, 2]), out=[])
+
+  def testStd(self):
+
+    def run_test(arr, *args, **kwargs):
+      axis = kwargs.pop('axis', None)
+      for fn1 in self.array_transforms:
+        for fn2 in self.array_transforms:
+          arr_arg = fn1(arr)
+          axis_arg = fn2(axis) if axis is not None else None
+          self.match(
+              np_array_ops.std(arr_arg, axis=axis_arg, *args, **kwargs),
+              np.std(arr_arg, axis=axis, *args, **kwargs))
+
+    run_test([1, 2, 1])
+    run_test([1., 2., 1.])
+    run_test([1.j, 2., 1.j])
+    run_test([[1, 2], [3, 4]], axis=1)
+    run_test([[1, 2], [3, 4]], axis=0)
+    run_test([[1, 2], [3, 4]], axis=-1)
+    run_test([[1, 2], [3, 4]], axis=-2)
+    run_test([[1, 2], [3, 4]], axis=(0, 1))
+    run_test(np.arange(8).reshape((2, 2, 2)).tolist(), axis=(0, 2))
+    run_test(
+        np.arange(8).reshape((2, 2, 2)).tolist(), axis=(0, 2), keepdims=True)
+    run_test(np.arange(8).reshape((2, 2, 2)).tolist(), axis=(2, 0))
+    run_test(
+        np.arange(8).reshape((2, 2, 2)).tolist(), axis=(2, 0), keepdims=True)
+
+  def testVar(self):
+
+    def run_test(arr, *args, **kwargs):
+      axis = kwargs.pop('axis', None)
+      for fn1 in self.array_transforms:
+        for fn2 in self.array_transforms:
+          arr_arg = fn1(arr)
+          axis_arg = fn2(axis) if axis is not None else None
+          self.match(
+              np_array_ops.var(arr_arg, axis=axis_arg, *args, **kwargs),
+              np.var(arr_arg, axis=axis, *args, **kwargs))
+
+    run_test([1, 2, 1])
+    run_test([1., 2., 1.])
+    run_test([1.j, 2., 1.j])
+    run_test([1., 2., 1.], dtype=np.int64)
+    run_test([[1, 2], [3, 4]], axis=1)
+    run_test([[1, 2], [3, 4]], axis=0)
+    run_test([[1, 2], [3, 4]], axis=-1)
+    run_test([[1, 2], [3, 4]], axis=-2)
+    run_test([[1, 2], [3, 4]], axis=(0, 1))
+    run_test(np.arange(8).reshape((2, 2, 2)).tolist(), axis=(0, 2))
+    run_test(
+        np.arange(8).reshape((2, 2, 2)).tolist(), axis=(0, 2), keepdims=True)
+    run_test(np.arange(8).reshape((2, 2, 2)).tolist(), axis=(2, 0))
+    run_test(
+        np.arange(8).reshape((2, 2, 2)).tolist(), axis=(2, 0), keepdims=True)
+    self.assertRaises(ValueError, np_array_ops.var, np.ones([2, 2]), out=[])
 
   def testProd(self):
 
@@ -1043,6 +1098,14 @@ class ArrayMethodsTest(test.TestCase):
         np.take(a, indices, axis=axis),
         np_array_ops.take(a, indices, axis=axis))
 
+  def testTakeAlongAxis(self):
+    rng = np.random.default_rng()
+    x = rng.standard_normal((2, 3)).astype(np.float32)
+    ind = rng.integers(0, 3, (2, 5)).astype(np.int64)
+    out_expected = np.take_along_axis(x, ind, axis=1)
+    out = np_array_ops.take_along_axis(x, ind, axis=1)
+    self.assertAllEqual(out, out_expected)
+
   def testWhere(self):
     self.assertAllEqual([[1.0, 1.0], [1.0, 1.0]],
                         np_array_ops.where([True], [1.0, 1.0],
@@ -1107,6 +1170,14 @@ class ArrayMethodsTest(test.TestCase):
     y = np_array_ops.split(x, [3, 5, 6, 10])
     self.assertListEqual([([0, 1, 2]), ([3, 4]), ([5]), ([6, 7]), ([])], y)
 
+  def testHSplitBecomesVsplitFor1DInput(self):
+    @def_function.function
+    def f(arr):
+      return np_array_ops.hsplit(arr, 2)
+
+    x = np_array_ops.arange(4)
+    self.assertListEqual([[0, 1], [2, 3]], f(x))
+
   def testSign(self):
     state = np.random.RandomState(0)
     test_types = [np.float16, np.float32, np.float64, np.int32, np.int64,
@@ -1115,7 +1186,7 @@ class ArrayMethodsTest(test.TestCase):
 
     for dtype in test_types:
       for shape in test_shapes:
-        if np.issubdtype(dtype, np.complex):
+        if np.issubdtype(dtype, np.complexfloating):
           arr = (np.asarray(state.randn(*shape) * 100, dtype=dtype) +
                  1j * np.asarray(state.randn(*shape) * 100, dtype=dtype))
         else:
@@ -1206,8 +1277,53 @@ class ArrayMathTest(test.TestCase, parameterized.TestCase):
     else:
       self.assertAllEqual(result, expected_result)
 
+
+class StringArrayTest(test.TestCase, parameterized.TestCase):
+
+  StringParameters = parameterized.named_parameters(  # pylint: disable=invalid-name
+      # Tensorflow always encodes python string into bytes, regardless of
+      # requested dtype.
+      ('str_u8', 'abcde\U0001f005', 'U8', b'abcde\xf0\x9f\x80\x85'),
+      ('str_s8', 'abcde\U0001f005', 'S8', b'abcde\xf0\x9f\x80\x85'),
+      ('str_none', 'abcde\U0001f005', None, b'abcde\xf0\x9f\x80\x85'),
+      ('zstr_u8', '\0abcde\U0001f005', 'U8', b'\0abcde\xf0\x9f\x80\x85'),
+      ('zstr_s8', '\0abcde\U0001f005', 'S8', b'\0abcde\xf0\x9f\x80\x85'),
+      ('zstr_none', '\0abcde\U0001f005', None, b'\0abcde\xf0\x9f\x80\x85'),
+      ('bytes_u8', b'abcdef', 'U8', b'abcdef'),
+      ('bytes_s8', b'abcdef', 'S8', b'abcdef'),
+      ('bytes_none', b'abcdef', None, b'abcdef'),
+      ('zbytes_u8', b'\0abcdef', 'U8', b'\0abcdef'),
+      ('zbytes_s8', b'\0abcdef', 'S8', b'\0abcdef'),
+      ('zbytes_none', b'\0abcdef', None, b'\0abcdef'),
+  )
+
+  @StringParameters
+  def testArray(self, a, dtype, a_as_bytes):
+    b = np_array_ops.array(a, dtype=dtype)
+    self.assertIsInstance(b.numpy(), bytes)
+    self.assertEqual(b.numpy(), a_as_bytes)
+
+  @StringParameters
+  def testAsArray(self, a, dtype, a_as_bytes):
+    b = np_array_ops.asarray(a, dtype=dtype)
+    self.assertIsInstance(b.numpy(), bytes)
+    self.assertEqual(b.numpy(), a_as_bytes)
+
+  @StringParameters
+  def testZerosLike(self, a, dtype, unused_a_as_bytes):
+    b = np_array_ops.zeros_like(a, dtype=dtype)
+    self.assertIsInstance(b.numpy(), bytes)
+    self.assertEqual(b.numpy(), b'')
+
+  @StringParameters
+  def testEmptyLike(self, a, dtype, unused_a_as_bytes):
+    b = np_array_ops.empty_like(a, dtype=dtype)
+    self.assertIsInstance(b.numpy(), bytes)
+    self.assertEqual(b.numpy(), b'')
+
+
 if __name__ == '__main__':
   ops.enable_eager_execution()
-  ops.enable_numpy_style_type_promotion()
+  ops.set_dtype_conversion_mode('legacy')
   np_math_ops.enable_numpy_methods_on_tensor()
   test.main()

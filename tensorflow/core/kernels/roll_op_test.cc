@@ -176,8 +176,8 @@ TEST_F(RollOpTest, Simple_TwoD64) {
   // Feed and run
   AddInputFromArray<float>(TensorShape({5, 3}),
                            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14});
-  AddInputFromArray<int64>(TensorShape({2}), {-1, 4});
-  AddInputFromArray<int64>(TensorShape({2}), {0, 1});
+  AddInputFromArray<int64_t>(TensorShape({2}), {-1, 4});
+  AddInputFromArray<int64_t>(TensorShape({2}), {0, 1});
   TF_ASSERT_OK(RunOpKernel());
 
   // Check the output.
@@ -194,8 +194,8 @@ TEST_F(RollOpTest, Simple_TwoD64_NoMemcpy) {
   AddInputFromArray<tstring>(TensorShape({5, 3}),
                              {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
                               "k", "l", "m", "n", "o"});
-  AddInputFromArray<int64>(TensorShape({2}), {-1, 4});
-  AddInputFromArray<int64>(TensorShape({2}), {0, 1});
+  AddInputFromArray<int64_t>(TensorShape({2}), {-1, 4});
+  AddInputFromArray<int64_t>(TensorShape({2}), {0, 1});
   TF_ASSERT_OK(RunOpKernel());
 
   // Check the output.
@@ -211,8 +211,8 @@ TEST_F(RollOpTest, Simple_ThreeD64) {
   // Feed and run
   AddInputFromArray<float>(TensorShape({4, 1, 3}),
                            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11});
-  AddInputFromArray<int64>(TensorShape({3}), {4, 3, 2});
-  AddInputFromArray<int64>(TensorShape({3}), {0, 1, 2});
+  AddInputFromArray<int64_t>(TensorShape({3}), {4, 3, 2});
+  AddInputFromArray<int64_t>(TensorShape({3}), {0, 1, 2});
   TF_ASSERT_OK(RunOpKernel());
 
   // Check the output.
@@ -228,8 +228,8 @@ TEST_F(RollOpTest, Simple_ThreeD64_NoMemcpy) {
   AddInputFromArray<tstring>(
       TensorShape({4, 1, 3}),
       {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"});
-  AddInputFromArray<int64>(TensorShape({3}), {4, 3, 2});
-  AddInputFromArray<int64>(TensorShape({3}), {0, 1, 2});
+  AddInputFromArray<int64_t>(TensorShape({3}), {4, 3, 2});
+  AddInputFromArray<int64_t>(TensorShape({3}), {0, 1, 2});
   TF_ASSERT_OK(RunOpKernel());
 
   // Check the output.
@@ -373,7 +373,7 @@ TEST_F(RollOpTest, Error_InputMustBeVectorOrHigher) {
   AddInputFromArray<float>(TensorShape({}), {7});
   AddInputFromArray<int32>(TensorShape({}), {1});
   AddInputFromArray<int32>(TensorShape({}), {0});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_TRUE(absl::StrContains(s.ToString(), "input must be 1-D or higher"))
       << s;
 }
@@ -385,7 +385,7 @@ TEST_F(RollOpTest, Error_AxisMustBeScalarOrVector) {
   AddInputFromArray<float>(TensorShape({2, 2}), {1, 2, 3, 4});
   AddInputFromArray<int32>(TensorShape({}), {1});
   AddInputFromArray<int32>(TensorShape({1, 2}), {0, 1});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_TRUE(
       absl::StrContains(s.ToString(), "axis must be a scalar or a 1-D vector"))
       << s;
@@ -398,7 +398,7 @@ TEST_F(RollOpTest, Error_ShiftMustBeScalarOrVector) {
   AddInputFromArray<float>(TensorShape({2, 2}), {1, 2, 3, 4});
   AddInputFromArray<int32>(TensorShape({1, 2}), {0, 1});
   AddInputFromArray<int32>(TensorShape({}), {1});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_TRUE(
       absl::StrContains(s.ToString(), "shift must be a scalar or a 1-D vector"))
       << s;
@@ -411,7 +411,7 @@ TEST_F(RollOpTest, Error_ShiftAndAxisMustBeSameSize) {
   AddInputFromArray<float>(TensorShape({2, 2}), {1, 2, 3, 4});
   AddInputFromArray<int32>(TensorShape({1}), {1});
   AddInputFromArray<int32>(TensorShape({2}), {0, 1});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_TRUE(
       absl::StrContains(s.ToString(), "shift and axis must have the same size"))
       << s;
@@ -424,7 +424,7 @@ TEST_F(RollOpTest, Error_AxisOutOfRange) {
   AddInputFromArray<float>(TensorShape({4}), {1, 2, 3, 4});
   AddInputFromArray<int32>(TensorShape({}), {1});
   AddInputFromArray<int32>(TensorShape({}), {1});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_TRUE(absl::StrContains(s.ToString(), "is out of range")) << s;
 }
 
@@ -458,8 +458,8 @@ static Graph* RollGraph(const TensorShape& shape, int isd) {
     TensorShape shape{rows, columns};                                          \
     test::Benchmark(#DEVICE, RollGraph(shape, 0), /*old_benchmark_api*/ false) \
         .Run(state);                                                           \
-    const int64 num_items =                                                    \
-        static_cast<int64>(state.iterations()) * shape.num_elements();         \
+    const int64_t num_items =                                                  \
+        static_cast<int64_t>(state.iterations()) * shape.num_elements();       \
     state.SetItemsProcessed(num_items);                                        \
     state.SetBytesProcessed(num_items * sizeof(float));                        \
   }                                                                            \
@@ -478,8 +478,8 @@ static Graph* RollGraph(const TensorShape& shape, int isd) {
     TensorShape shape{rows, columns};                                          \
     test::Benchmark(#DEVICE, RollGraph(shape, 1), /*old_benchmark_api*/ false) \
         .Run(state);                                                           \
-    const int64 num_items =                                                    \
-        static_cast<int64>(state.iterations()) * shape.num_elements();         \
+    const int64_t num_items =                                                  \
+        static_cast<int64_t>(state.iterations()) * shape.num_elements();       \
     state.SetItemsProcessed(num_items);                                        \
     state.SetBytesProcessed(num_items * sizeof(float));                        \
   }                                                                            \

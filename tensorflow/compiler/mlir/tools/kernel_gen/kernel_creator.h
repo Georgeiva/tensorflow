@@ -22,25 +22,35 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_KERNEL_CREATOR_H_
 #define TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_KERNEL_CREATOR_H_
 
+#include <cstdint>
+#include <string>
 #include <utility>
 
+#include "absl/status/statusor.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "tensorflow/compiler/xla/statusor.h"
+#include "mlir/IR/OwningOpRef.h"  // from @llvm-project
+#include "tensorflow/core/platform/statusor.h"
 
 namespace tensorflow {
 namespace kernel_gen {
 
+// Parses tf_code to create a module. An MLIRContext is taken in case any
+// unexpected dialects are needed.
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> SetupContextAndParseModule(
+    mlir::MLIRContext& context, llvm::StringRef tf_code);
+
 // Converts TF code to LLVM with or without GPU support.
-xla::StatusOr<mlir::OwningModuleRef> GenerateKernelForTfCode(
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GenerateKernelForHloCode(
     mlir::MLIRContext& context, llvm::StringRef tf_code,
     llvm::ArrayRef<std::string> architectures,
     llvm::ArrayRef<int64_t> tile_sizes, llvm::ArrayRef<int64_t> unroll_factors,
-    int64_t max_supported_rank, bool embed_memref_prints = false,
-    bool generate_fatbin = true, bool print_ptx = false,
-    bool enable_ftz = false, bool cpu_codegen = false);
+    bool print_ptx, bool print_llvmir, bool enable_ftz, bool index_64bit,
+    bool jit_compile, bool jit_i64_indexed_for_large_tensors,
+    bool apply_cl_options);
 
 }  // namespace kernel_gen
 }  // namespace tensorflow

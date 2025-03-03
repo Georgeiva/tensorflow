@@ -13,16 +13,14 @@
 # limitations under the License.
 # ==============================================================================
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import threading
 
 from absl.testing import parameterized
-
+from tensorflow.python.checkpoint import checkpoint as tracking
+from tensorflow.python.checkpoint import checkpoint_management
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.distribute.cluster_resolver import tpu_cluster_resolver
 from tensorflow.python.distribute.parallel_device import parallel_device
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
@@ -33,17 +31,15 @@ from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.module import module
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import collective_ops
-from tensorflow.python.ops import control_flow_ops
-from tensorflow.python.ops import gen_resource_variable_ops
+from tensorflow.python.ops import control_flow_switch_case
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import stateful_random_ops
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import test
 from tensorflow.python.saved_model import load
 from tensorflow.python.saved_model import save
-from tensorflow.python.training import checkpoint_management
-from tensorflow.python.training.tracking import util as tracking
 from tensorflow.python.util import nest
 
 # When running collectives asynchronously, we need to give each parallel device
@@ -88,8 +84,8 @@ class _Dense(module.Module):
     if self.kernel is None:
       self.kernel = variables.Variable(
           array_ops.ones(
-              array_ops.stack([self.output_size,
-                               array_ops.shape(x)[-1]])))
+              array_ops_stack.stack([self.output_size,
+                                     array_ops.shape(x)[-1]])))
       self.bias = variables.Variable(array_ops.ones([self.output_size]))
     return math_ops.matmul(x, self.kernel, transpose_b=True) + self.bias
 
@@ -101,6 +97,7 @@ class _VirtualDeviceTestCase(test.TestCase):
     ctx = context.context()
     if ctx.list_physical_devices("TPU"):
       self.device_type = "TPU"
+      tpu_cluster_resolver.initialize_tpu_system()
     elif ctx.list_physical_devices("GPU"):
       self.device_type = "GPU"
       gpus = ctx.list_physical_devices(self.device_type)
@@ -147,10 +144,37 @@ class ParallelDeviceTests(_VirtualDeviceTestCase, parameterized.TestCase):
           "First pack non-parallel tensors for each device"):
         a1 + a2  # pylint:disable=pointless-statement
 
-  def test_string_representation(self):
+  def test_error_message_length(self):
+    x = array_ops.ones([3, 3, 3, 3, 3, 3])
+
+    with self.device:
+      with self.assertRaisesRegex(
+          errors.InvalidArgumentError,
+          r"TensorHandle\((.|\n){1,150}\[...\], shape="):
+        array_ops.identity(x)
+
+  def test_one_replica_eager_control_flow(self):
+    device = parallel_device.ParallelDevice(components=[
+        "/job:localhost/device:{}:0".format(self.device_type),
+    ])
+    x = constant_op.constant([2, 3, 4])
+    with device:
+      x = device.pack([x])
+      if math_ops.reduce_any(math_ops.equal(x, constant_op.constant(4))):
+        y = constant_op.constant(1)
+      else:
+        y = constant_op.constant(2)
+    self.assertAllEqual([1], device.unpack(y))
+
+  @parameterized.named_parameters(
+      ("variable", variables.Variable),
+      ("tensor", lambda x: x))
+  def test_string_representation(self, transform):
     x = self.device.pack(
         [constant_op.constant([5., 6.]),
          constant_op.constant([6., 7.])])
+    with self.device:
+      x = transform(x)
     parallel_str = str(x)
     self.assertIn("5", parallel_str)
     self.assertIn("7", parallel_str)
@@ -251,51 +275,6 @@ class ParallelDeviceTests(_VirtualDeviceTestCase, parameterized.TestCase):
       context._reset_context()
       config.set_synchronous_execution(previous)
 
-  @parameterized.named_parameters(
-      [("RunFunctionsEagerly", True),
-       ("", False)])
-  def test_cond(self, run_functions_eagerly):
-    try:
-      def_function.run_functions_eagerly(run_functions_eagerly)
-      pred = self.device.pack(
-          [constant_op.constant(True), constant_op.constant(False)])
-      capture = self.device.pack(
-          [constant_op.constant([1.]), constant_op.constant([2.])])
-      with self.device:
-        result = control_flow_ops.cond(
-            pred,
-            def_function.function(lambda: capture * 2.),
-            def_function.function(lambda: capture * 4.))
-      self.assertAllClose(
-          [[2.], [8.]], self.device.unpack(result))
-    finally:
-      def_function.run_functions_eagerly(False)
-
-  def test_cond_with_variable(self):
-    pred = self.device.pack(
-        [constant_op.constant(True), constant_op.constant(False)])
-    capture = self.device.pack(
-        [constant_op.constant([1.]), constant_op.constant([2.])])
-    with self.device:
-      v = None
-      @def_function.function
-      def true_branch():
-        nonlocal v
-        if v is None:
-          v = variables.Variable(constant_op.constant(2.))
-        return v * capture
-      result = control_flow_ops.cond(
-          pred, true_branch, def_function.function(lambda: capture * 4.))
-    self.assertAllClose(
-        [[2.], [8.]], self.device.unpack(result))
-    self.assertAllClose(
-        [2., 2.], self.device.unpack(v))
-    # There are two unique variable handles with separate storage.
-    h1, _ = self.device.unpack(v.handle)
-    gen_resource_variable_ops.assign_variable_op(h1, constant_op.constant(3.))
-    self.assertAllClose(
-        [3., 2.], self.device.unpack(v))
-
   def test_collective_broadcast_in_function(self):
     if self.device_type == "TPU":
       self.skipTest("ParallelDevice broadcast collectives on TPUs need work")
@@ -317,8 +296,11 @@ class ParallelDeviceTests(_VirtualDeviceTestCase, parameterized.TestCase):
             c.shape, c.dtype, group_size=2, group_key=1, instance_key=1)
         return r0
 
-      return control_flow_ops.switch_case(
-          device_id, branch_fns={0: send, 1: recv})
+      return control_flow_switch_case.switch_case(
+          device_id, branch_fns={
+              0: send,
+              1: recv
+          })
 
     with self.device:
       result = broadcast_send_recv(self.device.device_ids)
@@ -334,6 +316,8 @@ class ParallelDeviceTests(_VirtualDeviceTestCase, parameterized.TestCase):
       uses_parallel()
 
   def test_checkpointing(self):
+    self.skipTest("b/216201668: revisit parallel device and checkpointing.")
+
     prefix = os.path.join(self.get_temp_dir(), "ckpt")
     different_values = self.device.pack(
         [constant_op.constant(-1.),
@@ -383,7 +367,36 @@ class ParallelDeviceTests(_VirtualDeviceTestCase, parameterized.TestCase):
     self.assertEqual(4, next(component_iterators[1]).numpy())
     self.assertEqual(2, self.device.unpack(parallel_sample)[1].numpy())
 
+  def test_pack_structure(self):
+    x_parts = [{"a": constant_op.constant(float(i))}
+               for i in range(len(self.device.components))]
+    x = self.device.pack(x_parts)
+    self.assertAllClose([{"a": 0.}, {"a": 1.}], self.device.unpack(x))
+
+  def test_pack_variable_value(self):
+    x_parts = [variables.Variable(i)
+               for i in range(len(self.device.components))]
+    x = self.device.pack(x_parts)
+    with self.device:
+      x1 = self.device.pack(x_parts)
+    for v in x_parts:
+      v.assign(-10)  # Mutating the variable does not affect previous reads.
+    self.assertAllClose([0, 1], self.device.unpack(x))
+    self.assertAllClose([0, 1], self.device.unpack(x1))
+
+  def test_unpack_variable_value(self):
+    x_parts = [constant_op.constant(i)
+               for i in range(len(self.device.components))]
+    x = self.device.pack(x_parts)
+    with self.device:
+      v = variables.Variable(x)
+      v_unpacked = self.device.unpack(v)
+      v.assign(-10)  # Mutating the variable does not affect previous reads.
+    self.assertAllClose([0, 1], v_unpacked)
+
   def test_saved_model(self):
+    self.skipTest("b/216201668: revisit parallel device and saved model")
+
     different_values = self.device.pack(
         [constant_op.constant(-1.),
          constant_op.constant(3.)])
@@ -492,16 +505,14 @@ class ParallelDeviceTests(_VirtualDeviceTestCase, parameterized.TestCase):
          constant_op.constant([5.])])
     with self.device:
       y = x * 2.
-    with self.assertRaisesRegex(Exception,
-                                "components do not all have the same shape"):
-      y.shape  # pylint: disable=pointless-statement
+    self.assertEqual([None], y.shape.as_list())
     self.assertAllClose([[2., 4.], [10.]], self.device.unpack(y))
 
     different_axes = self.device.pack(
         [constant_op.constant([1., 2.]),
          constant_op.constant([[5.]])])
     with self.assertRaisesRegex(Exception,
-                                "components do not all have the same shape"):
+                                "components do not all have the same rank"):
       different_axes.shape  # pylint: disable=pointless-statement
 
 
@@ -580,6 +591,7 @@ class LayerTests(_VirtualDeviceTestCase):
     self.assertIn(self.device.components[1], final_kernels[1].backing_device)
 
   def test_training_loop(self):
+    self.skipTest("b/216201668: revisit parallel device and checkpointing")
     for _ in range(5):
       layer = _Dense(5)
       checkpoint = tracking.Checkpoint(layer=layer)

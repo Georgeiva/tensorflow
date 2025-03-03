@@ -23,8 +23,6 @@ limitations under the License.
 #include <gtest/gtest.h>
 #include "tensorflow/lite/delegates/delegate_test_util.h"
 #include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/internal/compatibility.h"
-#include "tensorflow/lite/testing/util.h"
 
 namespace tflite {
 namespace delegates {
@@ -102,9 +100,9 @@ TEST_F(TestDelegate, TestFallbackWithMultipleDelegates) {
 }
 
 TEST_P(TestFP16Delegation, DelegateInvokeWithCPUFallback) {
-  delegate_ = std::unique_ptr<FP16Delegate>(new FP16Delegate(
+  delegate_ = std::make_unique<FP16Delegate>(
       /**num_delegated_subsets**/ GetParam(), /**fail_node_prepare**/ false,
-      /**fail_node_invoke**/ true));
+      /**fail_node_invoke**/ true);
   ASSERT_EQ(
       interpreter_->ModifyGraphWithDelegate(delegate_->get_tf_lite_delegate()),
       kTfLiteOk);

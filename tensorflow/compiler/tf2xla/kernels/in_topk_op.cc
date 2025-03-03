@@ -13,19 +13,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
+
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/arithmetic.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/lib/sorting.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/framework/kernel_def_builder.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -39,7 +41,7 @@ class InTopKOp : public XlaOpKernel {
   }
 
   void Compile(XlaOpKernelContext* context) override {
-    int64 k;
+    int64_t k;
     OP_REQUIRES_OK(context, context->ConstantInputAsIntScalar(2, &k));
     OP_REQUIRES(context, k >= 0,
                 errors::InvalidArgument("Need k >= 0, got ", k));
@@ -53,7 +55,7 @@ class InTopKOp : public XlaOpKernel {
                 errors::InvalidArgument("targets must be == 1-D, got shape ",
                                         targets_shape.DebugString()));
 
-    int64 batch_size = predictions_shape.dim_size(0);
+    int64_t batch_size = predictions_shape.dim_size(0);
     OP_REQUIRES(context, batch_size == targets_shape.dim_size(0),
                 errors::InvalidArgument(
                     "targets must have same elements as predictions rows. Had ",
@@ -104,7 +106,8 @@ class InTopKOp : public XlaOpKernel {
   DataType targets_dtype_;
   xla::PrimitiveType targets_type_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(InTopKOp);
+  InTopKOp(const InTopKOp&) = delete;
+  void operator=(const InTopKOp&) = delete;
 };
 
 REGISTER_XLA_OP(Name("InTopKV2")

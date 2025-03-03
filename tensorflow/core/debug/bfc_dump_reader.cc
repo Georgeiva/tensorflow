@@ -24,7 +24,7 @@ limitations under the License.
 
 namespace tensorflow {
 MemoryDump ReadDumpFile(const string& fname) {
-  Status status;
+  absl::Status status;
   uint64 file_size = 0;
   status = Env::Default()->GetFileSize(fname, &file_size);
   if (!status.ok()) {
@@ -38,13 +38,13 @@ MemoryDump ReadDumpFile(const string& fname) {
   }
   std::unique_ptr<char> buffer(static_cast<char*>(malloc(file_size + 1)));
   DCHECK(buffer.get());
-  StringPiece contents(buffer.get(), file_size);
+  absl::string_view contents(buffer.get(), file_size);
   status = file->Read(0, file_size, &contents, buffer.get());
   if (!status.ok()) {
     LOG(ERROR) << "read from file " << fname << " failed " << status;
   }
   MemoryDump md;
-  md.ParseFromString(string(contents));
+  md.ParseFromString(contents);
   return md;
 }
 
@@ -67,7 +67,7 @@ MemoryDump FilterByChunkType(MemoryDump md, const char chunk_type) {
 }
 
 void PrintChunk(const MemChunk& mc, const uint64 ac_offset, bool freed_at,
-                const int64 total_bytes, int64* cumulative_bytes) {
+                const int64_t total_bytes, int64_t* cumulative_bytes) {
   // A size class corresponding approximately to log base 100.
   int size_class = floor(0.5 * log10(static_cast<double>(mc.size())));
   *cumulative_bytes += mc.size();
@@ -118,8 +118,8 @@ void PrintSortedChunks(
     bool freed_at, bool by_addr) {
   std::vector<const MemChunk*> chunks;
   chunks.reserve(md.chunk_size());
-  int64 total_bytes = 0;
-  int64 cumulative_bytes = 0;
+  int64_t total_bytes = 0;
+  int64_t cumulative_bytes = 0;
   uint64 max_action_count = 0;
   for (auto& it : md.chunk()) {
     chunks.push_back(&it);

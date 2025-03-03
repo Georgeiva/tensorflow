@@ -13,8 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/core/kernels/stateless_random_ops.h"
+
 #include "tensorflow/core/framework/bounds_check.h"
-#include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -29,8 +30,8 @@ namespace tensorflow {
 using CPUDevice = Eigen::ThreadPoolDevice;
 using GPUDevice = Eigen::GpuDevice;
 
-Status GenerateKey(Tensor seed, random::PhiloxRandom::Key* out_key,
-                   random::PhiloxRandom::ResultType* out_counter) {
+absl::Status GenerateKey(Tensor seed, random::PhiloxRandom::Key* out_key,
+                         random::PhiloxRandom::ResultType* out_counter) {
   // Grab the two seeds
   uint64 seed0;
   uint64 seed1;
@@ -39,7 +40,7 @@ Status GenerateKey(Tensor seed, random::PhiloxRandom::Key* out_key,
     seed0 = internal::SubtleMustCopy(seed_vals(0));
     seed1 = internal::SubtleMustCopy(seed_vals(1));
   } else if (seed.dtype() == DT_INT64) {
-    const auto seed_vals = seed.flat<int64>();
+    const auto seed_vals = seed.flat<int64_t>();
     seed0 = internal::SubtleMustCopy(seed_vals(0));
     seed1 = internal::SubtleMustCopy(seed_vals(1));
   } else {
@@ -61,49 +62,43 @@ Status GenerateKey(Tensor seed, random::PhiloxRandom::Key* out_key,
   (*out_counter)[0] = (*out_counter)[1] = 0;
   (*out_counter)[2] = mix[2];
   (*out_counter)[3] = mix[3];
-  return Status::OK();
+  return absl::OkStatus();
+}
+
+StatelessRandomOpBase::StatelessRandomOpBase(OpKernelConstruction* context)
+    : OpKernel(context) {}
+
+void StatelessRandomOpBase::Compute(OpKernelContext* context) {
+  // Sanitize input
+  const Tensor& shape_t = context->input(0);
+  const Tensor& seed_t = context->input(1);
+  TensorShape shape;
+  OP_REQUIRES_OK(context, tensor::MakeShape(shape_t, &shape));
+  OP_REQUIRES(context, seed_t.dims() == 1 && seed_t.dim_size(0) == 2,
+              errors::InvalidArgument("seed must have shape [2], not ",
+                                      seed_t.shape().DebugString()));
+
+  // Allocate output
+  Tensor* output;
+  OP_REQUIRES_OK(context, context->allocate_output(0, shape, &output));
+  if (shape.num_elements() == 0) return;
+
+  random::PhiloxRandom::Key key;
+  random::PhiloxRandom::ResultType counter;
+  OP_REQUIRES_OK(context, GenerateKey(seed_t, &key, &counter));
+
+  // Fill in the random numbers
+  Fill(context, random::PhiloxRandom(counter, key), output);
 }
 
 namespace {
-
-class StatelessRandomOpBase : public OpKernel {
- public:
-  explicit StatelessRandomOpBase(OpKernelConstruction* context)
-      : OpKernel(context) {}
-
-  void Compute(OpKernelContext* context) override {
-    // Sanitize input
-    const Tensor& shape_t = context->input(0);
-    const Tensor& seed_t = context->input(1);
-    TensorShape shape;
-    OP_REQUIRES_OK(context, tensor::MakeShape(shape_t, &shape));
-    OP_REQUIRES(context, seed_t.dims() == 1 && seed_t.dim_size(0) == 2,
-                errors::InvalidArgument("seed must have shape [2], not ",
-                                        seed_t.shape().DebugString()));
-
-    // Allocate output
-    Tensor* output;
-    OP_REQUIRES_OK(context, context->allocate_output(0, shape, &output));
-    if (shape.num_elements() == 0) return;
-
-    random::PhiloxRandom::Key key;
-    random::PhiloxRandom::ResultType counter;
-    OP_REQUIRES_OK(context, GenerateKey(seed_t, &key, &counter));
-
-    // Fill in the random numbers
-    Fill(context, random::PhiloxRandom(counter, key), output);
-  }
-
-  // The part of Compute that depends on device, type, and distribution
-  virtual void Fill(OpKernelContext* context, random::PhiloxRandom random,
-                    Tensor* output) = 0;
-};
 
 template <typename Device, class Distribution>
 class StatelessRandomOp : public StatelessRandomOpBase {
  public:
   using StatelessRandomOpBase::StatelessRandomOpBase;
 
+ protected:
   void Fill(OpKernelContext* context, random::PhiloxRandom random,
             Tensor* output) override {
     typedef typename Distribution::ResultElementType T;
@@ -120,6 +115,7 @@ class StatelessRandomUniformIntOp : public StatelessRandomOpBase {
  public:
   using StatelessRandomOpBase::StatelessRandomOpBase;
 
+ protected:
   void Fill(OpKernelContext* context, random::PhiloxRandom random,
             Tensor* output) override {
     const Tensor& minval = context->input(2);
@@ -157,6 +153,7 @@ class StatelessRandomUniformFullIntOp : public StatelessRandomOpBase {
  public:
   using StatelessRandomOpBase::StatelessRandomOpBase;
 
+ protected:
   void Fill(OpKernelContext* context, random::PhiloxRandom random,
             Tensor* output) override {
     // Build distribution
@@ -178,6 +175,7 @@ class StatelessRandomPoissonOp : public StatelessRandomOpBase {
  public:
   using StatelessRandomOpBase::StatelessRandomOpBase;
 
+ protected:
   void Fill(OpKernelContext* ctx, random::PhiloxRandom random,
             Tensor* output) override {
     const Tensor& rate_t = ctx->input(2);
@@ -187,8 +185,8 @@ class StatelessRandomPoissonOp : public StatelessRandomOpBase {
                 errors::InvalidArgument(
                     "Shape passed in must end with broadcasted shape."));
 
-    const int64 num_rate = rate_t.NumElements();
-    const int64 samples_per_rate = samples_shape.num_elements() / num_rate;
+    const int64_t num_rate = rate_t.NumElements();
+    const int64_t samples_per_rate = samples_shape.num_elements() / num_rate;
     const auto rate_flat = rate_t.flat<T>().data();
     auto samples_flat = output->flat<U>().data();
 
@@ -198,7 +196,8 @@ class StatelessRandomPoissonOp : public StatelessRandomOpBase {
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(StatelessRandomPoissonOp);
+  StatelessRandomPoissonOp(const StatelessRandomPoissonOp&) = delete;
+  void operator=(const StatelessRandomPoissonOp&) = delete;
 };
 
 #define REGISTER(DEVICE, TYPE)                                              \
@@ -280,7 +279,7 @@ TF_CALL_uint64(REGISTER_FULL_INT_CPU);
   REGISTER_POISSON(RATE_TYPE, float);       \
   REGISTER_POISSON(RATE_TYPE, double);      \
   REGISTER_POISSON(RATE_TYPE, int32);       \
-  REGISTER_POISSON(RATE_TYPE, int64)
+  REGISTER_POISSON(RATE_TYPE, int64_t)
 
 TF_CALL_half(REGISTER_ALL_POISSON);
 TF_CALL_float(REGISTER_ALL_POISSON);
@@ -294,6 +293,7 @@ TF_CALL_int64(REGISTER_ALL_POISSON);
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 TF_CALL_half(REGISTER_GPU);
+TF_CALL_bfloat16(REGISTER_GPU);
 TF_CALL_float(REGISTER_GPU);
 TF_CALL_double(REGISTER_GPU);
 TF_CALL_int32(REGISTER_INT_GPU);

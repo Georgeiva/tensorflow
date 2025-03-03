@@ -23,6 +23,7 @@ import warnings
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.keras import backend
 from tensorflow.python.keras.engine import base_layer
 from tensorflow.python.keras.engine import base_layer_utils
@@ -38,7 +39,7 @@ from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import tf_logging as logging
-from tensorflow.python.training.tracking import base as trackable
+from tensorflow.python.trackable import base as trackable
 from tensorflow.python.util import nest
 from tensorflow.tools.docs import doc_controls
 
@@ -53,7 +54,7 @@ class Functional(training_lib.Model):
   than with subclassed `Model`s, specifically:
 
   - Model cloning (`keras.models.clone`)
-  - Serialization (`model.get_config()/from_config`, `model.to_json()/to_yaml()`
+  - Serialization (`model.get_config()/from_config`, `model.to_json()`
   - Whole-model saving (`model.save()`)
 
   A `Functional` model can be instantiated by passing two arguments to
@@ -116,7 +117,6 @@ class Functional(training_lib.Model):
 
   @trackable.no_automatic_dependency_tracking
   def _init_graph_network(self, inputs, outputs):
-    base_layer.keras_api_gauge.get_cell('Functional').set(True)
     # This method is needed for Sequential to reinitialize graph network when
     # layer is added or removed.
     self._is_graph_network = True
@@ -363,12 +363,12 @@ class Functional(training_lib.Model):
       dependencies['layer-%d' % layer_index] = layer
     return dependencies
 
-  @property
-  def _checkpoint_dependencies(self):
-    dependencies = [
-        trackable.TrackableReference(name=name, ref=layer)
-        for name, layer in self._layer_checkpoint_dependencies.items()]
-    dependencies.extend(super(Functional, self)._checkpoint_dependencies)
+  def _trackable_children(self,
+                          save_type=trackable.SaveType.CHECKPOINT,
+                          **kwargs):
+    dependencies = self._layer_checkpoint_dependencies
+    dependencies.update(
+        super(Functional, self)._trackable_children(save_type, **kwargs))
     return dependencies
 
   def _lookup_dependency(self, name):
@@ -603,7 +603,7 @@ class Functional(training_lib.Model):
 
   def _conform_to_reference_input(self, tensor, ref_input):
     """Set shape and dtype based on `keras.Input`s."""
-    if isinstance(tensor, ops.Tensor):
+    if isinstance(tensor, tensor_lib.Tensor):
       # Allow (None,) and (None, 1) Tensors to be passed interchangeably. Use
       # the shape specified by the `keras.Input`.
       t_shape = tensor.shape

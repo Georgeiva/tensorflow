@@ -23,12 +23,12 @@ limitations under the License.
 // 3. insert tosa.RESCALE int8 -> uint8 if original returned tensor is uint8
 // typed.
 
-#include <climits>
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
-#include <numeric>
+#include <memory>
+#include <utility>
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"  // from @llvm-project
 #include "mlir/Dialect/Tosa/Utils/QuantUtils.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
@@ -36,6 +36,7 @@ limitations under the License.
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/PatternMatch.h"  // from @llvm-project
 #include "mlir/Pass/PassRegistry.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
@@ -49,15 +50,16 @@ limitations under the License.
 namespace mlir {
 namespace tosa {
 namespace {
-#define GEN_PASS_CLASSES
+
+#define GEN_PASS_DEF_TOSACONVERTTFLUINT8PASS
 #include "tensorflow/compiler/mlir/tosa/transforms/passes.h.inc"
 
 // Performs lowering to TOSA dialect.
 class ConvertUint8ToInt8
-    : public TosaConvertTFLUint8PassBase<ConvertUint8ToInt8> {
+    : public impl::TosaConvertTFLUint8PassBase<ConvertUint8ToInt8> {
  public:
-  explicit ConvertUint8ToInt8() {}
-  void runOnFunction() override;
+  explicit ConvertUint8ToInt8() = default;
+  void runOnOperation() override;
 };
 
 struct ConvertUint8QConstOp : public RewritePattern {
@@ -70,14 +72,13 @@ struct ConvertUint8QConstOp : public RewritePattern {
 
     // Skip if it's not ranked tensor type.
     auto output_type =
-        tfl_qconst_op.getResult().getType().dyn_cast<mlir::RankedTensorType>();
+        dyn_cast<mlir::RankedTensorType>(tfl_qconst_op.getResult().getType());
     if (!output_type)
       return builder.notifyMatchFailure(op, "not ranked tensor");
 
     // Skip if output is not per-tensor quantized type.
-    auto output_element_type =
-        output_type.getElementType()
-            .dyn_cast<mlir::quant::UniformQuantizedType>();
+    auto output_element_type = dyn_cast<mlir::quant::UniformQuantizedType>(
+        output_type.getElementType());
     if (!output_element_type) return failure();
 
     // Skip if output is not uint8.
@@ -87,7 +88,7 @@ struct ConvertUint8QConstOp : public RewritePattern {
     }
 
     mlir::DenseElementsAttr src_dense_attr =
-        tfl_qconst_op.value().cast<DenseElementsAttr>();
+        mlir::cast<DenseElementsAttr>(tfl_qconst_op.getValue());
 
     double type_range_min =
         static_cast<double>(output_element_type.getStorageTypeMin() -
@@ -111,15 +112,13 @@ struct ConvertUint8QConstOp : public RewritePattern {
             0, true /* signed */, builder.getBoolAttr(narrow_range))));
 
     Type dst_dense_element_type = builder.getIntegerType(8);
-    llvm::function_ref<APInt(const APInt &)> mapping =
-        [](const APInt &in) -> APInt {
-      int64_t in_i64 = in.getLimitedValue();
-      int64_t out_i64 = in_i64 - 128;
-      return APInt(8, out_i64, true);
-    };
 
-    auto dst_dense_attr =
-        src_dense_attr.mapValues(dst_dense_element_type, mapping);
+    auto dst_dense_attr = src_dense_attr.mapValues(
+        dst_dense_element_type, [](const APInt &in) -> APInt {
+          int64_t in_i64 = in.getLimitedValue();
+          int64_t out_i64 = in_i64 - 128;
+          return APInt(8, out_i64, true);
+        });
 
     builder.replaceOpWithNewOp<TFL::QConstOp>(op, dst_qconst_type,
                                               dst_dense_attr);
@@ -128,8 +127,64 @@ struct ConvertUint8QConstOp : public RewritePattern {
   }
 };
 
+namespace {
+
+// returns true iff @a shaped_type has element type that is uint8 or uniform
+// quantized unsigned 8 if it is, then return the rescaled type, uint8_zp, and
+// output_zp to use to rescale type to signed type with adjusted zero point.
+bool getUint8RescaleInfo(OpBuilder& builder, ShapedType shaped_type,
+                         Type& rescaled_type, int32_t& uint8_zp,
+                         int32_t& output_zp) {
+  auto element_type = shaped_type.getElementType();
+
+  if (auto quant_type =
+          dyn_cast<mlir::quant::UniformQuantizedType>(element_type)) {
+    if (quant_type.isSigned() || quant_type.getStorageTypeIntegralWidth() != 8)
+      return false;
+    // element_type is uniform_quantized unsigned 8 bit
+    double type_range_min = static_cast<double>(quant_type.getStorageTypeMin() -
+                                                quant_type.getZeroPoint()) *
+                            quant_type.getScale();
+    double type_range_max = static_cast<double>(quant_type.getStorageTypeMax() -
+                                                quant_type.getZeroPoint()) *
+                            quant_type.getScale();
+    bool narrow_range = quant_type.getStorageTypeMin() == 1 ? true : false;
+
+    rescaled_type = shaped_type.clone(buildQTypeFromMinMax(
+        builder, quant_type.getExpressedType(),
+        builder.getF64FloatAttr(type_range_min),
+        builder.getF64FloatAttr(type_range_max),
+        builder.getI32IntegerAttr(quant_type.getStorageTypeIntegralWidth()),
+        /* filterQuantDim = */ 0,
+        /* isSigned = */ true, builder.getBoolAttr(narrow_range)));
+    uint8_zp = quant_type.getZeroPoint();
+    output_zp = uint8_zp - 128;
+    return true;
+  }
+
+  if (auto int_type = dyn_cast<IntegerType>(element_type)) {
+    if (!int_type.isUnsigned() || int_type.getWidth() != 8) return false;
+    // element_type is ui8
+    // convert ui8 to i8 with zp=-128
+    rescaled_type = shaped_type.clone(quant::UniformQuantizedType::getChecked(
+        builder.getUnknownLoc(), quant::QuantizationFlags::Signed,
+        builder.getI8Type(), builder.getF32Type(),
+        /* scale = */ 1.0,
+        /* zeroPoint = */ -128,
+        /* storagTypeMin = */ -128,
+        /* storageTypeMax = */ 127));
+    uint8_zp = 0;
+    output_zp = uint8_zp - 128;
+    return true;
+  }
+
+  return false;
+}
+
+}  // namespace
+
 LogicalResult convert_graph_uint8_tensor(mlir::MLIRContext &context,
-                                         mlir::FuncOp &function) {
+                                         mlir::func::FuncOp &function) {
   size_t num_blocks_in_main = 0;
   mlir::Region *region = function.getCallableRegion();
   OpBuilder builder(&context);
@@ -151,53 +206,25 @@ LogicalResult convert_graph_uint8_tensor(mlir::MLIRContext &context,
 
     // Insert rescale uint8->int8 after placeholders.
     for (Value arg : bb.getArguments()) {
-      auto uint8_type = arg.getType().dyn_cast<mlir::RankedTensorType>();
-      if (!uint8_type) continue;
-
-      auto uint8_element_type =
-          uint8_type.getElementType()
-              .dyn_cast<mlir::quant::UniformQuantizedType>();
-      if (!uint8_element_type) continue;
-
-      if (uint8_element_type.isSigned() ||
-          uint8_element_type.getStorageTypeIntegralWidth() != 8)
+      auto shaped_type = dyn_cast<ShapedType>(arg.getType());
+      if (!shaped_type) continue;
+      Type rescaled_type;
+      int32_t rescale_input_zp, rescale_output_zp;
+      if (!getUint8RescaleInfo(builder, shaped_type, rescaled_type,
+                               rescale_input_zp, rescale_output_zp))
         continue;
-
-      double type_range_min =
-          static_cast<double>(uint8_element_type.getStorageTypeMin() -
-                              uint8_element_type.getZeroPoint()) *
-          uint8_element_type.getScale();
-      double type_range_max =
-          static_cast<double>(uint8_element_type.getStorageTypeMax() -
-                              uint8_element_type.getZeroPoint()) *
-          uint8_element_type.getScale();
-      bool narrow_range =
-          uint8_element_type.getStorageTypeMin() == 1 ? true : false;
-
-      Type int8_type = RankedTensorType::get(
-          uint8_type.getShape(),
-          buildQTypeFromMinMax(
-              builder, uint8_element_type.getExpressedType(),
-              builder.getF64FloatAttr(type_range_min),
-              builder.getF64FloatAttr(type_range_max),
-              builder.getI32IntegerAttr(
-                  uint8_element_type.getStorageTypeIntegralWidth()),
-              0, true /* signed */, builder.getBoolAttr(narrow_range)));
-
-      int32_t uint8_zp = uint8_element_type.getZeroPoint();
-      int32_t int8_zp = uint8_zp - 128;
 
       // Keep original input_val use with tmp_val.
       Value tmp_val = builder.create<TFL::ConstOp>(
           function.getLoc(), tmp_const_type, tmp_const_attr);
       arg.replaceAllUsesWith(tmp_val);
       auto rescale_op = builder.create<tosa::RescaleOp>(
-          function.getLoc(), int8_type, arg,
-          builder.getI32IntegerAttr(uint8_zp),
-          builder.getI32IntegerAttr(int8_zp),
-          builder.getI32ArrayAttr({1 << 30}), builder.getI32ArrayAttr({30}),
-          builder.getBoolAttr(true), builder.getBoolAttr(false),
-          builder.getBoolAttr(false));
+          function.getLoc(), rescaled_type, arg,
+          builder.getI32IntegerAttr(rescale_input_zp),
+          builder.getI32IntegerAttr(rescale_output_zp),
+          builder.getDenseI32ArrayAttr({1 << 30}),
+          builder.getDenseI8ArrayAttr({30}), builder.getBoolAttr(true),
+          builder.getBoolAttr(false), builder.getBoolAttr(false));
 
       Operation *op_rescale_op = static_cast<Operation *>(rescale_op);
       bb.push_front(op_rescale_op);
@@ -216,44 +243,14 @@ LogicalResult convert_graph_uint8_tensor(mlir::MLIRContext &context,
     // Convert intermediate tensor.
     for (auto &op : bb) {
       for (Value output_val : op.getResults()) {
-        // Skip if output value is not RankedTensorType.
-        auto output_type =
-            output_val.getType().dyn_cast<mlir::RankedTensorType>();
-        if (!output_type) continue;
-
-        // Skip if output value is not per-tensor quantized element type.
-        auto output_element_type =
-            output_type.getElementType()
-                .dyn_cast<mlir::quant::UniformQuantizedType>();
-        if (!output_element_type) continue;
-
-        // Skip if output is not uint8.
-        if (output_element_type.isSigned() ||
-            output_element_type.getStorageTypeIntegralWidth() != 8)
-          continue;
-
-        double type_range_min =
-            static_cast<double>(output_element_type.getStorageTypeMin() -
-                                output_element_type.getZeroPoint()) *
-            output_element_type.getScale();
-        double type_range_max =
-            static_cast<double>(output_element_type.getStorageTypeMax() -
-                                output_element_type.getZeroPoint()) *
-            output_element_type.getScale();
-        bool narrow_range =
-            output_element_type.getStorageTypeMin() == 1 ? true : false;
-
-        Type new_type = RankedTensorType::get(
-            output_type.getShape(),
-            buildQTypeFromMinMax(
-                builder, output_element_type.getExpressedType(),
-                builder.getF64FloatAttr(type_range_min),
-                builder.getF64FloatAttr(type_range_max),
-                builder.getI32IntegerAttr(
-                    output_element_type.getStorageTypeIntegralWidth()),
-                0, true /* signed */, builder.getBoolAttr(narrow_range)));
-
-        output_val.setType(new_type);
+        auto shaped_type = dyn_cast<ShapedType>(output_val.getType());
+        if (!shaped_type) continue;
+        Type new_type;
+        int32_t rescale_input_zp, rescale_output_zp;
+        if (getUint8RescaleInfo(builder, shaped_type, new_type,
+                                rescale_input_zp, rescale_output_zp)) {
+          output_val.setType(new_type);
+        }
       }
     }
 
@@ -271,43 +268,25 @@ LogicalResult convert_graph_uint8_tensor(mlir::MLIRContext &context,
       Value input_val = defining_op->getResult(0);
 
       // Check if graph output is uint8 type.
-      auto uint8_output_type =
-          output_types[i].dyn_cast<mlir::RankedTensorType>();
-      if (!uint8_output_type) continue;
+      auto shaped_output_type = dyn_cast<mlir::ShapedType>(output_types[i]);
+      if (!shaped_output_type) continue;
 
-      auto uint8_output_element_type =
-          uint8_output_type.getElementType()
-              .dyn_cast<mlir::quant::UniformQuantizedType>();
-      if (!uint8_output_element_type) continue;
-
-      if (uint8_output_element_type.isSigned() ||
-          uint8_output_element_type.getStorageTypeIntegralWidth() != 8)
+      // Check if graph output is uint8 type.
+      Type rescaled_type;
+      int32_t uint8_zp, rescale_output_zp;
+      if (!getUint8RescaleInfo(builder, shaped_output_type, rescaled_type,
+                               uint8_zp, rescale_output_zp))
         continue;
 
-      // Check if output coming into terminator is int8 type.
-      auto int8_output_type = terminator->getOperand(i)
-                                  .getType()
-                                  .dyn_cast<mlir::RankedTensorType>();
-      if (!int8_output_type) continue;
-
-      auto int8_output_element_type =
-          int8_output_type.getElementType()
-              .dyn_cast<mlir::quant::UniformQuantizedType>();
-      if (!int8_output_element_type) continue;
-
-      if (!int8_output_element_type.isSigned() ||
-          int8_output_element_type.getStorageTypeIntegralWidth() != 8)
-        continue;
-
-      int32_t int8_zp = int8_output_element_type.getZeroPoint();
-      int32_t uint8_zp = uint8_output_element_type.getZeroPoint();
-
-      // Sanity check if uint8/int8's scale and zeropoint match.
-      if (((uint8_zp - int8_zp) != 128) ||
-          (int8_output_element_type.getScale() !=
-           uint8_output_element_type.getScale())) {
-        return terminator->emitError(
-            "convert_uint8_to_int8: scale mismatch at the output tensors");
+      // convert terminator operand type back to original output_type.
+      auto terminator_operand_type =
+          dyn_cast<mlir::ShapedType>(terminator->getOperand(i).getType());
+      if (!terminator_operand_type) continue;
+      int operand_zp = 0;
+      auto quantized_type = dyn_cast<mlir::quant::UniformQuantizedType>(
+          terminator_operand_type.getElementType());
+      if (quantized_type) {
+        operand_zp = quantized_type.getZeroPoint();
       }
 
       // Keep original input_val use with tmp_val.
@@ -315,12 +294,12 @@ LogicalResult convert_graph_uint8_tensor(mlir::MLIRContext &context,
           function.getLoc(), tmp_const_type, tmp_const_attr);
       input_val.replaceAllUsesWith(tmp_val);
       auto rescale_op = builder.create<tosa::RescaleOp>(
-          function.getLoc(), uint8_output_type, input_val,
-          builder.getI32IntegerAttr(int8_zp),
+          function.getLoc(), shaped_output_type, input_val,
+          builder.getI32IntegerAttr(operand_zp),
           builder.getI32IntegerAttr(uint8_zp),
-          builder.getI32ArrayAttr({1 << 30}), builder.getI32ArrayAttr({30}),
-          builder.getBoolAttr(true), builder.getBoolAttr(false),
-          builder.getBoolAttr(false));
+          builder.getDenseI32ArrayAttr({1 << 30}),
+          builder.getDenseI8ArrayAttr({30}), builder.getBoolAttr(true),
+          builder.getBoolAttr(false), builder.getBoolAttr(false));
 
       Operation *op_rescale_op = static_cast<Operation *>(rescale_op);
       bb.push_back(op_rescale_op);
@@ -333,14 +312,14 @@ LogicalResult convert_graph_uint8_tensor(mlir::MLIRContext &context,
   return success();
 }
 
-void ConvertUint8ToInt8::runOnFunction() {
-  OwningRewritePatternList patterns(&getContext());
+void ConvertUint8ToInt8::runOnOperation() {
+  RewritePatternSet patterns(&getContext());
   auto &ctx = getContext();
-  auto func = getFunction();
+  mlir::func::FuncOp func = getOperation();
 
   // Convert uint8 const tensor. const needs to be handled specifically.
-  patterns.insert<ConvertUint8QConstOp>(&ctx);
-  (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
+  patterns.add<ConvertUint8QConstOp>(&ctx);
+  (void)applyPatternsGreedily(func, std::move(patterns));
 
   // Replace uint8 tensor in the graph and insert rescale as needed.
   (void)convert_graph_uint8_tensor(ctx, func);
@@ -348,12 +327,9 @@ void ConvertUint8ToInt8::runOnFunction() {
 
 }  // anonymous namespace
 
-std::unique_ptr<OperationPass<FuncOp>> createConvertTFLUint8Pass() {
+std::unique_ptr<OperationPass<func::FuncOp>> createConvertTFLUint8Pass() {
   return std::make_unique<ConvertUint8ToInt8>();
 }
-
-static PassRegistration<ConvertUint8ToInt8> pass(
-    PASS_NAME, "Convert uint8 graph to int8.");
 
 }  // namespace tosa
 

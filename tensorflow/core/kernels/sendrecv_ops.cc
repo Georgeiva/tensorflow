@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/sendrecv_ops.h"
 
+#include <utility>
+
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_def_util.h"
@@ -63,7 +65,7 @@ SendOp::SendOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
   uint64 send_device_incarnation;
   OP_REQUIRES_OK(
       ctx, ctx->GetAttr("send_device_incarnation",
-                        reinterpret_cast<int64*>(&send_device_incarnation)));
+                        reinterpret_cast<int64_t*>(&send_device_incarnation)));
   string tensor_name;
   OP_REQUIRES_OK(ctx, ctx->GetAttr("tensor_name", &tensor_name));
   key_prefix_ = GetRendezvousKeyPrefix(send_device, recv_device,
@@ -118,8 +120,10 @@ string SendOp::TraceString(const OpKernelContext& ctx, bool verbose) const {
   auto dst_it = attr.find("_dst");
   const string& src = src_it != attr.end() ? src_it->second.s() : "";
   const string& dst = dst_it != attr.end() ? dst_it->second.s() : "";
-  string op = profiler::TraceMeOp(name_view(), type_string_view());
-  return profiler::TraceMeEncode(std::move(op), {{"from", src}, {"to", dst}});
+  string op = tsl::profiler::TraceMeOp(name_view(), type_string_view());
+  return tsl::profiler::TraceMeEncode(
+      std::move(op),
+      {{"from", src}, {"to", dst}, {"key", parsed_key_.FullKey()}});
 }
 
 REGISTER_KERNEL_BUILDER(Name("_Send").Device(DEVICE_CPU), SendOp);
@@ -142,7 +146,7 @@ RecvOp::RecvOp(OpKernelConstruction* ctx) : AsyncOpKernel(ctx) {
   uint64 send_device_incarnation;
   OP_REQUIRES_OK(
       ctx, ctx->GetAttr("send_device_incarnation",
-                        reinterpret_cast<int64*>(&send_device_incarnation)));
+                        reinterpret_cast<int64_t*>(&send_device_incarnation)));
   string tensor_name;
   OP_REQUIRES_OK(ctx, ctx->GetAttr("tensor_name", &tensor_name));
   key_prefix_ = GetRendezvousKeyPrefix(send_device, recv_device,
@@ -162,14 +166,16 @@ string RecvOp::TraceString(const OpKernelContext& ctx, bool verbose) const {
   auto dst_it = attr.find("_dst");
   const string& src = src_it != attr.end() ? src_it->second.s() : "";
   const string& dst = dst_it != attr.end() ? dst_it->second.s() : "";
-  string op = profiler::TraceMeOp(name_view(), type_string_view());
-  return profiler::TraceMeEncode(std::move(op), {{"from", src}, {"to", dst}});
+  string op = tsl::profiler::TraceMeOp(name_view(), type_string_view());
+  return tsl::profiler::TraceMeEncode(
+      std::move(op),
+      {{"from", src}, {"to", dst}, {"key", parsed_key_.FullKey()}});
 }
 
 namespace {
 Rendezvous::DoneCallback make_recv_callback(OpKernelContext* ctx,
                                             AsyncOpKernel::DoneCallback done) {
-  return [ctx, done = std::move(done)](const Status& s,
+  return [ctx, done = std::move(done)](const absl::Status& s,
                                        const Rendezvous::Args& send_args,
                                        const Rendezvous::Args& recv_args,
                                        const Tensor& val, bool is_dead) {

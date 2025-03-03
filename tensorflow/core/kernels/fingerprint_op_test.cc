@@ -31,7 +31,7 @@ limitations under the License.
 
 namespace tensorflow {
 namespace {
-Status MakeNodeDef(DataType dtype, NodeDef* node_def) {
+absl::Status MakeNodeDef(DataType dtype, NodeDef* node_def) {
   return NodeDefBuilder("fingerprint", "Fingerprint")
       .Input(FakeInput(dtype))
       .Input(FakeInput(DT_STRING))
@@ -40,11 +40,11 @@ Status MakeNodeDef(DataType dtype, NodeDef* node_def) {
 
 class FingerprintOpTest : public OpsTestBase {
  protected:
-  Status MakeFingerprintOp(Tensor* tensor) {
+  absl::Status MakeFingerprintOp(Tensor* tensor) {
     return MakeFingerprintOp(tensor, "farmhash64");
   }
 
-  Status MakeFingerprintOp(Tensor* data, const string& method) {
+  absl::Status MakeFingerprintOp(Tensor* data, const string& method) {
     TF_RETURN_IF_ERROR(MakeNodeDef(data->dtype(), node_def()));
     TF_RETURN_IF_ERROR(InitOp());
 
@@ -54,7 +54,7 @@ class FingerprintOpTest : public OpsTestBase {
     method_ = Tensor(DT_STRING, TensorShape{});
     method_.scalar<tstring>()() = method;
     inputs_.push_back(TensorValue(&method_));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   Tensor batch_dims_;
@@ -118,7 +118,7 @@ TEST_F(FingerprintOpTest, StringGoldenValue) {
 TEST_F(FingerprintOpTest, Collision) {
   const TensorShape shape = {1, 2, 4, 6};
   for (DataType dtype : kRealNumberTypes) {
-    const int64 size = shape.num_elements() * DataTypeSize(dtype);
+    const int64_t size = shape.num_elements() * DataTypeSize(dtype);
 
     Tensor tensor(dtype, shape);
     auto buffer = tensor.bit_casted_shaped<uint8, 1>({size});
@@ -141,7 +141,7 @@ TEST_F(FingerprintOpTest, Collision) {
 }
 
 TEST_F(FingerprintOpTest, CollisionString) {
-  constexpr int64 size = 256;
+  constexpr int64_t size = 256;
 
   Tensor tensor(DT_STRING, {1});
   auto& input = tensor.vec<tstring>()(0);
@@ -174,7 +174,7 @@ TEST_F(FingerprintOpTest, CompareBytesAndString) {
   pods.setRandom();
 
   auto strings = strings_tensor.vec<tstring>();
-  for (int64 i = 0; i < strings.size(); ++i) {
+  for (int64_t i = 0; i < strings.size(); ++i) {
     strings(i).assign(reinterpret_cast<const char*>(&pods(i, 0)),
                       pods.dimension(1) * sizeof(pods(i, 0)));
   }
@@ -195,9 +195,9 @@ TEST_F(FingerprintOpTest, SupportedMethods) {
   Tensor tensor(DT_STRING, TensorShape{1});
   TF_ASSERT_OK(MakeFingerprintOp(&tensor, "unsupported_method"));
 
-  const Status status = RunOpKernel();
+  const absl::Status status = RunOpKernel();
   EXPECT_FALSE(status.ok());
-  EXPECT_NE(status.error_message().find("unsupported_method"), string::npos);
+  EXPECT_NE(status.message().find("unsupported_method"), string::npos);
 }
 
 TEST_F(FingerprintOpTest, SupportedTypes) {

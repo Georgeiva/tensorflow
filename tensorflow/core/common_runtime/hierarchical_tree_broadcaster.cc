@@ -32,6 +32,7 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/profiler/lib/scoped_memory_debug_annotation.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 
 // Set true for greater intelligibility of debug mode log messages.
@@ -74,26 +75,24 @@ int HierarchicalTreeBroadcaster::GetDeviceTask(
   return -1;
 }
 
-Status HierarchicalTreeBroadcaster::InitializeCollectiveParams(
+absl::Status HierarchicalTreeBroadcaster::InitializeCollectiveParams(
     CollectiveParams* col_params) {
   CHECK_EQ(col_params->instance.type, BROADCAST_COLLECTIVE);
   CHECK_EQ(col_params->instance.impl_details.collective_name,
            "HierarchicalTreeBroadcast");
   const string& device_name =
-      col_params->group.device_names[col_params->default_rank];
+      col_params->group.members[col_params->default_rank].device.name();
   // Start by counting the devices in each task.
   // Precondition: device_names must be sorted so that all devices in
   // the same task are adjacent.
-  VLOG(2) << "Sorted task names: "
-          << absl::StrJoin(col_params->group.task_names, ", ");
   std::vector<int> dev_per_task;
-  const string* prior_task_name = &col_params->group.task_names[0];
+  const string* prior_task_name = &col_params->group.members[0].task;
   int dev_count = 1;
   for (int di = 1; di < col_params->group.group_size; ++di) {
-    if (col_params->group.task_names[di] != *prior_task_name) {
+    if (col_params->group.members[di].task != *prior_task_name) {
       dev_per_task.push_back(dev_count);
       dev_count = 1;
-      prior_task_name = &col_params->group.task_names[di];
+      prior_task_name = &col_params->group.members[di].task;
     } else {
       ++dev_count;
     }
@@ -135,13 +134,14 @@ Status HierarchicalTreeBroadcaster::InitializeCollectiveParams(
       if (source_task == ti) {
         // Source device belongs to this task.
         perm.push_back(col_params->source_rank);
-        participate = col_params->group.device_names[col_params->source_rank] ==
-                      device_name;
+        participate =
+            col_params->group.members[col_params->source_rank].device.name() ==
+            device_name;
       } else {
         // Source does not belong to this task, choose dev 0.
         perm.push_back(device_count);
-        participate =
-            col_params->group.device_names[device_count] == device_name;
+        participate = col_params->group.members[device_count].device.name() ==
+                      device_name;
       }
       if (participate) col_params->subdiv_rank.push_back(ti);
       device_count += dev_per_task[ti];
@@ -149,6 +149,7 @@ Status HierarchicalTreeBroadcaster::InitializeCollectiveParams(
     if (col_params->subdiv_rank.empty()) col_params->subdiv_rank.push_back(-1);
     col_params->instance.impl_details.subdiv_source_rank.push_back(source_task);
   }
+  VLOG(2) << collective_util::SubdivPermDebugString(*col_params);
 
   // Intra-task subdivs.  Pick all devices in task ti for subdiv sdi.  Set
   // source to dev 0 for that task if it does not contain original source, else
@@ -164,7 +165,7 @@ Status HierarchicalTreeBroadcaster::InitializeCollectiveParams(
     int subdiv_source = 0;
     for (int di = 0; di < dev_per_task[ti]; di++) {
       perm.push_back(abs_di);
-      if (col_params->group.device_names[abs_di] == device_name) {
+      if (col_params->group.members[abs_di].device.name() == device_name) {
         participate = true;
         col_params->subdiv_rank.push_back(di);
       }
@@ -181,14 +182,14 @@ Status HierarchicalTreeBroadcaster::InitializeCollectiveParams(
   }
 
   VLOG(2) << collective_util::SubdivPermDebugString(*col_params);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status HierarchicalTreeBroadcaster::InitializeCollectiveContext(
+absl::Status HierarchicalTreeBroadcaster::InitializeCollectiveContext(
     std::shared_ptr<CollectiveContext> col_ctx) {
   CHECK(col_ctx->dev_mgr);
   col_ctx_ = col_ctx;
-  col_params_ = col_ctx->col_params;
+  col_params_ = col_ctx->col_params.get();
   return collective_util::InitializeDeviceAndLocality(
       col_ctx->dev_mgr, col_ctx->device_name, &col_ctx->device,
       &col_ctx->device_locality);
@@ -315,13 +316,13 @@ void HierarchicalTreeBroadcaster::RunTree() {
 
     if (my_rank >= 0 && my_rank != source_rank) {
       // Begin by receiving the value.
-      profiler::TraceMe activity(
+      tsl::profiler::TraceMe activity(
           [&] { return strings::StrCat("ReceiveValue:", si); },
-          profiler::TraceMeLevel::kInfo);
+          tsl::profiler::TraceMeLevel::kInfo);
       int recv_from_rank = TreeRecvFrom(*col_params_, si);
       Notification note;
       DispatchRecv(si, recv_from_rank, my_rank, col_ctx_->output,
-                   [this, &mu, &note](const Status& s) {
+                   [this, &mu, &note](const absl::Status& s) {
                      mutex_lock l(mu);
                      status_.Update(s);
                      note.Notify();
@@ -331,9 +332,9 @@ void HierarchicalTreeBroadcaster::RunTree() {
 
     // Then forward value to all descendent devices.
     {
-      profiler::TraceMe activity(
+      tsl::profiler::TraceMe activity(
           [&] { return strings::StrCat("ForwardValue:", si); },
-          profiler::TraceMeLevel::kInfo);
+          tsl::profiler::TraceMeLevel::kInfo);
       if (my_rank >= 0 && status_.ok()) {
         std::vector<int> send_to_ranks;
         TreeSendTo(*col_params_, si, &send_to_ranks);
@@ -343,16 +344,17 @@ void HierarchicalTreeBroadcaster::RunTree() {
             mutex_lock l(mu);
             ++pending_count;
           }
-          DispatchSend(si, target_rank, my_rank,
-                       (is_source_ ? col_ctx_->input : col_ctx_->output),
-                       [this, &mu, &pending_count, &all_done](const Status& s) {
-                         mutex_lock l(mu);
-                         status_.Update(s);
-                         --pending_count;
-                         if (pending_count == 0) {
-                           all_done.notify_all();
-                         }
-                       });
+          DispatchSend(
+              si, target_rank, my_rank,
+              (is_source_ ? col_ctx_->input : col_ctx_->output),
+              [this, &mu, &pending_count, &all_done](const absl::Status& s) {
+                mutex_lock l(mu);
+                status_.Update(s);
+                --pending_count;
+                if (pending_count == 0) {
+                  all_done.notify_all();
+                }
+              });
         }
       }
 
@@ -379,7 +381,7 @@ void HierarchicalTreeBroadcaster::RunTree() {
               col_ctx_->op_ctx->input_alloc_attr(0),
               col_ctx_->op_ctx->output_alloc_attr(0), col_ctx_->input,
               col_ctx_->output, 0, /*stream_index*/
-              [this, &mu, &pending_count, &all_done](const Status& s) {
+              [this, &mu, &pending_count, &all_done](const absl::Status& s) {
                 mutex_lock l(mu);
                 status_.Update(s);
                 --pending_count;
@@ -407,20 +409,22 @@ void HierarchicalTreeBroadcaster::DispatchSend(int subdiv, int dst_rank,
                                                int src_rank,
                                                const Tensor* src_tensor,
                                                const StatusCallback& done) {
-  ScopedMemoryDebugAnnotation op_annotation(
-      col_ctx_->op_ctx->op_kernel().name_view().data(), col_ctx_->step_id,
-      "dynamic", src_tensor->dtype(), &src_tensor->shape());
+  tsl::profiler::ScopedMemoryDebugAnnotation op_annotation(
+      col_params_->name.data(), col_ctx_->step_id, "dynamic",
+      src_tensor->dtype(),
+      [src_tensor]() { return src_tensor->shape().DebugString(); });
   string send_buf_key =
       BroadcastBufKey(col_ctx_->exec_key, subdiv, src_rank, dst_rank);
   int dst_idx =
       col_params_->instance.impl_details.subdiv_permutations[subdiv][dst_rank];
   VLOG(3) << "DispatchSend " << send_buf_key << " from_device "
           << col_ctx_->device_name << " to_device "
-          << col_params_->group.device_names[dst_idx] << " subdiv=" << subdiv
-          << " dst_rank=" << dst_rank << " dst_idx=" << dst_idx;
+          << col_params_->group.members[dst_idx].device.name()
+          << " subdiv=" << subdiv << " dst_rank=" << dst_rank
+          << " dst_idx=" << dst_idx;
   col_ctx_->col_exec->remote_access()->PostToPeer(
-      col_params_->group.device_names[dst_idx],
-      col_params_->group.task_names[dst_idx], send_buf_key, col_ctx_->device,
+      col_params_->group.members[dst_idx].device.name(),
+      col_params_->group.members[dst_idx].task, send_buf_key, col_ctx_->device,
       col_ctx_->op_ctx->op_device_context(),
       col_ctx_->op_ctx->output_alloc_attr(0), src_tensor,
       col_ctx_->device_locality, col_ctx_->op_ctx->cancellation_manager(),
@@ -435,14 +439,14 @@ void HierarchicalTreeBroadcaster::DispatchRecv(int subdiv, int src_rank,
   int src_idx =
       col_params_->instance.impl_details.subdiv_permutations[subdiv][src_rank];
   VLOG(3) << "DispatchRecv " << recv_buf_key << " from_device "
-          << col_params_->group.device_names[src_idx] << " to_device "
+          << col_params_->group.members[src_idx].device.name() << " to_device "
           << col_ctx_->device_name << " subdiv=" << subdiv
           << " src_rank=" << src_rank << " src_idx=" << src_idx;
   col_ctx_->col_exec->remote_access()->RecvFromPeer(
-      col_params_->group.device_names[src_idx],
-      col_params_->group.task_names[src_idx],
-      col_params_->task.is_local[src_idx], recv_buf_key, col_ctx_->device,
-      col_ctx_->op_ctx->op_device_context(),
+      col_params_->group.members[src_idx].device.name(),
+      col_params_->group.members[src_idx].task,
+      col_params_->group.members[src_idx].is_local, recv_buf_key,
+      col_ctx_->device, col_ctx_->op_ctx->op_device_context(),
       col_ctx_->op_ctx->output_alloc_attr(0), dst_tensor,
       col_ctx_->device_locality, 0 /*stream_index*/,
       col_ctx_->op_ctx->cancellation_manager(), done);

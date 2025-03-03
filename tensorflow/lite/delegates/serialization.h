@@ -15,13 +15,14 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_SERIALIZATION_H_
 #define TENSORFLOW_LITE_DELEGATES_SERIALIZATION_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 
 // This file implements a serialization utility that TFLite delegates can use to
 // read/write initialization data.
@@ -192,6 +193,14 @@ class Serialization {
   Serialization(const Serialization&) = delete;
   Serialization& operator=(const Serialization&) = delete;
 
+  // Generate a unique fingerprint for the given model_token and custom_key.
+  // If context and delegate_params are provided, the fingerprint will be
+  // unique to the given context and delegate_params.
+  static uint64_t GetFingerprint(
+      const std::string& model_token, const std::string& custom_key,
+      TfLiteContext* context = nullptr,
+      const TfLiteDelegateParams* delegate_params = nullptr);
+
  protected:
   SerializationEntry GetEntryImpl(
       const std::string& custom_key, TfLiteContext* context = nullptr,
@@ -200,6 +209,30 @@ class Serialization {
   const std::string cache_dir_;
   const std::string model_token_;
 };
+
+// Helper for delegates to save their delegation decisions (which nodes to
+// delegate) in TfLiteDelegate::Prepare().
+// Internally, this uses a unique SerializationEntry based on the `context` &
+// `delegate_id` to save the `node_ids`. It is recommended that `delegate_id` be
+// unique to a backend/version to avoid reading back stale delegation decisions.
+//
+// NOTE: This implementation is platform-specific, so this method & the
+// subsequent call to GetDelegatedNodes should happen on the same device.
+TfLiteStatus SaveDelegatedNodes(TfLiteContext* context,
+                                Serialization* serialization,
+                                const std::string& delegate_id,
+                                const TfLiteIntArray* node_ids);
+
+// Retrieves list of delegated nodes that were saved earlier with
+// SaveDelegatedNodes.
+// Caller assumes ownership of data pointed by *nodes_ids.
+//
+// NOTE: This implementation is platform-specific, so SaveDelegatedNodes &
+// corresponding GetDelegatedNodes should be called on the same device.
+TfLiteStatus GetDelegatedNodes(TfLiteContext* context,
+                               Serialization* serialization,
+                               const std::string& delegate_id,
+                               TfLiteIntArray** node_ids);
 
 }  // namespace delegates
 }  // namespace tflite

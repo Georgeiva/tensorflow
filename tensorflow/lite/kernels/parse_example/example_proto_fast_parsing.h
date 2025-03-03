@@ -14,8 +14,7 @@ limitations under the License.
 ==============================================================================*/
 #ifndef TENSORFLOW_LITE_KERNELS_PARSE_EXAMPLE_EXAMPLE_PROTO_FAST_PARSING_H_
 #define TENSORFLOW_LITE_KERNELS_PARSE_EXAMPLE_EXAMPLE_PROTO_FAST_PARSING_H_
-#include "tensorflow/core/util/example_proto_fast_parsing.h"
-
+#include <algorithm>
 #include <vector>
 
 #include "absl/base/casts.h"
@@ -27,14 +26,15 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/lib/core/blocking_counter.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
+#include "tensorflow/core/platform/blocking_counter.h"
 #include "tensorflow/core/platform/byte_order.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/util/example_proto_fast_parsing.h"
 #include "tensorflow/core/util/presized_cuckoo_map.h"
 #include "tensorflow/core/util/sparse/sparse_tensor.h"
 
@@ -53,7 +53,7 @@ class LimitedArraySlice {
       : current_(begin), begin_(begin), end_(begin + num_elements) {}
 
   // May return negative if there were push_back calls after slice was filled.
-  int64 EndDistance() const { return end_ - current_; }
+  int64_t EndDistance() const { return end_ - current_; }
 
   // Attempts to push value to the back of this. If the slice has
   // already been filled, this method has no effect on the underlying data, but
@@ -113,13 +113,13 @@ namespace parsed {
 class Feature {
  public:
   Feature() {}
-  explicit Feature(StringPiece serialized) : serialized_(serialized) {}
+  explicit Feature(absl::string_view serialized) : serialized_(serialized) {}
 
-  Status ParseDataType(DataType* dtype) {
+  absl::Status ParseDataType(DataType* dtype) {
     DCHECK(dtype != nullptr);
     if (serialized_.empty()) {
       *dtype = DT_INVALID;
-      return Status::OK();
+      return absl::OkStatus();
     }
     uint8 oneof_tag = static_cast<uint8>(*serialized_.data());
     serialized_.remove_prefix(1);
@@ -138,7 +138,7 @@ class Feature {
         *dtype = DT_INVALID;
         return errors::InvalidArgument("Unsupported datatype.");
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   bool GetNumElementsInBytesList(int* num_elements) {
@@ -214,7 +214,7 @@ class Feature {
         return false;
       }
 
-      constexpr int32 kNumFloatBytes = 4;
+      constexpr int32_t kNumFloatBytes = 4;
       if (peek_tag == kDelimitedTag(1)) {                       // packed
         if (!stream.ExpectTag(kDelimitedTag(1))) return false;  // packed tag
         uint32 packed_length;
@@ -240,7 +240,7 @@ class Feature {
           if (!stream.ReadRaw(float_list->data() + initial_size, bytes_to_copy))
             return false;
         } else {
-          int64 index = initial_size;
+          int64_t index = initial_size;
           while (!stream.ExpectAtEnd()) {
             uint32 buffer32;
             if (!stream.ReadLittleEndian32(&buffer32)) return false;
@@ -256,10 +256,10 @@ class Feature {
         const size_t initial_size = float_list->size();
         // 1 byte for the tag (`1` encoded as Variant32) and kNumFloatBytes for
         // the value.
-        const int64 num_elements =
+        const int64_t num_elements =
             stream.BytesUntilLimit() / (1 + kNumFloatBytes);
         float_list->resize(initial_size + num_elements);
-        int64 index = initial_size;
+        int64_t index = initial_size;
         while (!stream.ExpectAtEnd()) {
           if (!stream.ExpectTag(kFixed32Tag(1))) return false;
           uint32 buffer32;
@@ -298,7 +298,7 @@ class Feature {
         while (!stream.ExpectAtEnd()) {
           protobuf_uint64 n;  // There is no API for int64
           if (!stream.ReadVarint64(&n)) return false;
-          int64_list->push_back(static_cast<int64>(n));
+          int64_list->push_back(static_cast<int64_t>(n));
         }
 
         stream.PopLimit(packed_limit);
@@ -307,7 +307,7 @@ class Feature {
           if (!stream.ExpectTag(kVarintTag(1))) return false;
           protobuf_uint64 n;  // There is no API for int64
           if (!stream.ReadVarint64(&n)) return false;
-          int64_list->push_back(static_cast<int64>(n));
+          int64_list->push_back(static_cast<int64_t>(n));
         }
       }
     }
@@ -315,13 +315,13 @@ class Feature {
     return true;
   }
 
-  StringPiece GetSerialized() const { return serialized_; }
+  absl::string_view GetSerialized() const { return serialized_; }
 
  private:
-  StringPiece serialized_;
+  absl::string_view serialized_;
 };
 
-using FeatureMapEntry = std::pair<StringPiece, Feature>;
+using FeatureMapEntry = std::pair<absl::string_view, Feature>;
 using Example = std::vector<FeatureMapEntry>;
 
 }  // namespace parsed
@@ -351,7 +351,8 @@ inline bool SkipExtraneousTag(protobuf::io::CodedInputStream* stream) {
   return false;  // unrecognized tag type
 }
 
-bool ParseString(protobuf::io::CodedInputStream* stream, StringPiece* result);
+bool ParseString(protobuf::io::CodedInputStream* stream,
+                 absl::string_view* result);
 
 bool ParseFeatureMapEntry(protobuf::io::CodedInputStream* stream,
                           parsed::FeatureMapEntry* feature_map_entry);
@@ -362,7 +363,7 @@ bool ParseFeatures(protobuf::io::CodedInputStream* stream,
 bool ParseExample(protobuf::io::CodedInputStream* stream,
                   parsed::Example* example);
 
-bool ParseExample(StringPiece serialized, parsed::Example* example);
+bool ParseExample(absl::string_view serialized, parsed::Example* example);
 
 using Config = FastParseExampleConfig;
 
@@ -377,7 +378,7 @@ struct SparseBuffer {
   // Other 2 vectors remain empty.
   SmallVector<tstring> bytes_list;
   SmallVector<float> float_list;
-  SmallVector<int64> int64_list;
+  SmallVector<int64_t> int64_list;
 
   // Features of example i are elements with indices
   // from example_end_indices[i-1] to example_end_indices[i]-1 on the
@@ -386,7 +387,7 @@ struct SparseBuffer {
 };
 
 struct SeededHasher {
-  uint64 operator()(StringPiece s) const {
+  uint64 operator()(absl::string_view s) const {
     return Hash64(s.data(), s.size(), seed);
   }
   uint64 seed{0xDECAFCAFFE};
@@ -404,7 +405,8 @@ template <typename T>
 const SmallVector<T>& GetListFromBuffer(const SparseBuffer& buffer);
 
 template <>
-const SmallVector<int64>& GetListFromBuffer<int64>(const SparseBuffer& buffer);
+const SmallVector<int64_t>& GetListFromBuffer<int64_t>(
+    const SparseBuffer& buffer);
 
 template <>
 const SmallVector<float>& GetListFromBuffer<float>(const SparseBuffer& buffer);
@@ -434,7 +436,7 @@ struct FeatureProtos {
   // Proto substrings from each serialized SequenceExample that correspond
   // with this feature.  `protos_present` records whether the proto had a
   // value defined (even if that value is empty).
-  std::vector<StringPiece> protos;
+  std::vector<absl::string_view> protos;
   std::vector<bool> protos_present;
 
   // Information derived from protos:
@@ -447,9 +449,9 @@ struct FeatureProtos {
 };
 
 // Map from feature name to FeatureProtos for that feature.
-using FeatureProtosMap = absl::flat_hash_map<StringPiece, FeatureProtos>;
+using FeatureProtosMap = absl::flat_hash_map<absl::string_view, FeatureProtos>;
 
-string ExampleName(const gtl::ArraySlice<tstring> example_names, int n);
+string ExampleName(const absl::Span<const tstring> example_names, int n);
 
 // Return the number of bytes elements parsed, or -1 on error. If out is null,
 // this method simply counts the number of elements without any copying.
@@ -490,7 +492,7 @@ inline void PadFloatFeature(int num_to_pad, float* out) {
   }
 }
 
-inline void PadInt64Feature(int num_to_pad, int64* out) {
+inline void PadInt64Feature(int num_to_pad, int64_t* out) {
   for (int i = 0; i < num_to_pad; i++) {
     *out++ = 0;
   }
@@ -550,7 +552,7 @@ inline int ParseFloatFeature(protobuf::io::CodedInputStream* stream,
 // Return the number of int64 elements parsed, or -1 on error. If out is null,
 // this method simply counts the number of elements without any copying.
 inline int ParseInt64Feature(protobuf::io::CodedInputStream* stream,
-                             int64* out) {
+                             int64_t* out) {
   int num_elements = 0;
   uint32 length;
   if (!stream->ExpectTag(kDelimitedTag(3)) || !stream->ReadVarint32(&length)) {
@@ -614,7 +616,7 @@ inline int ParseFeature(DataType dtype, protobuf::io::CodedInputStream* stream,
       break;
     case DT_INT64:
       delta =
-          ParseInt64Feature(stream, out->flat<int64>().data() + *out_offset);
+          ParseInt64Feature(stream, out->flat<int64_t>().data() + *out_offset);
       break;
     default:
       ReportUnexpectedDataType(dtype);

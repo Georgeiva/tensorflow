@@ -31,7 +31,7 @@ class SummaryImageOp : public OpKernel {
   typedef Eigen::Tensor<uint8, 2, Eigen::RowMajor> Uint8Image;
 
   explicit SummaryImageOp(OpKernelConstruction* context) : OpKernel(context) {
-    int64 max_images_tmp;
+    int64_t max_images_tmp;
     OP_REQUIRES_OK(context, context->GetAttr("max_images", &max_images_tmp));
     OP_REQUIRES(context, max_images_tmp < (1LL << 31),
                 errors::InvalidArgument("max_images must be < 2^31"));
@@ -142,9 +142,10 @@ class SummaryImageOp : public OpKernel {
   // differently in the float and uint8 cases: the float case needs a temporary
   // buffer which can be shared across calls to ith_image, but the uint8 case
   // does not.
-  Status AddImages(const string& tag, int batch_size, int w, int h, int depth,
-                   const std::function<Uint8Image(int)>& ith_image,
-                   Summary* s) {
+  absl::Status AddImages(const string& tag, int batch_size, int w, int h,
+                         int depth,
+                         const std::function<Uint8Image(int)>& ith_image,
+                         Summary* s) {
     const int N = std::min<int>(max_images_, batch_size);
     for (int i = 0; i < N; ++i) {
       Summary::Value* v = s->add_value();
@@ -173,7 +174,7 @@ class SummaryImageOp : public OpKernel {
         return errors::Internal("PNG encoding failed");
       }
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   template <class T>

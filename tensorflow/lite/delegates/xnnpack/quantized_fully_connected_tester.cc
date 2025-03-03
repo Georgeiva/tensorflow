@@ -15,20 +15,26 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/xnnpack/quantized_fully_connected_tester.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "flatbuffers/string.h"  // from @flatbuffers
+#include "tensorflow/compiler/mlir/lite/schema/schema_conversion_utils.h"
+#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/core/interpreter_builder.h"
+#include "tensorflow/lite/core/kernels/register.h"
+#include "tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h"
 #include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
-#include "tensorflow/lite/model.h"
-#include "tensorflow/lite/schema/schema_conversion_utils.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/version.h"
 
@@ -49,14 +55,36 @@ std::vector<int32_t> QuantizedFullyConnectedTester::OutputShape() const {
   }
 }
 
-void QuantizedFullyConnectedTester::Test(TfLiteDelegate* delegate) const {
+template <class T>
+void QuantizedFullyConnectedTester::Test(
+    Interpreter* delegate_interpreter, Interpreter* default_interpreter) const {
   std::random_device random_device;
   auto rng = std::mt19937(random_device());
-  auto input_rng = std::bind(std::uniform_int_distribution<int32_t>(
-                                 std::numeric_limits<int8_t>::min(),
-                                 std::numeric_limits<int8_t>::max()),
-                             std::ref(rng));
+  auto input_rng = std::bind(
+      std::uniform_int_distribution<int32_t>(std::numeric_limits<T>::min(),
+                                             std::numeric_limits<T>::max()),
+      std::ref(rng));
 
+  T* default_input_data = default_interpreter->typed_input_tensor<T>(0);
+  std::generate_n(default_input_data, InputSize(), std::ref(input_rng));
+
+  T* delegate_input_data = delegate_interpreter->typed_input_tensor<T>(0);
+  std::copy_n(default_input_data, InputSize(), delegate_input_data);
+
+  ASSERT_EQ(default_interpreter->Invoke(), kTfLiteOk);
+  ASSERT_EQ(delegate_interpreter->Invoke(), kTfLiteOk);
+
+  T* default_output_data = default_interpreter->typed_output_tensor<T>(0);
+  T* delegate_output_data = delegate_interpreter->typed_output_tensor<T>(0);
+
+  for (size_t i = 0; i < ComputeSize(OutputShape()); i++) {
+    ASSERT_LE(std::abs(static_cast<int32_t>(default_output_data[i]) -
+                       static_cast<int32_t>(delegate_output_data[i])),
+              1);
+  }
+}
+
+void QuantizedFullyConnectedTester::Test(TfLiteDelegate* delegate) const {
   std::vector<char> buffer = CreateTfLiteModel();
   const Model* model = GetModel(buffer.data());
 
@@ -89,28 +117,14 @@ void QuantizedFullyConnectedTester::Test(TfLiteDelegate* delegate) const {
 
   ASSERT_EQ(delegate_interpreter->ModifyGraphWithDelegate(delegate), kTfLiteOk);
 
-  int8_t* default_input_data = default_interpreter->typed_tensor<int8_t>(
-      default_interpreter->inputs()[0]);
-  std::generate(default_input_data, default_input_data + InputSize(),
-                std::ref(input_rng));
+  if (weights_cache_ != nullptr) {
+    TfLiteXNNPackDelegateWeightsCacheFinalizeHard(weights_cache_);
+  }
 
-  int8_t* delegate_input_data = delegate_interpreter->typed_tensor<int8_t>(
-      delegate_interpreter->inputs()[0]);
-  std::copy(default_input_data, default_input_data + InputSize(),
-            delegate_input_data);
-
-  ASSERT_EQ(default_interpreter->Invoke(), kTfLiteOk);
-  ASSERT_EQ(delegate_interpreter->Invoke(), kTfLiteOk);
-
-  int8_t* default_output_data = default_interpreter->typed_tensor<int8_t>(
-      default_interpreter->outputs()[0]);
-  int8_t* delegate_output_data = delegate_interpreter->typed_tensor<int8_t>(
-      delegate_interpreter->outputs()[0]);
-
-  for (size_t i = 0; i < ComputeSize(OutputShape()); i++) {
-    ASSERT_LE(std::abs(static_cast<int32_t>(default_output_data[i]) -
-                       static_cast<int32_t>(delegate_output_data[i])),
-              1);
+  if (Unsigned()) {
+    Test<uint8_t>(delegate_interpreter.get(), default_interpreter.get());
+  } else {
+    Test<int8_t>(delegate_interpreter.get(), default_interpreter.get());
   }
 }
 
@@ -155,7 +169,7 @@ std::vector<char> QuantizedFullyConnectedTester::CreateTfLiteModel() const {
   tensors.emplace_back(CreateTensor(
       builder,
       builder.CreateVector<int32_t>(InputShape().data(), InputShape().size()),
-      TensorType_INT8, /*buffer=*/0, /*name=*/0,
+      Unsigned() ? TensorType_UINT8 : TensorType_INT8, /*buffer=*/0, /*name=*/0,
       CreateQuantizationParameters(
           builder, /*min=*/0, /*max=*/0,
           builder.CreateVector<float>({InputScale()}),
@@ -163,7 +177,7 @@ std::vector<char> QuantizedFullyConnectedTester::CreateTfLiteModel() const {
   tensors.emplace_back(CreateTensor(
       builder,
       builder.CreateVector<int32_t>(filter_shape.data(), filter_shape.size()),
-      TensorType_INT8, /*buffer=*/1, /*name=*/0,
+      Unsigned() ? TensorType_UINT8 : TensorType_INT8, /*buffer=*/1, /*name=*/0,
       CreateQuantizationParameters(builder, /*min=*/0, /*max=*/0,
                                    builder.CreateVector<float>({FilterScale()}),
                                    builder.CreateVector<int64_t>({0}))));
@@ -180,7 +194,7 @@ std::vector<char> QuantizedFullyConnectedTester::CreateTfLiteModel() const {
   tensors.emplace_back(CreateTensor(
       builder,
       builder.CreateVector<int32_t>(output_shape.data(), output_shape.size()),
-      TensorType_INT8, /*buffer=*/0, /*name=*/0,
+      Unsigned() ? TensorType_UINT8 : TensorType_INT8, /*buffer=*/0, /*name=*/0,
       CreateQuantizationParameters(
           builder, /*min=*/0, /*max=*/0,
           builder.CreateVector<float>({OutputScale()}),

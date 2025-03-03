@@ -58,12 +58,8 @@ string CollGroupParams::ToString() const {
       "CollGroupParams {group_key=", group_key, " group_size=", group_size,
       " device_type=", device_type.type_string(), " num_tasks=", num_tasks,
       " runtime_details=", runtime_details.ToString(), " devices {");
-  for (const auto& d : device_names) {
-    strings::StrAppend(&v, d, ",");
-  }
-  strings::StrAppend(&v, "} task_names={");
-  for (const auto& n : task_names) {
-    strings::StrAppend(&v, n, ", ");
+  for (const auto& m : members) {
+    strings::StrAppend(&v, m.device.name(), ",");
   }
   strings::StrAppend(&v, "} num_devices_per_task={");
   for (const auto& dpt : num_devices_per_task) {
@@ -138,19 +134,9 @@ string CollInstanceParams::ToString() const {
   return v;
 }
 
-string CollTaskParams::ToString() const {
-  string v = strings::StrCat("CollTaskParams {is_local={");
-  for (const auto& b : is_local) {
-    strings::StrAppend(&v, static_cast<int>(b), ",");
-  }
-  strings::StrAppend(&v, "}}");
-  return v;
-}
-
 string CollectiveParams::ToString() const {
   string v = strings::StrCat("CollectiveParams ", name, " {", group.ToString());
   strings::StrAppend(&v, " ", instance.ToString());
-  strings::StrAppend(&v, " ", task.ToString());
   strings::StrAppend(&v, " default_rank=", default_rank,
                      " is_source=", is_source, " source_rank=", source_rank,
                      " subdiv_rank={");
@@ -170,32 +156,34 @@ CollectiveContext::CollectiveContext(
     CollectiveExecutor* col_exec, NcclCommunicatorInterface* nccl_communicator,
     const DeviceMgr* dev_mgr, OpKernelContext* ctx,
     OpKernelContext::Params* op_params, const CollectiveParams* col_params,
-    const string& exec_key, int64 step_id, const Tensor* input, Tensor* output)
+    const string& exec_key, int64_t step_id, const Tensor* input,
+    Tensor* output)
     : col_exec(col_exec),
       nccl_communicator(nccl_communicator),
       dev_mgr(dev_mgr),
       op_ctx(ctx),
       op_params(op_params),
-      col_params(col_params),
+      col_params(col_params, /*add_ref=*/true),
       exec_key(exec_key),
       step_id(step_id),
       input(input),
       output(output),
       device(nullptr),
-      device_name(col_params->group.device_names[col_params->default_rank]) {}
+      device_name(
+          col_params->group.members[col_params->default_rank].device.name()) {}
 
 /*static*/
-int64 CollectiveExecutor::kInvalidId = -1;
+int64_t CollectiveExecutor::kInvalidId = -1;
 
 /*static*/
-Status CollectiveRegistry::Lookup(
+absl::Status CollectiveRegistry::Lookup(
     const string& collective_name,
     CollectiveImplementationInterface** implementation) {
   return LookupHelper(collective_name, implementation, false);
 }
 
 /*static*/
-Status CollectiveRegistry::LookupParamResolverInstance(
+absl::Status CollectiveRegistry::LookupParamResolverInstance(
     const string& collective_name,
     CollectiveImplementationInterface** implementation) {
   return LookupHelper(collective_name, implementation, true);
@@ -210,8 +198,8 @@ void CollectiveRegistry::GetAll(
 }
 
 /*static*/
-Status CollectiveRegistry::Register(const string& collective_name,
-                                    Factory factory) {
+absl::Status CollectiveRegistry::Register(const string& collective_name,
+                                          Factory factory) {
   std::vector<RegistrationInfo>* registry = MutableCollectiveRegistry();
   for (const RegistrationInfo& reg_info : *registry) {
     if (reg_info.name == collective_name)
@@ -219,11 +207,11 @@ Status CollectiveRegistry::Register(const string& collective_name,
                               collective_name);
   }
   registry->emplace_back(collective_name, std::move(factory));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 /*static*/
-Status CollectiveRegistry::LookupHelper(
+absl::Status CollectiveRegistry::LookupHelper(
     const string& collective_name,
     CollectiveImplementationInterface** implementation, bool param_resolver) {
   std::vector<RegistrationInfo>* registry = MutableCollectiveRegistry();
@@ -234,7 +222,7 @@ Status CollectiveRegistry::LookupHelper(
       } else {
         *implementation = reg_info.factory();
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
   return errors::Internal(

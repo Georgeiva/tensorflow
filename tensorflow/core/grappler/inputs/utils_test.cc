@@ -14,9 +14,19 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/grappler/inputs/utils.h"
-#include "tensorflow/core/lib/io/path.h"
+
+#include <cstdint>
+#include <vector>
+
+#include "absl/status/status.h"
+#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/path.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/protobuf/meta_graph.pb.h"
+#include "tsl/platform/status.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -53,7 +63,7 @@ class UtilsTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    int64 undeleted_files, undeleted_dirs;
+    int64_t undeleted_files, undeleted_dirs;
     TF_CHECK_OK(
         env_->DeleteRecursively(BaseDir(), &undeleted_files, &undeleted_dirs));
   }
@@ -75,7 +85,7 @@ TEST_F(UtilsTest, FilesExist) {
       FilesExist(std::vector<string>{{non_existent_file_}, {actual_file_}}));
   EXPECT_TRUE(FilesExist(std::vector<string>{{actual_file_}}));
 
-  std::vector<Status> status;
+  std::vector<absl::Status> status;
   EXPECT_FALSE(FilesExist(
       std::vector<string>{{non_existent_file_}, {actual_file_}}, &status));
   EXPECT_EQ(status.size(), 2);

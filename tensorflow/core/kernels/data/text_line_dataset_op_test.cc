@@ -28,7 +28,7 @@ tstring LocalTempFilename() {
 class TextLineDatasetParams : public DatasetParams {
  public:
   TextLineDatasetParams(std::vector<tstring> filenames,
-                        CompressionType compression_type, int64 buffer_size,
+                        CompressionType compression_type, int64_t buffer_size,
                         string node_name)
       : DatasetParams({DT_STRING}, {PartialTensorShape({})},
                       std::move(node_name)),
@@ -41,22 +41,23 @@ class TextLineDatasetParams : public DatasetParams {
     return {
         CreateTensor<tstring>(TensorShape({num_files}), filenames_),
         CreateTensor<tstring>(TensorShape({}), {ToString(compression_type_)}),
-        CreateTensor<int64>(TensorShape({}), {buffer_size_})};
+        CreateTensor<int64_t>(TensorShape({}), {buffer_size_})};
   }
 
-  Status GetInputNames(std::vector<string>* input_names) const override {
+  absl::Status GetInputNames(std::vector<string>* input_names) const override {
     input_names->clear();
     *input_names = {
         TextLineDatasetOp::kFileNames,
         TextLineDatasetOp::kCompressionType,
         TextLineDatasetOp::kBufferSize,
     };
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status GetAttributes(AttributeVector* attr_vector) const override {
-    *attr_vector = {};
-    return Status::OK();
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override {
+    attr_vector->clear();
+    attr_vector->emplace_back("metadata", "");
+    return absl::OkStatus();
   }
 
   string dataset_type() const override {
@@ -66,14 +67,14 @@ class TextLineDatasetParams : public DatasetParams {
  private:
   std::vector<tstring> filenames_;
   CompressionType compression_type_;
-  int64 buffer_size_;
+  int64_t buffer_size_;
 };
 
 class TextLineDatasetOpTest : public DatasetOpsTestBase {};
 
-Status CreateTestFiles(const std::vector<tstring>& filenames,
-                       const std::vector<tstring>& contents,
-                       CompressionType compression_type) {
+absl::Status CreateTestFiles(const std::vector<tstring>& filenames,
+                             const std::vector<tstring>& contents,
+                             CompressionType compression_type) {
   if (filenames.size() != contents.size()) {
     return tensorflow::errors::InvalidArgument(
         "The number of files does not match with the contents");
@@ -85,7 +86,7 @@ Status CreateTestFiles(const std::vector<tstring>& filenames,
     TF_RETURN_IF_ERROR(
         WriteDataToFile(filenames[i], contents[i].data(), params));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Test case 1: multiple text files with ZLIB compression.
@@ -96,8 +97,8 @@ TextLineDatasetParams TextLineDatasetParams1() {
       absl::StrCat("abcd, EFgH\n", "           \n", "$%^&*()\n")};
   CompressionType compression_type = CompressionType::ZLIB;
   if (!CreateTestFiles(filenames, contents, compression_type).ok()) {
-    VLOG(WARNING) << "Failed to create the test files: "
-                  << absl::StrJoin(filenames, ", ");
+    LOG(WARNING) << "Failed to create the test files: "
+                 << absl::StrJoin(filenames, ", ");
   }
   return TextLineDatasetParams(filenames,
                                /*compression_type=*/compression_type,
@@ -113,8 +114,8 @@ TextLineDatasetParams TextLineDatasetParams2() {
       absl::StrCat("abcd, EFgH\n", "           \n", "$%^&*()\n")};
   CompressionType compression_type = CompressionType::GZIP;
   if (!CreateTestFiles(filenames, contents, compression_type).ok()) {
-    VLOG(WARNING) << "Failed to create the test files: "
-                  << absl::StrJoin(filenames, ", ");
+    LOG(WARNING) << "Failed to create the test files: "
+                 << absl::StrJoin(filenames, ", ");
   }
   return TextLineDatasetParams(filenames,
                                /*compression_type=*/compression_type,
@@ -130,8 +131,8 @@ TextLineDatasetParams TextLineDatasetParams3() {
       absl::StrCat("abcd, EFgH\n", "           \n", "$%^&*()\n")};
   CompressionType compression_type = CompressionType::UNCOMPRESSED;
   if (!CreateTestFiles(filenames, contents, compression_type).ok()) {
-    VLOG(WARNING) << "Failed to create the test files: "
-                  << absl::StrJoin(filenames, ", ");
+    LOG(WARNING) << "Failed to create the test files: "
+                 << absl::StrJoin(filenames, ", ");
   }
   return TextLineDatasetParams(filenames,
                                /*compression_type=*/compression_type,
